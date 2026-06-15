@@ -20,8 +20,8 @@
           <label for="skuSelect">选择 SKU</label>
           <select id="skuSelect"></select>
 
-          <label for="imageSelect">选择图片类型</label>
-          <select id="imageSelect"></select>
+          <label for="templateSelect">选择模板</label>
+          <select id="templateSelect"></select>
 
           <label for="languageSelect">提示词语言</label>
           <select id="languageSelect">
@@ -37,9 +37,9 @@
 
         <section class="control-group compact" aria-labelledby="actions-title">
           <h2 id="actions-title">操作</h2>
-          <button id="copyCurrent" type="button">复制当前提示词</button>
-          <button id="copyAll" type="button" class="secondary">复制该 SKU 全部 8 张</button>
-          <button id="resetFields" type="button" class="ghost">恢复默认占位符</button>
+          <button id="copyCurrent" type="button">复制当前模板图组</button>
+          <button id="copyAll" type="button" class="secondary">复制该 SKU 图组</button>
+          <button id="resetFields" type="button" class="ghost">恢复已提取参数</button>
           <p id="copyStatus" class="status" role="status" aria-live="polite"></p>
         </section>
       </aside>
@@ -53,41 +53,7 @@
           <div class="badge-row" id="badges"></div>
         </div>
 
-        <section class="workflow-panel" aria-labelledby="workflow-title">
-          <div>
-            <p class="eyebrow">Input</p>
-            <h2 id="workflow-title">资料提炼流程</h2>
-          </div>
-          <div class="workflow-grid">
-            <div class="workflow-column">
-              <h3>提供资料模块</h3>
-              <div class="source-stack">
-                <span>采购单</span>
-                <span>1688 商品页</span>
-                <span>竞品图组</span>
-              </div>
-            </div>
-            <div class="workflow-arrow" aria-hidden="true">→</div>
-            <div class="workflow-column">
-              <h3>生成网页设计</h3>
-              <div class="source-stack">
-                <span>产品款式</span>
-                <span>包装数量</span>
-                <span>卖点 1</span>
-                <span>卖点 2</span>
-              </div>
-            </div>
-            <div class="workflow-arrow" aria-hidden="true">→</div>
-            <div class="workflow-column">
-              <h3>模板选择</h3>
-              <div class="source-stack">
-                <span>最终选择</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <div class="summary-grid">
+        <div class="summary-grid is-compact">
           <section class="info-panel">
             <h3>采购单确认</h3>
             <div id="skuFacts" class="fact-list"></div>
@@ -114,9 +80,9 @@
           <div class="section-header">
             <div>
               <p class="eyebrow">Product Outputs</p>
-              <h2 id="product-prompts-title">按产品生成提示词</h2>
+              <h2 id="product-prompts-title">按产品生成图组</h2>
             </div>
-            <p>每个基础产品先输出图 1 主图与图 2 卖点图，后续可继续扩展到 8 张图。</p>
+            <p>根据当前模板一次性输出完整图组；场景展示模板后期补入。</p>
           </div>
           <div id="productPromptGrid" class="product-prompt-grid"></div>
         </section>
@@ -125,7 +91,7 @@
           <div class="output-header">
             <div>
               <p class="eyebrow">Generated Prompt</p>
-              <h2 id="promptTitle">提示词</h2>
+              <h2 id="promptTitle">当前模板图组</h2>
             </div>
             <span id="sourceConfidence" class="confidence"></span>
           </div>
@@ -139,7 +105,7 @@
             <li>尺寸字段只描述单片滤纸，不把 100/200 片盒装数量当作产品尺寸。</li>
             <li>采购单决定产品款数和包装数量；1688 只补材质、结构、适配和可视化细节。</li>
             <li>竞品只用于参考图片逻辑与卖点取舍，最终主展示卖点固定选 2 个。</li>
-            <li>未在采购单或 1688 明确出现的单片尺寸，均以“借鉴参数”写入，保留占位符便于实测后替换。</li>
+            <li>资料没有明确参数的产品不借鉴、不参照，只写能提取到的规格。</li>
           </ul>
         </section>
       </section>

@@ -220,7 +220,6 @@ button:hover {
 .info-panel,
 .output-panel,
 .notes-panel,
-.workflow-panel,
 .product-prompt-panel {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -230,51 +229,8 @@ button:hover {
 
 .info-panel,
 .notes-panel,
-.workflow-panel,
 .product-prompt-panel {
   padding: 18px;
-}
-
-.workflow-panel {
-  margin-bottom: 16px;
-}
-
-.workflow-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 0.8fr);
-  align-items: center;
-  gap: 12px;
-}
-
-.workflow-column {
-  min-height: 170px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px;
-  background: #fbfcfb;
-}
-
-.source-stack {
-  display: grid;
-  gap: 10px;
-}
-
-.source-stack span {
-  display: block;
-  min-height: 40px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 9px 11px;
-  background: var(--surface);
-  color: #303832;
-  font-size: 14px;
-  font-weight: 750;
-}
-
-.workflow-arrow {
-  color: var(--accent);
-  font-size: 28px;
-  font-weight: 800;
 }
 
 .fact-list {
@@ -329,7 +285,7 @@ ul {
 
 .product-prompt-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 14px;
 }
 
@@ -365,6 +321,7 @@ ul {
 
 .mini-prompt-list {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;
   padding: 14px;
 }
@@ -436,13 +393,7 @@ ul {
     margin-top: 10px;
   }
 
-  .workflow-grid,
   .product-prompt-grid {
     grid-template-columns: 1fr;
-  }
-
-  .workflow-arrow {
-    text-align: center;
-    transform: rotate(90deg);
   }
 }
