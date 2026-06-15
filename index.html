@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>咖啡滤纸提示词 MVP</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="side-panel">
+        <div class="brand-block">
+          <p class="eyebrow">Prompt MVP</p>
+          <h1>咖啡扇形滤纸提示词生成器</h1>
+          <p>按采购单确认产品和包装数量，再用 1688 与竞品资料筛选作图信息。</p>
+        </div>
+
+        <section class="control-group" aria-labelledby="sku-title">
+          <h2 id="sku-title">产品选择</h2>
+          <label for="skuSelect">选择 SKU</label>
+          <select id="skuSelect"></select>
+
+          <label for="imageSelect">选择图片类型</label>
+          <select id="imageSelect"></select>
+
+          <label for="languageSelect">提示词语言</label>
+          <select id="languageSelect">
+            <option value="en">英文出图提示词</option>
+            <option value="zh">中文备注 + 英文提示词</option>
+          </select>
+        </section>
+
+        <section class="control-group" aria-labelledby="override-title">
+          <h2 id="override-title">可替换参数</h2>
+          <div id="fieldList" class="field-list"></div>
+        </section>
+
+        <section class="control-group compact" aria-labelledby="actions-title">
+          <h2 id="actions-title">操作</h2>
+          <button id="copyCurrent" type="button">复制当前提示词</button>
+          <button id="copyAll" type="button" class="secondary">复制该 SKU 全部 8 张</button>
+          <button id="resetFields" type="button" class="ghost">恢复默认占位符</button>
+          <p id="copyStatus" class="status" role="status" aria-live="polite"></p>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <div class="top-strip">
+          <div>
+            <p class="eyebrow">Source Digest</p>
+            <h2 id="currentTitle">产品资料提炼</h2>
+          </div>
+          <div class="badge-row" id="badges"></div>
+        </div>
+
+        <section class="workflow-panel" aria-labelledby="workflow-title">
+          <div>
+            <p class="eyebrow">Input</p>
+            <h2 id="workflow-title">资料提炼流程</h2>
+          </div>
+          <div class="workflow-grid">
+            <div class="workflow-column">
+              <h3>提供资料模块</h3>
+              <div class="source-stack">
+                <span>采购单</span>
+                <span>1688 商品页</span>
+                <span>竞品图组</span>
+              </div>
+            </div>
+            <div class="workflow-arrow" aria-hidden="true">→</div>
+            <div class="workflow-column">
+              <h3>生成网页设计</h3>
+              <div class="source-stack">
+                <span>产品款式</span>
+                <span>包装数量</span>
+                <span>卖点 1</span>
+                <span>卖点 2</span>
+              </div>
+            </div>
+            <div class="workflow-arrow" aria-hidden="true">→</div>
+            <div class="workflow-column">
+              <h3>模板选择</h3>
+              <div class="source-stack">
+                <span>最终选择</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="summary-grid">
+          <section class="info-panel">
+            <h3>采购单确认</h3>
+            <div id="skuFacts" class="fact-list"></div>
+          </section>
+          <section class="info-panel">
+            <h3>1688 辅助信息</h3>
+            <ul id="alibabaInfo"></ul>
+          </section>
+          <section class="info-panel">
+            <h3>候选卖点 3-4 个</h3>
+            <ul id="candidateSellingPoints"></ul>
+          </section>
+          <section class="info-panel">
+            <h3>主卖点展示 2 个</h3>
+            <ul id="primarySellingPoints"></ul>
+          </section>
+          <section class="info-panel">
+            <h3>竞品作图逻辑</h3>
+            <ul id="amazonLogic"></ul>
+          </section>
+        </div>
+
+        <section class="product-prompt-panel" aria-labelledby="product-prompts-title">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Product Outputs</p>
+              <h2 id="product-prompts-title">按产品生成提示词</h2>
+            </div>
+            <p>每个基础产品先输出图 1 主图与图 2 卖点图，后续可继续扩展到 8 张图。</p>
+          </div>
+          <div id="productPromptGrid" class="product-prompt-grid"></div>
+        </section>
+
+        <section class="output-panel">
+          <div class="output-header">
+            <div>
+              <p class="eyebrow">Generated Prompt</p>
+              <h2 id="promptTitle">提示词</h2>
+            </div>
+            <span id="sourceConfidence" class="confidence"></span>
+          </div>
+          <textarea id="promptOutput" spellcheck="false"></textarea>
+        </section>
+
+        <section class="notes-panel">
+          <h3>参数注意事项</h3>
+          <ul>
+            <li>主图第 1 张默认强制无文字、无标签、无包装数量角标。</li>
+            <li>尺寸字段只描述单片滤纸，不把 100/200 片盒装数量当作产品尺寸。</li>
+            <li>采购单决定产品款数和包装数量；1688 只补材质、结构、适配和可视化细节。</li>
+            <li>竞品只用于参考图片逻辑与卖点取舍，最终主展示卖点固定选 2 个。</li>
+            <li>未在采购单或 1688 明确出现的单片尺寸，均以“借鉴参数”写入，保留占位符便于实测后替换。</li>
+          </ul>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
