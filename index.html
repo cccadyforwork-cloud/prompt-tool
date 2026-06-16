@@ -10,24 +10,33 @@
     <main class="app-shell">
       <aside class="side-panel">
         <div class="brand-block">
-          <p class="eyebrow">Prompt MVP</p>
-          <h1>咖啡扇形滤纸提示词生成器</h1>
-          <p>按采购单确认产品和包装数量，再用 1688 与竞品资料筛选作图信息。</p>
+          <p class="eyebrow">Prompt Generator</p>
+          <h1>通用产品提示词生成工具</h1>
+          <p>输入采购单、供应商资料和竞品参考，选择模板后生成当前产品图组提示词。</p>
         </div>
+
+        <section class="control-group" aria-labelledby="source-title">
+          <h2 id="source-title">资料输入</h2>
+          <label for="purchaseFile">采购单 PDF</label>
+          <input id="purchaseFile" class="source-file" type="file" accept=".pdf,application/pdf">
+
+          <label for="supplierFile">1688 HTML 文件</label>
+          <input id="supplierFile" class="source-file" type="file" accept=".html,.htm,text/html">
+
+          <label for="competitorFile">竞品链接 HTML 文件</label>
+          <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html">
+
+          <button id="extractSources" type="button" class="secondary">解析资料并提取产品信息</button>
+          <p id="extractStatus" class="status" role="status" aria-live="polite"></p>
+        </section>
 
         <section class="control-group" aria-labelledby="sku-title">
           <h2 id="sku-title">产品选择</h2>
-          <label for="skuSelect">选择 SKU</label>
+          <label for="skuSelect">选择产品 / SKU</label>
           <select id="skuSelect"></select>
 
           <label for="templateSelect">选择模板</label>
           <select id="templateSelect"></select>
-
-          <label for="languageSelect">提示词语言</label>
-          <select id="languageSelect">
-            <option value="en">英文出图提示词</option>
-            <option value="zh">中文备注 + 英文提示词</option>
-          </select>
         </section>
 
         <section class="control-group" aria-labelledby="override-title">
@@ -37,8 +46,7 @@
 
         <section class="control-group compact" aria-labelledby="actions-title">
           <h2 id="actions-title">操作</h2>
-          <button id="copyCurrent" type="button">复制当前模板图组</button>
-          <button id="copyAll" type="button" class="secondary">复制该 SKU 图组</button>
+          <button id="copyCurrent" type="button">复制当前产品全部图组</button>
           <button id="resetFields" type="button" class="ghost">恢复已提取参数</button>
           <p id="copyStatus" class="status" role="status" aria-live="polite"></p>
         </section>
@@ -53,64 +61,20 @@
           <div class="badge-row" id="badges"></div>
         </div>
 
-        <div class="summary-grid is-compact">
-          <section class="info-panel">
-            <h3>采购单确认</h3>
-            <div id="skuFacts" class="fact-list"></div>
-          </section>
-          <section class="info-panel">
-            <h3>1688 辅助信息</h3>
-            <ul id="alibabaInfo"></ul>
-          </section>
-          <section class="info-panel">
-            <h3>候选卖点 3-4 个</h3>
-            <ul id="candidateSellingPoints"></ul>
-          </section>
-          <section class="info-panel">
-            <h3>主卖点展示 2 个</h3>
-            <ul id="primarySellingPoints"></ul>
-          </section>
-          <section class="info-panel">
-            <h3>竞品作图逻辑</h3>
-            <ul id="amazonLogic"></ul>
-          </section>
-        </div>
-
         <section class="product-prompt-panel" aria-labelledby="product-prompts-title">
           <div class="section-header">
             <div>
               <p class="eyebrow">Product Outputs</p>
-              <h2 id="product-prompts-title">按产品生成图组</h2>
+              <h2 id="product-prompts-title">当前产品图组</h2>
             </div>
-            <p>根据当前模板一次性输出完整图组；场景展示模板后期补入。</p>
+            <p>只展示当前产品与当前模板下的图组；每张图可单独复制。</p>
           </div>
           <div id="productPromptGrid" class="product-prompt-grid"></div>
-        </section>
-
-        <section class="output-panel">
-          <div class="output-header">
-            <div>
-              <p class="eyebrow">Generated Prompt</p>
-              <h2 id="promptTitle">当前模板图组</h2>
-            </div>
-            <span id="sourceConfidence" class="confidence"></span>
-          </div>
-          <textarea id="promptOutput" spellcheck="false"></textarea>
-        </section>
-
-        <section class="notes-panel">
-          <h3>参数注意事项</h3>
-          <ul>
-            <li>主图第 1 张默认强制无文字、无标签、无包装数量角标。</li>
-            <li>尺寸字段只描述单片滤纸，不把 100/200 片盒装数量当作产品尺寸。</li>
-            <li>采购单决定产品款数和包装数量；1688 只补材质、结构、适配和可视化细节。</li>
-            <li>竞品只用于参考图片逻辑与卖点取舍，最终主展示卖点固定选 2 个。</li>
-            <li>资料没有明确参数的产品不借鉴、不参照，只写能提取到的规格。</li>
-          </ul>
         </section>
       </section>
     </main>
 
+    <script src="./vendor/pdfjs/pdf.min.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
