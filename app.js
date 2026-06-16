@@ -199,10 +199,6 @@ const fields = [
   ["material", "Material", ""],
   ["color", "Color", ""],
   ["structure", "Structure", ""],
-  ["topWidth", "Top Width", ""],
-  ["sideLength", "Side / Height", ""],
-  ["bottomWidth", "Bottom Width", ""],
-  ["weight", "Sheet Weight", ""],
   ["fit", "Compatible Use", ""],
   ["scene", "Use Scene", ""],
   ["feature1", "Selling Point 1", ""],
@@ -239,7 +235,7 @@ function valueMap(sku) {
   const group = productGroups[sku.groupKey] || sku.group || productGroups.v02;
   return {
     productName: sku.productName || "[PRODUCT_NAME]",
-    material: sku.material || (sku.groupKey === "u04" ? "[MATERIAL]" : "[MATERIAL: natural wood pulp paper / unbleached brown paper]"),
+    material: sku.material || "[MATERIAL: natural wood pulp paper / unbleached brown paper]",
     color: sku.color || "[COLOR: natural brown]",
     structure: sku.structure || "[STRUCTURE: pressed side seam and bottom fold]",
     topWidth: sku.dims?.topWidth || "",
@@ -249,7 +245,8 @@ function valueMap(sku) {
     fit: sku.fit || "[COMPATIBLE_USE]",
     scene: sku.scene || "[USE_SCENE]",
     feature1: "[SELLING_POINT_1: natural unbleached wood pulp paper]",
-    feature2: "[SELLING_POINT_2: smooth filtration with reinforced pressed edges]",
+    feature2: "[SELLING_POINT_2: reinforced smooth filtration]",
+    packagingCount: ensureParameterToken("PACKAGING_COUNT", sku.pack || ""),
     singleSpec: sku.singleSpec || `[CURRENT_SKU_SPEC: ${group.promptName || "[PRODUCT_SPEC]"}, ${sku.pack || "[PACKAGING_COUNT]"}]`,
     specList: sku.specList || `[SPEC_LIST: ${(group.promptSpecs || ["[SPECIFICATION_LIST]"]).join(" / ")}]`,
     variantList: sku.variantList || "[VARIANT_LIST: V02 100/200 pcs, fan-shaped 02 or U02 100/200 pcs, fan-shaped 04 100/200 pcs]",
@@ -279,16 +276,103 @@ function renderFields(reset = false) {
   const fieldList = byId("fieldList");
   fieldList.innerHTML = fields.map(([key, label, fallback]) => {
     const value = reset ? (values[key] || fallback) : (byId(`field-${key}`)?.value || values[key] || fallback);
-    const note = ["topWidth", "sideLength", "bottomWidth", "weight"].includes(key) ? `<p class="field-note">${sku.dims.source}</p>` : "";
     return `
       <div>
         <label for="field-${key}">${label}</label>
         <input id="field-${key}" data-key="${key}" value="${escapeHtml(value)}">
-        ${note}
       </div>
     `;
   }).join("");
   fieldList.querySelectorAll("input").forEach((input) => input.addEventListener("input", renderAll));
+}
+
+function cleanTokenValue(value) {
+  return String(value || "")
+    .replace(/^\[[A-Z0-9_ ]+:?\s*/i, "")
+    .replace(/\]$/g, "")
+    .trim();
+}
+
+function ensureParameterToken(name, value) {
+  const raw = String(value || "").trim();
+  const clean = cleanTokenValue(raw);
+  if (!clean || /^\[[A-Z0-9_ ]+\]$/i.test(raw)) return `[${name}]`;
+  return `[${name}: ${clean}]`;
+}
+
+function hasTokenContent(value) {
+  return /^\[[A-Z0-9_ ]+:\s*[^\]]+\]$/i.test(String(value || "").trim());
+}
+
+function productParameterRows() {
+  const groups = new Map();
+  currentProducts().forEach((sku) => {
+    const values = valueMap(sku);
+    const groupKey = sku.groupKey || sku.sizeCode || sku.shape || sku.id;
+    const existing = groups.get(groupKey) || {
+      title: sku.sizeCode || sku.shape || "Product Specification",
+      shape: sku.shape || cleanTokenValue(values.singleSpec),
+      packs: new Set(),
+      cupRange: "",
+      fit: cleanTokenValue(values.fit),
+      material: cleanTokenValue(values.material),
+      structure: cleanTokenValue(values.structure),
+      topWidth: sku.dims?.topWidth || values.topWidth || "",
+      sideLength: sku.dims?.sideLength || values.sideLength || "",
+      bottomWidth: sku.dims?.bottomWidth || values.bottomWidth || "",
+      weight: sku.dims?.weight || values.weight || "",
+    };
+
+    if (sku.pack) existing.packs.add(cleanTokenValue(sku.pack));
+    if (!existing.cupRange) {
+      existing.cupRange = sku.dims?.cupRange || extractFirstMatch((values.specList || sku.fit || ""), [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
+    }
+    if (!existing.fit) existing.fit = cleanTokenValue(values.fit);
+    if (!existing.material) existing.material = cleanTokenValue(values.material);
+    if (!existing.structure) existing.structure = cleanTokenValue(values.structure);
+    if (!existing.topWidth) existing.topWidth = sku.dims?.topWidth || values.topWidth || "";
+    if (!existing.sideLength) existing.sideLength = sku.dims?.sideLength || values.sideLength || "";
+    if (!existing.bottomWidth) existing.bottomWidth = sku.dims?.bottomWidth || values.bottomWidth || "";
+    if (!existing.weight) existing.weight = sku.dims?.weight || values.weight || "";
+    groups.set(groupKey, existing);
+  });
+
+  return Array.from(groups.values());
+}
+
+function renderProductParameters() {
+  const list = byId("productParamList");
+  if (!list) return;
+
+  const rows = productParameterRows();
+  list.innerHTML = rows.map((row) => {
+    const params = [
+      ["Cup Type", row.title],
+      ["Cup Range", row.cupRange],
+      ["Packaging", Array.from(row.packs).join(" / ")],
+      ["Compatible Use", row.fit],
+      ["Material", row.material],
+      ["Structure", row.structure],
+      ["Top Width", row.topWidth],
+      ["Side / Height", row.sideLength],
+      ["Bottom Width", row.bottomWidth],
+      ["Sheet Weight", row.weight],
+    ].filter(([, value]) => value && !/^\[[A-Z0-9_ ]+\]$/i.test(value));
+
+    return `
+      <article class="product-param-card">
+        <h3>${escapeHtml(row.shape || row.title)}</h3>
+        <dl>
+          ${params.map(([label, value]) => `
+            <div>
+              <dt>${escapeHtml(label)}</dt>
+              <dd>${escapeHtml(value)}</dd>
+            </div>
+          `).join("")}
+        </dl>
+      </article>
+    `;
+  }).join("");
 }
 
 function escapeHtml(value) {
@@ -625,7 +709,7 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     scene,
     feature1: sellingPoints.feature1,
     feature2: sellingPoints.feature2,
-    singleSpec: `[CURRENT_PRODUCT_SPEC: ${item.spec}${item.pack ? `, ${item.pack}` : packageCounts ? `, ${packageCounts}` : ""}]`,
+    singleSpec: `[CURRENT_SKU_SPEC: ${item.spec}${item.pack ? `, ${item.pack}` : packageCounts ? `, ${packageCounts}` : ""}]`,
     specList: `[SPEC_LIST: ${[item.spec, cupRange, item.pack || packageCounts, material, structure].filter(Boolean).join(" / ")}]`,
     variantList: `[VARIANT_LIST: ${normalizedVariants.map((variant) => `${variant.spec}${variant.pack ? ` ${variant.pack}` : ""}`).join(" / ")}]`,
     dimensionList: dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "",
@@ -658,14 +742,25 @@ function negativePrompt() {
 }
 
 function sizeInstruction(data) {
-  return !data.dimensionList
-    ? "No verified single-filter dimensions are provided. Do not add measurement arrows, size numbers, or placeholder dimensions. Show only [CURRENT_SKU_SPEC], [PACKAGING_COUNT], [MATERIAL], [STRUCTURE], and [COMPATIBLE_USE]."
-    : `Use only these verified dimension texts: ${data.dimensionList}.`;
+  if (data.dimensionList) {
+    return `Use only these verified dimension texts: ${data.dimensionList}.`;
+  }
+
+  const verifiedParams = [
+    ensureParameterToken("CURRENT_SKU_SPEC", data.singleSpec),
+    ensureParameterToken("PACKAGING_COUNT", data.packagingCount),
+    ensureParameterToken("MATERIAL", data.material),
+    ensureParameterToken("STRUCTURE", data.structure),
+    ensureParameterToken("COMPATIBLE_USE", data.fit),
+  ].filter(hasTokenContent);
+
+  return `No verified single-filter dimensions are provided. Do not add measurement arrows, size numbers, or placeholder dimensions. Show only these verified product parameter texts: ${verifiedParams.join(", ")}. Do not display bare placeholder names without values.`;
 }
 
 function promptFor(templateId, typeId, sku, data) {
   const negative = negativePrompt();
-  const commonRule = `Use only the placeholder product information already included in this prompt. If a parameter is blank or not provided, omit it completely. Do not borrow, infer, or invent any numbers.\n\nNegative prompt: ${negative}`;
+  const shortCopyRule = "Each feature description, benefit caption, headline, or summary phrase must be an English phrase of 3 to 5 words maximum, not a full sentence.";
+  const commonRule = `Use only the placeholder product information already included in this prompt. If a parameter is blank or not provided, omit it completely. Do not borrow, infer, or invent any numbers. ${shortCopyRule}\n\nNegative prompt: ${negative}`;
 
   const specPrompts = {
     "1": `Generate a premium Amazon hero image for one ${data.productName} based on the provided reference image. Combine a clean real-life ${data.scene} with a strong product focus. Show one large product as the dominant subject, preserving the true appearance, ${data.color}, ${data.structure}, and proportions from the reference image.\n\nThis image should clearly represent the selected specification: ${data.singleSpec}. Allow only a small amount of clean text for 2-3 verified key parameters, such as [SIZE_CODE], ${data.material}, and ${data.structure}. ${commonRule}`,
@@ -755,6 +850,7 @@ function renderPrompt() {
 }
 
 function renderAll() {
+  renderProductParameters();
   renderFacts();
   renderPrompt();
 }
