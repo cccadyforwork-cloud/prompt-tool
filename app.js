@@ -171,26 +171,18 @@ const templates = [
     ],
   },
   {
-    id: "summary",
-    name: "综合卖点模板",
-    description: "在参数与功能之间取平衡，突出 2 个主卖点并保留规格识别。",
-    imageTypes: [
-      { id: "1", name: "1. 白底主图", promptName: "1. White Background Main Image" },
-      { id: "2", name: "2. 主卖点 1 图", promptName: "2. Main Selling Point Image 1" },
-      { id: "3", name: "3. 主卖点 2 图", promptName: "3. Main Selling Point Image 2" },
-      { id: "4", name: "4. 规格参数图", promptName: "4. Specification Reference Image" },
-      { id: "5", name: "5. 多规格可选图", promptName: "5. Multiple Specification Options Image" },
-      { id: "6", name: "6. 使用步骤图", promptName: "6. Step-by-Step Usage Image" },
-      { id: "7", name: "7. 细节证明图", promptName: "7. Detail Proof Image" },
-      { id: "8", name: "8. 总卖点图", promptName: "8. Summary Infographic" },
-    ],
-  },
-  {
     id: "scene",
-    name: "场景展示模板（后期补入）",
-    description: "后续补入，暂不生成。",
-    imageTypes: [],
-    disabled: true,
+    name: "场景展示模板",
+    description: "围绕场景代入、顾虑拆解、证据证明和卖点收口生成 7 张图。",
+    imageTypes: [
+      { id: "1", name: "1. 主图 / 主场景图", promptName: "1. Main Scene Image" },
+      { id: "2", name: "2. 多场景 / 多用途图", promptName: "2. Multi-Scene Usage Image" },
+      { id: "3", name: "3. 纯产品结构图", promptName: "3. Product Structure Image" },
+      { id: "4", name: "4. 使用便利 / 贴合体验图", promptName: "4. Usage Convenience Image" },
+      { id: "5", name: "5. 舒适 / 面料 / 轻量图", promptName: "5. Comfort or Material Experience Image" },
+      { id: "6", name: "6. 核心功能证据图", promptName: "6. Feature Evidence Image" },
+      { id: "7", name: "7. 卖点总览图", promptName: "7. Feature Summary Image" },
+    ],
   },
 ];
 
@@ -786,18 +778,17 @@ function promptFor(templateId, typeId, sku, data) {
     "8": `Generate a clean Amazon summary image for ${data.productName} based on the provided reference image. Place the product in the center and summarize the product with only 4 short feature words around it: [SUMMARY_WORD_1] / [SUMMARY_WORD_2] / [SUMMARY_WORD_3] / [SUMMARY_WORD_4].\n\nKeep the layout very simple, airy, and easy to scan. ${commonRule}`,
   };
 
-  const summaryPrompts = {
-    "1": featurePrompts["1"],
-    "2": featurePrompts["6"],
-    "3": featurePrompts["7"],
-    "4": specPrompts["4"],
-    "5": specPrompts["5"],
-    "6": specPrompts["3B"],
-    "7": specPrompts["7"],
-    "8": specPrompts["8"],
+  const scenePrompts = {
+    "1": `Generate a premium Amazon main scene image for ${data.productName} based on the provided reference image. Show the product as the dominant subject in a clean, realistic ${data.scene}. Preserve the true product appearance, ${data.color}, ${data.structure}, material texture, and proportions from the reference image.\n\nThe product should be large, sharp, and easy to recognize, with the most distinctive visual features clearly shown: ${sku.shape} and ${data.structure}. Use realistic lighting, a clean commercial composition, and a premium e-commerce style. The scene should support product understanding without overpowering the product.\n\n${mainImageNoTextRule} Do not add unrelated props, extra accessories, unsupported functions, random logos, packaging, or misleading scale. Focus on one clear message only: product identity in its strongest real-use scene. ${commonRule}`,
+    "2": `Generate a premium Amazon multi-scene lifestyle infographic for ${data.productName} based on the provided reference image. Show 4 to 6 realistic and highly relevant use scenes in a clean grid or collage layout: [MULTI_SCENE_LIST: ${cleanTokenValue(data.scene) || "main use scene"} / ${cleanTokenValue(data.fit) || "compatible use"}].\n\nEach scene should show the product clearly and naturally in use, with accurate scale, material texture, color, and proportions. The scenes should communicate real usage width, not random decoration. Keep lighting, style, and product appearance consistent across all panels.\n\nUse minimal text only, such as one short headline: [SHORT_HEADLINE: Multi-Use Design]. Do not add unrelated scenes, dense paragraphs, complicated callout blocks, or unsupported functions. Focus on one clear message only: multiple real-life use scenarios. ${commonRule}`,
+    "3": `Generate a clean Amazon product structure image for ${data.productName} based on the provided reference image. Show the product on a white or very light neutral background with multiple accurate views, such as flat view, opened view, side view, edge view, bottom fold view, and close-up detail view if applicable.\n\nPreserve the exact product shape, structure, material texture, color, and proportions. Highlight the key visible structure: ${data.structure}. Use clear spacing, soft studio lighting, realistic rendering, and a premium catalog-style layout.\n\nDo not add lifestyle props, extra accessories, unsupported parts, exaggerated labels, or dense text. Focus on one clear message only: product structure and physical details. ${commonRule}`,
+    "4": `Generate a realistic Amazon usage convenience image for ${data.productName} based on the provided reference image. Show the product being used in a simple real-life action: [USE_ACTION]. Focus on one clear message only: [CONVENIENCE_BENEFIT].\n\nThe product should remain large, clear, and accurately shaped, with true material texture, color, and proportions. The scene should make the convenience easy to understand visually, without relying on long text. Use clean lighting, natural hand or body interaction if needed, and a premium e-commerce presentation.\n\nDo not mix multiple convenience claims in one image. Do not also explain material, comfort, technical performance, or multi-scene use in this image. Add only one short headline if needed: [SHORT_HEADLINE]. ${commonRule}`,
+    "5": `Generate a premium Amazon comfort or material experience image for ${data.productName} based on the provided reference image. Focus on one clear experience point only: [EXPERIENCE_BENEFIT]. Use a realistic close-up, touch interaction, wearing scene, carrying scene, or simple comparison-like visual that makes this experience easy to understand.\n\nKeep the product realistic, large, and visually dominant. Show the relevant material or form detail clearly: ${data.material}. Use soft realistic lighting, clean composition, and premium e-commerce styling.\n\nDo not combine lightweight, breathable, soft, flexible, and portable all in one image. Do not add dense text, excessive icons, or unsupported claims. Add only one short headline if needed: [SHORT_HEADLINE]. ${commonRule}`,
+    "6": `Generate a proof-focused Amazon feature evidence image for ${data.productName} based on the provided reference image. Focus on one core function only: ${data.feature1}. Show clear visual evidence that explains why the function works, such as ${data.structure} or [EVIDENCE_DETAIL].\n\nUse a realistic close-up, cutaway-style visual, action proof scene, or clean callout composition if helpful. The product must stay accurate in shape, material, color, and proportions. The evidence should be visible and easy to understand, not abstract or exaggerated.\n\nDo not create a function collage. Do not claim multiple performance points in one image. Do not use unrealistic effects, fake science graphics, unsupported certifications, or unverified technical claims. Focus on one clear message only: visual proof of the selected core function. ${commonRule}`,
+    "7": `Generate a clean Amazon feature summary image for ${data.productName} based on the provided reference image. Place the product as the visual center with a simple, premium layout and space for around 4 short selling points: ${data.feature1} / ${data.feature2} / [SUMMARY_POINT_3] / [SUMMARY_POINT_4].\n\nThe summary points should only revisit what has already been shown in previous images, such as main use scene, multi-use value, convenience, material, or core function evidence. Keep the design minimal, airy, and easy to scan.\n\nDo not overcrowd the page, do not add long paragraphs, and do not introduce many new claims. Use a white or light neutral background, realistic product rendering, clean spacing, and short labels only. Focus on one clear message only: quick final product understanding before purchase. ${commonRule}`,
   };
 
-  return ({ spec: specPrompts, feature: featurePrompts, summary: summaryPrompts }[templateId] || specPrompts)[typeId];
+  return ({ spec: specPrompts, feature: featurePrompts, scene: scenePrompts }[templateId] || specPrompts)[typeId];
 }
 
 function renderFacts() {
