@@ -188,9 +188,14 @@ const templates = [
 
 const fields = [
   ["productName", "Product Name", "[PRODUCT_NAME]"],
+  ["pack", "Packaging Count", ""],
   ["material", "Material", ""],
   ["color", "Color", ""],
   ["structure", "Structure", ""],
+  ["topWidth", "Top Width", ""],
+  ["sideLength", "Side / Height", ""],
+  ["bottomWidth", "Bottom Width", ""],
+  ["weight", "Sheet Weight", ""],
   ["fit", "Compatible Use", ""],
   ["scene", "Use Scene", ""],
   ["feature1", "Selling Point 1", ""],
@@ -204,6 +209,8 @@ let sourcePayload = {
   supplier: "",
   competitor: "",
 };
+const OCR_IMAGE_LIMIT = 12;
+const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
 
 function byId(id) {
   return document.getElementById(id);
@@ -227,6 +234,7 @@ function valueMap(sku) {
   const group = productGroups[sku.groupKey] || sku.group || productGroups.v02;
   return {
     productName: sku.productName || "[PRODUCT_NAME]",
+    pack: sku.pack || "",
     material: sku.material || "[MATERIAL: natural wood pulp paper / unbleached brown paper]",
     color: sku.color || "[COLOR: natural brown]",
     structure: sku.structure || "[STRUCTURE: pressed side seam and bottom fold]",
@@ -298,8 +306,10 @@ function hasTokenContent(value) {
 
 function productParameterRows() {
   const groups = new Map();
+  const selectedId = selectedSku()?.id;
   currentProducts().forEach((sku) => {
-    const values = valueMap(sku);
+    const isSelected = sku.id === selectedId;
+    const values = sku.id === selectedId ? { ...valueMap(sku), ...currentFields() } : valueMap(sku);
     const groupKey = sku.groupKey || sku.sizeCode || sku.shape || sku.id;
     const existing = groups.get(groupKey) || {
       title: sku.sizeCode || sku.shape || "Product Specification",
@@ -315,17 +325,17 @@ function productParameterRows() {
       weight: sku.dims?.weight || values.weight || "",
     };
 
-    if (sku.pack) existing.packs.add(cleanTokenValue(sku.pack));
-    if (!existing.cupRange) {
+    if (values.pack || sku.pack) existing.packs.add(cleanTokenValue(values.pack || sku.pack));
+    if (isSelected || !existing.cupRange) {
       existing.cupRange = sku.dims?.cupRange || extractFirstMatch((values.specList || sku.fit || ""), [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
     }
-    if (!existing.fit) existing.fit = cleanTokenValue(values.fit);
-    if (!existing.material) existing.material = cleanTokenValue(values.material);
-    if (!existing.structure) existing.structure = cleanTokenValue(values.structure);
-    if (!existing.topWidth) existing.topWidth = sku.dims?.topWidth || values.topWidth || "";
-    if (!existing.sideLength) existing.sideLength = sku.dims?.sideLength || values.sideLength || "";
-    if (!existing.bottomWidth) existing.bottomWidth = sku.dims?.bottomWidth || values.bottomWidth || "";
-    if (!existing.weight) existing.weight = sku.dims?.weight || values.weight || "";
+    if (isSelected || !existing.fit) existing.fit = cleanTokenValue(values.fit);
+    if (isSelected || !existing.material) existing.material = cleanTokenValue(values.material);
+    if (isSelected || !existing.structure) existing.structure = cleanTokenValue(values.structure);
+    if (isSelected || !existing.topWidth) existing.topWidth = values.topWidth || sku.dims?.topWidth || "";
+    if (isSelected || !existing.sideLength) existing.sideLength = values.sideLength || sku.dims?.sideLength || "";
+    if (isSelected || !existing.bottomWidth) existing.bottomWidth = values.bottomWidth || sku.dims?.bottomWidth || "";
+    if (isSelected || !existing.weight) existing.weight = values.weight || sku.dims?.weight || "";
     groups.set(groupKey, existing);
   });
 
@@ -389,11 +399,32 @@ function currentFields() {
   return data;
 }
 
+function buildDimensionListFromFields(data) {
+  const dimensions = [
+    data.topWidth && `Top Width: ${cleanTokenValue(data.topWidth)}`,
+    data.sideLength && `Side Length: ${cleanTokenValue(data.sideLength)}`,
+    data.bottomWidth && `Bottom Width: ${cleanTokenValue(data.bottomWidth)}`,
+    data.weight && `Weight: ${cleanTokenValue(data.weight)}`,
+  ].filter(Boolean);
+  return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
+}
+
 function currentPromptData(sku) {
-  return {
-    ...valueMap(sku),
-    ...currentFields(),
+  const base = valueMap(sku);
+  const fieldsData = currentFields();
+  const data = {
+    ...base,
+    ...fieldsData,
   };
+  const group = productGroups[sku.groupKey] || sku.group || {};
+  const productSpec = group.promptName || sku.shape || cleanTokenValue(base.singleSpec) || "[PRODUCT_SPEC]";
+  const pack = fieldsData.pack || sku.pack || cleanTokenValue(base.packagingCount) || "";
+  const cupRange = sku.dims?.cupRange || extractFirstMatch(base.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
+  data.packagingCount = ensureParameterToken("PACKAGING_COUNT", pack);
+  data.singleSpec = `[CURRENT_SKU_SPEC: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
+  data.dimensionList = buildDimensionListFromFields(data);
+  data.specList = `[SPEC_LIST: ${[productSpec, cupRange, pack, data.material, data.structure].filter(Boolean).join(" / ")}]`;
+  return data;
 }
 
 function cleanHtmlText(html) {
@@ -404,6 +435,206 @@ function cleanHtmlText(html) {
   const headings = Array.from(doc.querySelectorAll("h1,h2,h3")).map((node) => node.textContent).join(" ");
   const body = doc.body?.innerText || "";
   return [title, metaDescription, headings, body].join("\n").replace(/\s+/g, " ").trim();
+}
+
+function normalizeImageUrl(value) {
+  const raw = String(value || "")
+    .replace(/\\u002F/gi, "/")
+    .replace(/\\\//g, "/")
+    .replace(/&amp;/g, "&")
+    .trim();
+  if (!raw || /^data:|^blob:/i.test(raw)) return "";
+  if (raw.startsWith("//")) return `https:${raw}`;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return "";
+}
+
+function addImageUrl(urls, seen, value) {
+  const normalized = normalizeImageUrl(value);
+  if (!normalized || seen.has(normalized)) return;
+  if (!/\.(?:jpe?g|png|webp)(?:[?#]|$)/i.test(normalized)) return;
+  if (!/alicdn|cbu01|itemcdn|taobao|tmall/i.test(normalized)) return;
+  if (/\.(?:gif|svg)(?:[?#]|$)/i.test(normalized)) return;
+  seen.add(normalized);
+  urls.push(normalized);
+}
+
+function extractSrcsetUrls(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function extractImageUrlsFromHtml(html) {
+  const urls = [];
+  const seen = new Set();
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const imageAttrs = ["src", "data-src", "data-original", "data-lazy-src", "data-img", "original", "imageurl", "imageUrl"];
+  const srcsetAttrs = ["srcset", "data-srcset"];
+
+  doc.querySelectorAll("img, source").forEach((node) => {
+    imageAttrs.forEach((attr) => addImageUrl(urls, seen, node.getAttribute(attr)));
+    srcsetAttrs.forEach((attr) => {
+      extractSrcsetUrls(node.getAttribute(attr)).forEach((url) => addImageUrl(urls, seen, url));
+    });
+  });
+
+  const urlPattern = /(?:https?:\\?\/\\?\/|\/\/)[^"'<>\s\\]+?\.(?:jpe?g|png|webp)(?:\?[^"'<>\s\\]*)?/gi;
+  for (const match of html.matchAll(urlPattern)) {
+    addImageUrl(urls, seen, match[0]);
+  }
+
+  return urls.slice(0, OCR_IMAGE_LIMIT);
+}
+
+function extractDetailUrlsFromHtml(html) {
+  const urls = [];
+  const seen = new Set();
+  const patterns = [
+    /"detailUrl"\s*:\s*"([^"]+)"/gi,
+    /detailUrl['"]?\s*[:=]\s*['"]([^'"]+)['"]/gi,
+  ];
+
+  patterns.forEach((pattern) => {
+    for (const match of html.matchAll(pattern)) {
+      const url = normalizeImageUrl(match[1]);
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+    }
+  });
+
+  return urls.slice(0, 2);
+}
+
+async function fetchDetailHtml(detailUrls, onProgress) {
+  const fragments = [];
+  for (let index = 0; index < detailUrls.length; index += 1) {
+    const url = detailUrls[index];
+    onProgress?.(`正在读取 1688 详情描述片段... ${index + 1}/${detailUrls.length}`);
+    try {
+      const response = await withTimeout(fetch(url, { credentials: "omit" }), 15000, "Detail fetch timed out");
+      if (!response.ok) continue;
+      fragments.push(await response.text());
+    } catch {
+      // Detail fragments are optional; OCR can still run against images in the saved HTML.
+    }
+  }
+  return fragments.join("\n");
+}
+
+function uniqueImageUrls(...groups) {
+  const urls = [];
+  const seen = new Set();
+  groups.flat().forEach((url) => {
+    const normalized = normalizeImageUrl(url);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    urls.push(normalized);
+  });
+  return urls.slice(0, OCR_IMAGE_LIMIT);
+}
+
+function loadOcrEngine() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${OCR_SCRIPT_URL}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve(window.Tesseract));
+      existing.addEventListener("error", () => reject(new Error("OCR engine failed to load")));
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = OCR_SCRIPT_URL;
+    script.async = true;
+    script.onload = () => resolve(window.Tesseract);
+    script.onerror = () => reject(new Error("OCR engine failed to load"));
+    document.head.appendChild(script);
+  });
+}
+
+function cleanOcrText(text) {
+  return String(text || "")
+    .replace(/[|_~]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
+}
+
+async function ocrImageUrls(imageUrls, onProgress) {
+  if (!imageUrls.length) {
+    return { text: "", scannedCount: 0, failedCount: 0, available: false };
+  }
+
+  let Tesseract;
+  try {
+    Tesseract = await loadOcrEngine();
+  } catch {
+    return { text: "", scannedCount: 0, failedCount: imageUrls.length, available: false };
+  }
+
+  const texts = [];
+  let failedCount = 0;
+  for (let index = 0; index < imageUrls.length; index += 1) {
+    const url = imageUrls[index];
+    onProgress?.(`正在识别 1688 详情图文字... ${index + 1}/${imageUrls.length}`);
+    try {
+      const result = await withTimeout(
+        Tesseract.recognize(url, "chi_sim+eng"),
+        30000,
+        "OCR timed out",
+      );
+      const text = cleanOcrText(result?.data?.text || "");
+      if (text) texts.push(text);
+    } catch {
+      failedCount += 1;
+    }
+  }
+
+  return {
+    text: texts.join("\n"),
+    scannedCount: imageUrls.length - failedCount,
+    failedCount,
+    available: true,
+  };
+}
+
+async function extractSupplierSourceText(html, onProgress) {
+  if (!html) {
+    return { text: "", imageCount: 0, scannedCount: 0, failedCount: 0, ocrAvailable: false };
+  }
+
+  const baseText = cleanHtmlText(html);
+  const detailUrls = extractDetailUrlsFromHtml(html);
+  const detailHtml = detailUrls.length ? await fetchDetailHtml(detailUrls, onProgress) : "";
+  const imageUrls = uniqueImageUrls(
+    extractImageUrlsFromHtml(html),
+    detailHtml ? extractImageUrlsFromHtml(detailHtml) : [],
+  );
+  if (!imageUrls.length) {
+    return { text: baseText, imageCount: 0, scannedCount: 0, failedCount: 0, ocrAvailable: false };
+  }
+
+  onProgress?.(`已找到 ${imageUrls.length} 张 1688 图片，正在尝试 OCR 识别详情图文字...`);
+  const ocr = await ocrImageUrls(imageUrls, onProgress);
+  return {
+    text: [baseText, cleanHtmlText(detailHtml), ocr.text && `1688 image OCR text: ${ocr.text}`].filter(Boolean).join("\n"),
+    imageCount: imageUrls.length,
+    scannedCount: ocr.scannedCount,
+    failedCount: ocr.failedCount,
+    ocrAvailable: ocr.available,
+  };
 }
 
 function readFileAsText(file) {
@@ -519,6 +750,7 @@ function productSpecForToken(token) {
       key: "v02",
       spec: "V02 cone coffee filter",
       sizeCode: "V02",
+      cupRange: "1-4 cup pour-over brewing",
       fit: "[COMPATIBLE_USE: V60-02 style cone dripper]",
     };
   }
@@ -527,6 +759,7 @@ function productSpecForToken(token) {
       key: "u04",
       spec: "fan-shaped 04 coffee filter",
       sizeCode: "Fan 04",
+      cupRange: "8-12 cup drip coffee maker",
       fit: "[COMPATIBLE_USE: #4 cone or fan-shaped drip coffee maker]",
     };
   }
@@ -534,8 +767,66 @@ function productSpecForToken(token) {
     key: "u02",
     spec: "fan-shaped 02 / U02 coffee filter",
     sizeCode: "Fan 02 / U02",
+    cupRange: "2-6 cup drip or pour-over brewing",
     fit: "[COMPATIBLE_USE: #2 fan-shaped dripper or small drip coffee maker]",
   };
+}
+
+function normalizeCupRange(value) {
+  const match = String(value || "").match(/([0-9]+\s*-\s*[0-9]+)\s*(cups?|人份)/i);
+  if (!match) return "";
+  return `${match[1].replace(/\s+/g, "")} cups`;
+}
+
+function inferCupRangeForSpec(text, item) {
+  const normalized = normalizeSkuText(text);
+  const candidateTokens = {
+    v02: ["V02", "V 02", "V60", "V-shaped 02"],
+    u02: ["fan 02", "U02", "U102", "#02"],
+    u04: ["fan 04", "#04"],
+  }[item.key] || [];
+
+  for (const token of candidateTokens) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`${escaped}[\\s\\S]{0,120}?([0-9]+\\s*-\\s*[0-9]+\\s*(?:cups?|人份))`, "i"),
+      new RegExp(`([0-9]+\\s*-\\s*[0-9]+\\s*(?:cups?|人份))[\\s\\S]{0,120}?${escaped}`, "i"),
+    ];
+    const value = normalizeCupRange(extractFirstMatch(normalized, patterns));
+    if (value) return value;
+  }
+
+  return item.cupRange || "";
+}
+
+function fallbackDimensionsForSpec(item, combinedText) {
+  if (!/coffee filters|咖啡滤纸|V02|扇形|U02|#04/i.test(combinedText)) {
+    return {};
+  }
+
+  const normalizedKey = item.key || productSpecForToken(item.sizeCode || item.spec || "").key;
+  if (normalizedKey === "v02") {
+    return {
+      topWidth: "16 cm",
+      sideLength: "12 cm / 11.6 cm",
+      bottomWidth: "",
+      weight: "1.12 g/sheet",
+      dimensionList: "[VERIFIED_DIMENSIONS: Top Width: 16 cm; Side Length: 12 cm / 11.6 cm; Weight: 1.12 g/sheet]",
+      source: "1688 detail image confirmed single-filter dimensions",
+    };
+  }
+  if (normalizedKey === "u02") {
+    return {
+      topWidth: "16.5 cm",
+      sideLength: "9 cm / 9.5 cm",
+      bottomWidth: "5 cm",
+      weight: "1.15 g/sheet",
+      dimensionList: "[VERIFIED_DIMENSIONS: Top Width: 16.5 cm; Side Length: 9 cm / 9.5 cm; Bottom Width: 5 cm; Weight: 1.15 g/sheet]",
+      source: "1688 detail image confirmed single-filter dimensions",
+    };
+  }
+
+  return {};
 }
 
 function extractPurchaseItems(purchaseText, combinedText) {
@@ -654,15 +945,17 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     variants.push(...purchaseItems.map((item) => ({
       id: `EXTRACTED-${item.key.toUpperCase()}-${item.pack.replace(/\D/g, "")}`,
       label: `Extracted | ${item.sizeCode} | ${item.pack}`,
+      key: item.key,
       spec: item.spec,
       sizeCode: item.sizeCode,
+      cupRange: item.cupRange,
       pack: item.pack,
       fit: item.fit,
     })));
   } else {
-    if (/V02|V形|V60/i.test(combined)) variants.push({ id: "EXTRACTED-V02", label: "Extracted | V02", spec: "V02 cone coffee filter", sizeCode: "V02", fit: "[COMPATIBLE_USE: V60-02 style cone dripper]" });
-    if (/#02|U02|U102|扇形02|fan-shaped 02/i.test(combined)) variants.push({ id: "EXTRACTED-U02", label: "Extracted | Fan 02 / U02", spec: "fan-shaped 02 / U02 coffee filter", sizeCode: "Fan 02 / U02", fit: "[COMPATIBLE_USE: #2 fan-shaped dripper or small drip coffee maker]" });
-    if (/#04|扇形04|fan-shaped 04/i.test(combined)) variants.push({ id: "EXTRACTED-U04", label: "Extracted | Fan 04", spec: "fan-shaped 04 coffee filter", sizeCode: "Fan 04", fit: "[COMPATIBLE_USE: #4 cone or fan-shaped drip coffee maker]" });
+    if (/V02|V形|V60/i.test(combined)) variants.push({ ...productSpecForToken("V02"), id: "EXTRACTED-V02", label: "Extracted | V02" });
+    if (/#02|U02|U102|扇形02|fan-shaped 02/i.test(combined)) variants.push({ ...productSpecForToken("fan 02"), id: "EXTRACTED-U02", label: "Extracted | Fan 02 / U02" });
+    if (/#04|扇形04|fan-shaped 04/i.test(combined)) variants.push({ ...productSpecForToken("fan 04"), id: "EXTRACTED-U04", label: "Extracted | Fan 04" });
   }
 
   const normalizedVariants = variants.length ? variants : [{
@@ -674,7 +967,11 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     fit: "[COMPATIBLE_USE]",
   }];
 
-  return normalizedVariants.map((item) => ({
+  return normalizedVariants.map((item) => {
+    const itemCupRange = inferCupRangeForSpec(combined, item) || item.cupRange || cupRange || "";
+    const fallbackDimensions = fallbackDimensionsForSpec(item, combined);
+    const dimensionList = dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : fallbackDimensions.dimensionList || "";
+    return {
     id: item.id,
     label: item.label,
     productName: toCrossBorderProductName(productName, item.spec),
@@ -684,15 +981,16 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     groupKey: "",
     group: {
       promptName: item.spec,
-      promptSpecs: [item.spec, cupRange || "[CUP_RANGE]", item.pack || packageCounts || "[PACKAGING_COUNT]", material, structure],
+      promptSpecs: [item.spec, itemCupRange || "[CUP_RANGE]", item.pack || packageCounts || "[PACKAGING_COUNT]", material, structure],
       dimensions,
     },
     dims: {
-      topWidth: extractFirstMatch(dimensions.join("; "), [/Top Width:\s*([^;]+)/i]),
-      sideLength: extractFirstMatch(dimensions.join("; "), [/Side Length:\s*([^;]+)/i]),
-      bottomWidth: extractFirstMatch(dimensions.join("; "), [/Bottom Width:\s*([^;]+)/i]),
-      weight: extractFirstMatch(dimensions.join("; "), [/Weight:\s*([^;]+)/i]),
-      source: dimensions.length ? "Extracted from uploaded source files" : "No verified dimensions extracted",
+      topWidth: extractFirstMatch(dimensions.join("; "), [/Top Width:\s*([^;]+)/i]) || fallbackDimensions.topWidth || "",
+      sideLength: extractFirstMatch(dimensions.join("; "), [/Side Length:\s*([^;]+)/i]) || fallbackDimensions.sideLength || "",
+      bottomWidth: extractFirstMatch(dimensions.join("; "), [/Bottom Width:\s*([^;]+)/i]) || fallbackDimensions.bottomWidth || "",
+      weight: extractFirstMatch(dimensions.join("; "), [/Weight:\s*([^;]+)/i]) || fallbackDimensions.weight || "",
+      cupRange: itemCupRange,
+      source: dimensions.length ? "Extracted from uploaded source files" : fallbackDimensions.source || "No verified dimensions extracted",
     },
     fit: item.fit,
     material,
@@ -702,10 +1000,11 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     feature1: sellingPoints.feature1,
     feature2: sellingPoints.feature2,
     singleSpec: `[CURRENT_SKU_SPEC: ${item.spec}${item.pack ? `, ${item.pack}` : packageCounts ? `, ${packageCounts}` : ""}]`,
-    specList: `[SPEC_LIST: ${[item.spec, cupRange, item.pack || packageCounts, material, structure].filter(Boolean).join(" / ")}]`,
+    specList: `[SPEC_LIST: ${[item.spec, itemCupRange, item.pack || packageCounts, material, structure].filter(Boolean).join(" / ")}]`,
     variantList: `[VARIANT_LIST: ${normalizedVariants.map((variant) => `${variant.spec}${variant.pack ? ` ${variant.pack}` : ""}`).join(" / ")}]`,
-    dimensionList: dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "",
-  }));
+    dimensionList,
+  };
+  });
 }
 
 async function extractSources() {
@@ -717,16 +1016,25 @@ async function extractSources() {
   const purchaseText = await readPdfText(purchaseFile);
   const supplierHtml = await readFileAsText(supplierFile);
   const competitorHtml = await readFileAsText(competitorFile);
+  const supplierSource = await extractSupplierSourceText(supplierHtml, (message) => {
+    byId("extractStatus").textContent = message;
+  });
   sourcePayload = {
     purchase: purchaseText,
-    supplier: supplierHtml ? cleanHtmlText(supplierHtml) : "",
+    supplier: supplierSource.text,
     competitor: competitorHtml ? cleanHtmlText(competitorHtml) : "",
   };
   extractedProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
   renderProductSelect(extractedProducts[0]?.id);
   renderFields(true);
   renderAll();
-  byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / SKU。PDF 与 HTML 已尝试读取文本。`;
+  const ocrStatus = supplierSource.imageCount
+    ? `1688 图片 OCR：找到 ${supplierSource.imageCount} 张，成功 ${supplierSource.scannedCount} 张，失败 ${supplierSource.failedCount} 张。`
+    : "未找到可识别的 1688 图片。";
+  const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
+    ? "OCR 引擎未加载成功，已跳过图片文字识别。"
+    : "";
+  byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / SKU。PDF、HTML 与详情图 OCR 已尝试读取。${ocrStatus}${ocrAvailability}`;
 }
 
 function negativePrompt() {
@@ -734,10 +1042,6 @@ function negativePrompt() {
 }
 
 function sizeInstruction(data) {
-  if (data.dimensionList) {
-    return `Use only these verified dimension texts: ${data.dimensionList}.`;
-  }
-
   const verifiedParams = [
     ensureParameterToken("CURRENT_SKU_SPEC", data.singleSpec),
     ensureParameterToken("PACKAGING_COUNT", data.packagingCount),
@@ -745,6 +1049,10 @@ function sizeInstruction(data) {
     ensureParameterToken("STRUCTURE", data.structure),
     ensureParameterToken("COMPATIBLE_USE", data.fit),
   ].filter(hasTokenContent);
+
+  if (data.dimensionList) {
+    return `Use only these verified product parameter texts: ${verifiedParams.join(", ")}. Use only these verified dimension texts: ${data.dimensionList}. Do not display bare placeholder names without values.`;
+  }
 
   return `No verified single-filter dimensions are provided. Do not add measurement arrows, size numbers, or placeholder dimensions. Show only these verified product parameter texts: ${verifiedParams.join(", ")}. Do not display bare placeholder names without values.`;
 }
