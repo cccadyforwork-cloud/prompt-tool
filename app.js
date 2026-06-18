@@ -152,7 +152,7 @@ const templates = [
   {
     id: "spec",
     name: "参数规格模板",
-    description: "围绕规格、包装数量、材质、结构、适配和已确认尺寸生成 8 张图。",
+    description: "围绕规格、包装数量、适配、杯量和已确认尺寸生成 8 张图。",
     imageTypes,
   },
   {
@@ -177,7 +177,7 @@ const templates = [
     imageTypes: [
       { id: "1", name: "1. 主图 / 主场景图", promptName: "1. Main Scene Image" },
       { id: "2", name: "2. 多场景 / 多用途图", promptName: "2. Multi-Scene Usage Image" },
-      { id: "3", name: "3. 纯产品结构图", promptName: "3. Product Structure Image" },
+      { id: "3", name: "3. 产品展示 / 细节图", promptName: "3. Product Display Detail Image" },
       { id: "4", name: "4. 使用便利 / 贴合体验图", promptName: "4. Usage Convenience Image" },
       { id: "5", name: "5. 舒适 / 面料 / 轻量图", promptName: "5. Comfort or Material Experience Image" },
       { id: "6", name: "6. 核心功能证据图", promptName: "6. Feature Evidence Image" },
@@ -191,7 +191,6 @@ const fields = [
   ["pack", "Packaging Count", ""],
   ["material", "Material", ""],
   ["color", "Color", ""],
-  ["structure", "Structure", ""],
   ["topWidth", "Top Width", ""],
   ["sideLength", "Side / Height", ""],
   ["bottomWidth", "Bottom Width", ""],
@@ -209,6 +208,8 @@ let sourcePayload = {
   supplier: "",
   competitor: "",
 };
+let fieldOverrides = {};
+let fieldSnapshot = "";
 const OCR_IMAGE_LIMIT = 12;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
 
@@ -230,22 +231,29 @@ function selectedTemplate() {
   return selected.disabled ? templates[0] : selected;
 }
 
+function defaultProductName(sku) {
+  return promptValue(sku.productName, "")
+    || promptValue(sku.shape, "")
+    || promptValue(sku.sourceName, "")
+    || "[PRODUCT_NAME]";
+}
+
 function valueMap(sku) {
   const group = productGroups[sku.groupKey] || sku.group || productGroups.v02;
   return {
-    productName: sku.productName || "[PRODUCT_NAME]",
-    pack: sku.pack || "",
-    material: sku.material || "[MATERIAL: natural wood pulp paper / unbleached brown paper]",
-    color: sku.color || "[COLOR: natural brown]",
-    structure: sku.structure || "[STRUCTURE: pressed side seam and bottom fold]",
+    productName: cleanFieldDisplayValue(defaultProductName(sku)),
+    pack: cleanFieldDisplayValue(sku.pack || ""),
+    material: cleanFieldDisplayValue(sku.material || "[MATERIAL: natural wood pulp paper / unbleached brown paper]"),
+    color: cleanFieldDisplayValue(sku.color || "[COLOR: natural brown]"),
+    structure: cleanFieldDisplayValue(sku.structure || "[STRUCTURE: pressed side seam and bottom fold]"),
     topWidth: sku.dims?.topWidth || "",
     sideLength: sku.dims?.sideLength || "",
     bottomWidth: sku.dims?.bottomWidth || "",
     weight: sku.dims?.weight || "",
-    fit: sku.fit || "[COMPATIBLE_USE]",
-    scene: sku.scene || "[USE_SCENE]",
-    feature1: "[SELLING_POINT_1: natural unbleached wood pulp paper]",
-    feature2: "[SELLING_POINT_2: reinforced smooth filtration]",
+    fit: cleanFieldDisplayValue(sku.fit || "[COMPATIBLE_USE]"),
+    scene: cleanFieldDisplayValue(sku.scene || "[USE_SCENE]"),
+    feature1: cleanFieldDisplayValue(sku.feature1 || "[SELLING_POINT_1: natural unbleached wood pulp paper]"),
+    feature2: cleanFieldDisplayValue(sku.feature2 || "[SELLING_POINT_2: reinforced smooth filtration]"),
     packagingCount: ensureParameterToken("PACKAGING_COUNT", sku.pack || ""),
     singleSpec: sku.singleSpec || `[CURRENT_SKU_SPEC: ${group.promptName || "[PRODUCT_SPEC]"}, ${sku.pack || "[PACKAGING_COUNT]"}]`,
     specList: sku.specList || `[SPEC_LIST: ${(group.promptSpecs || ["[SPECIFICATION_LIST]"]).join(" / ")}]`,
@@ -274,16 +282,22 @@ function renderFields(reset = false) {
   const sku = selectedSku();
   const values = valueMap(sku);
   const fieldList = byId("fieldList");
+  if (reset) {
+    fieldOverrides = {};
+  }
   fieldList.innerHTML = fields.map(([key, label, fallback]) => {
-    const value = reset ? (values[key] || fallback) : (byId(`field-${key}`)?.value || values[key] || fallback);
+    const value = reset ? (values[key] || fallback) : (byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? values[key] ?? fallback);
+    const displayValue = cleanFieldDisplayValue(value);
     return `
       <div>
         <label for="field-${key}">${label}</label>
-        <input id="field-${key}" data-key="${key}" value="${escapeHtml(value)}">
+        <input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">
       </div>
     `;
   }).join("");
-  fieldList.querySelectorAll("input").forEach((input) => input.addEventListener("input", renderAll));
+  fieldList.querySelectorAll("input").forEach((input) => {
+    ["input", "change"].forEach((eventName) => input.addEventListener(eventName, handleFieldInput));
+  });
 }
 
 function cleanTokenValue(value) {
@@ -291,6 +305,12 @@ function cleanTokenValue(value) {
     .replace(/^\[[A-Z0-9_ ]+:?\s*/i, "")
     .replace(/\]$/g, "")
     .trim();
+}
+
+function cleanFieldDisplayValue(value) {
+  const raw = String(value || "").trim();
+  if (/^\[[A-Z0-9_ ]+\]$/i.test(raw)) return "";
+  return cleanTokenValue(raw);
 }
 
 function ensureParameterToken(name, value) {
@@ -314,24 +334,20 @@ function productParameterRows() {
     const existing = groups.get(groupKey) || {
       title: sku.sizeCode || sku.shape || "Product Specification",
       shape: sku.shape || cleanTokenValue(values.singleSpec),
-      packs: new Set(),
       cupRange: "",
       fit: cleanTokenValue(values.fit),
       material: cleanTokenValue(values.material),
-      structure: cleanTokenValue(values.structure),
       topWidth: sku.dims?.topWidth || values.topWidth || "",
       sideLength: sku.dims?.sideLength || values.sideLength || "",
       bottomWidth: sku.dims?.bottomWidth || values.bottomWidth || "",
       weight: sku.dims?.weight || values.weight || "",
     };
 
-    if (values.pack || sku.pack) existing.packs.add(cleanTokenValue(values.pack || sku.pack));
     if (isSelected || !existing.cupRange) {
       existing.cupRange = sku.dims?.cupRange || extractFirstMatch((values.specList || sku.fit || ""), [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
     }
     if (isSelected || !existing.fit) existing.fit = cleanTokenValue(values.fit);
     if (isSelected || !existing.material) existing.material = cleanTokenValue(values.material);
-    if (isSelected || !existing.structure) existing.structure = cleanTokenValue(values.structure);
     if (isSelected || !existing.topWidth) existing.topWidth = values.topWidth || sku.dims?.topWidth || "";
     if (isSelected || !existing.sideLength) existing.sideLength = values.sideLength || sku.dims?.sideLength || "";
     if (isSelected || !existing.bottomWidth) existing.bottomWidth = values.bottomWidth || sku.dims?.bottomWidth || "";
@@ -351,10 +367,8 @@ function renderProductParameters() {
     const params = [
       ["Cup Type", row.title],
       ["Cup Range", row.cupRange],
-      ["Packaging", Array.from(row.packs).join(" / ")],
       ["Compatible Use", row.fit],
       ["Material", row.material],
-      ["Structure", row.structure],
       ["Top Width", row.topWidth],
       ["Side / Height", row.sideLength],
       ["Bottom Width", row.bottomWidth],
@@ -387,16 +401,177 @@ function escapeHtml(value) {
   }[char]));
 }
 
-function highlightPlaceholders(text) {
-  return escapeHtml(text).replace(/(\[[^\]\n]+\])/g, '<span class="placeholder-token">$1</span>');
+function highlightPromptVariables(text, facts, typeId = "") {
+  const escapedText = escapeHtml(text);
+  const escapePattern = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sizeReferenceValues = [
+    facts.productName,
+    facts.cupType,
+    facts.pack,
+    facts.cupRange,
+    facts.fit,
+    facts.dimensions,
+  ];
+  const defaultValues = [
+    facts.productName,
+    facts.selectedSpec,
+    facts.pack,
+    facts.material,
+    facts.color,
+    facts.fit,
+    facts.scene,
+    facts.feature1,
+    facts.feature2,
+    facts.dimensions,
+  ];
+  const values = (typeId === "4" ? sizeReferenceValues : defaultValues)
+    .filter(Boolean)
+    .map((value) => String(value).trim())
+    .filter((value) => value.length >= 3)
+    .sort((a, b) => b.length - a.length);
+
+  const seen = new Set();
+  const patterns = values.map((rawValue) => {
+    const escapedValue = escapeHtml(rawValue);
+    const escapedBracketValue = escapeHtml(bracketValue(rawValue));
+    const key = escapedValue.toLowerCase();
+    if (seen.has(key)) return "";
+    seen.add(key);
+    return `${escapePattern(escapedBracketValue)}|${escapePattern(escapedValue)}`;
+  }).filter(Boolean);
+
+  if (!patterns.length) return escapedText;
+
+  return escapedText.replace(new RegExp(patterns.join("|"), "g"), (match) => `<span class="variable-token">◆ ${match}</span>`);
+}
+
+function bracketValue(value) {
+  const clean = String(value || "").trim();
+  return clean ? `[${clean}]` : "";
+}
+
+function bracketPromptVariables(text, facts, typeId = "") {
+  const sizeReferenceValues = [
+    facts.productName,
+    facts.cupType,
+    facts.pack,
+    facts.cupRange,
+    facts.fit,
+    facts.dimensions,
+  ];
+  const defaultValues = [
+    facts.productName,
+    facts.selectedSpec,
+    facts.pack,
+    facts.material,
+    facts.color,
+    facts.fit,
+    facts.scene,
+    facts.feature1,
+    facts.feature2,
+    facts.variants,
+    facts.specs,
+    facts.dimensions,
+  ];
+  const values = (typeId === "4" ? sizeReferenceValues : defaultValues)
+    .filter(Boolean)
+    .map((value) => String(value).trim())
+    .filter((value) => value.length >= 3)
+    .sort((a, b) => b.length - a.length);
+  const seen = new Set();
+  let bracketed = text;
+  values.forEach((value) => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    bracketed = bracketed.replace(new RegExp(`(^|[^\\[])${escaped}(?!\\])`, "g"), (_, prefix) => `${prefix}${bracketValue(value)}`);
+  });
+  return bracketed;
+}
+
+function readFieldValue(key) {
+  const input = byId(`field-${key}`);
+  return cleanFieldDisplayValue(input ? input.value : fieldOverrides[key] ?? "");
+}
+
+function captureFieldOverrides() {
+  fields.forEach(([key]) => {
+    const input = byId(`field-${key}`);
+    if (input) fieldOverrides[key] = cleanFieldDisplayValue(input.value);
+  });
 }
 
 function currentFields() {
+  captureFieldOverrides();
   const data = {};
   fields.forEach(([key]) => {
-    data[key] = byId(`field-${key}`)?.value || "";
+    data[key] = fieldOverrides[key] ?? readFieldValue(key);
   });
   return data;
+}
+
+function currentFieldSignature() {
+  return fields.map(([key]) => `${key}:${readFieldValue(key)}`).join("|");
+}
+
+function handleFieldInput(event) {
+  const key = event.currentTarget?.dataset?.key;
+  if (key) {
+    fieldOverrides[key] = event.currentTarget.value;
+  }
+  captureFieldOverrides();
+  fieldSnapshot = currentFieldSignature();
+  renderAll();
+}
+
+function syncFieldChanges() {
+  const nextSnapshot = currentFieldSignature();
+  if (nextSnapshot === fieldSnapshot) return;
+  captureFieldOverrides();
+  fieldSnapshot = nextSnapshot;
+  renderAll();
+}
+
+function startFieldWatcher() {
+  fieldSnapshot = currentFieldSignature();
+  window.setInterval(syncFieldChanges, 300);
+}
+
+function compactSourceStatus(text) {
+  const length = String(text || "").trim().length;
+  if (!length) return "待输入";
+  if (length >= 1200) return "已读取";
+  return "少量文本";
+}
+
+function sourceSummaryRows(sku, template) {
+  const products = currentProducts();
+  const selectedGroup = productGroups[sku.groupKey] || sku.group || {};
+  const dimensionStatus = sku.dims?.source || selectedGroup.evidenceNote || "按当前字段生成";
+  return [
+    ["采购单", sourcePayload.purchase ? compactSourceStatus(sourcePayload.purchase) : "内置演示数据", sourceNotes.purchase],
+    ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "内置演示数据", sourceNotes.alibaba],
+    ["竞品参考", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
+    ["当前输出", `${products.length} 个产品 / SKU，${template.imageTypes.length} 张图`, dimensionStatus],
+  ];
+}
+
+function renderSourceSummary() {
+  const summary = byId("sourceSummary");
+  if (!summary) return;
+
+  const sku = selectedSku();
+  const template = selectedTemplate();
+  summary.innerHTML = sourceSummaryRows(sku, template).map(([label, status, note]) => `
+    <article class="source-summary-item">
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <span>${escapeHtml(note)}</span>
+      </div>
+      <mark>${escapeHtml(status)}</mark>
+    </article>
+  `).join("");
 }
 
 function buildDimensionListFromFields(data) {
@@ -417,13 +592,15 @@ function currentPromptData(sku) {
     ...fieldsData,
   };
   const group = productGroups[sku.groupKey] || sku.group || {};
-  const productSpec = group.promptName || sku.shape || cleanTokenValue(base.singleSpec) || "[PRODUCT_SPEC]";
-  const pack = fieldsData.pack || sku.pack || cleanTokenValue(base.packagingCount) || "";
+  const productName = promptValue(data.productName, defaultProductName(sku));
+  const productSpec = productName || group.promptName || sku.shape || cleanTokenValue(base.singleSpec) || "[PRODUCT_SPEC]";
+  const pack = fieldsData.pack || "";
   const cupRange = sku.dims?.cupRange || extractFirstMatch(base.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
+  data.productName = productName;
   data.packagingCount = ensureParameterToken("PACKAGING_COUNT", pack);
   data.singleSpec = `[CURRENT_SKU_SPEC: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
   data.dimensionList = buildDimensionListFromFields(data);
-  data.specList = `[SPEC_LIST: ${[productSpec, cupRange, pack, data.material, data.structure].filter(Boolean).join(" / ")}]`;
+  data.specList = `[SPEC_LIST: ${[productSpec, cupRange, pack, data.material, data.fit, data.dimensionList].filter(Boolean).join(" / ")}]`;
   return data;
 }
 
@@ -700,29 +877,26 @@ function inferProductName(text) {
   if (explicit && /coffee|filter/i.test(explicit)) {
     return explicit.replace(/^[:：\s]+/, "");
   }
-  if (/咖啡滤纸|Coffee Filters?|filter paper/i.test(text)) {
-    return "unbleached coffee paper filters";
-  }
-  return "[PRODUCT_NAME]";
+  return "";
 }
 
 function inferUseScene(text) {
   if (/V60|dripper|pour over|手冲|挂耳|滤杯/i.test(text)) {
-    return "[USE_SCENE: pour-over coffee brewing / drip coffee maker setup]";
+    return "pour-over coffee brewing / drip coffee maker setup";
   }
   if (/kitchen|home & kitchen|厨房/i.test(text)) {
-    return "[USE_SCENE: home kitchen use]";
+    return "home kitchen use";
   }
-  return "[USE_SCENE]";
+  return "";
 }
 
-function inferSellingPoints(text, material, structure) {
+function inferSellingPoints(text, material) {
   const feature1 = /wood pulp|原木浆|unbleached|未漂白|natural/i.test(text)
-    ? "[SELLING_POINT_1: natural unbleached material]"
-    : `[SELLING_POINT_1: ${material.replace(/^\[MATERIAL:?\s*|\]$/g, "") || "primary product benefit"}]`;
-  const feature2 = /pressed|压边|压纹|fold|折边|filter|过滤/i.test(text)
-    ? "[SELLING_POINT_2: stable structure and smooth performance]"
-    : `[SELLING_POINT_2: ${structure.replace(/^\[STRUCTURE:?\s*|\]$/g, "") || "secondary product benefit"}]`;
+    ? "natural unbleached material"
+    : cleanFieldDisplayValue(material) || "primary product benefit";
+  const feature2 = /filter|过滤|smooth|均匀|flow|brewing|萃取/i.test(text)
+    ? "smooth filtration performance"
+    : "reliable everyday brewing";
   return { feature1, feature2 };
 }
 
@@ -751,7 +925,7 @@ function productSpecForToken(token) {
       spec: "V02 cone coffee filter",
       sizeCode: "V02",
       cupRange: "1-4 cup pour-over brewing",
-      fit: "[COMPATIBLE_USE: V60-02 style cone dripper]",
+      fit: "V60-02 style cone dripper",
     };
   }
   if (normalized.includes("fan 04") || normalized.includes("#04")) {
@@ -760,7 +934,7 @@ function productSpecForToken(token) {
       spec: "fan-shaped 04 coffee filter",
       sizeCode: "Fan 04",
       cupRange: "8-12 cup drip coffee maker",
-      fit: "[COMPATIBLE_USE: #4 cone or fan-shaped drip coffee maker]",
+      fit: "#4 cone or fan-shaped drip coffee maker",
     };
   }
   return {
@@ -768,7 +942,7 @@ function productSpecForToken(token) {
     spec: "fan-shaped 02 / U02 coffee filter",
     sizeCode: "Fan 02 / U02",
     cupRange: "2-6 cup drip or pour-over brewing",
-    fit: "[COMPATIBLE_USE: #2 fan-shaped dripper or small drip coffee maker]",
+    fit: "#2 fan-shaped dripper or small drip coffee maker",
   };
 }
 
@@ -904,10 +1078,10 @@ function extractPurchaseItems(purchaseText, combinedText) {
 
 function toCrossBorderProductName(productName, fallbackSpec) {
   if (!productName || productName.startsWith("[")) {
-    return `[PRODUCT_NAME: ${fallbackSpec}]`;
+    return fallbackSpec || "";
   }
   if (/咖啡滤纸|Coffee Filters?|filter paper/i.test(productName)) {
-    return "[PRODUCT_NAME: unbleached coffee paper filters]";
+    return fallbackSpec || "coffee paper filters";
   }
   const normalized = productName
     .replace(/[^\x00-\x7F\u4e00-\u9fff#/-]+/g, " ")
@@ -919,22 +1093,22 @@ function toCrossBorderProductName(productName, fallbackSpec) {
     .replace(/阿里巴巴|Amazon|Amazo/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return `[PRODUCT_NAME: ${normalized}]`;
+  return normalized;
 }
 
 function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   const combined = [purchaseText, supplierText, competitorText].join(" ");
   const productName = inferProductName(combined);
   const material = /wood pulp|原木浆|木浆|unbleached/i.test(combined)
-    ? "[MATERIAL: natural wood pulp paper / unbleached brown paper]"
-    : "[MATERIAL]";
-  const color = /brown|本色|原色|natural/i.test(combined) ? "[COLOR: natural brown]" : "[COLOR]";
+    ? "natural wood pulp paper / unbleached brown paper"
+    : "";
+  const color = /brown|本色|原色|natural/i.test(combined) ? "natural brown" : "";
   const isCoffeeFilterFamily = /coffee filters|咖啡滤纸|V02|扇形02|扇形04|U02|#04/i.test(combined);
   const structure = /pressed|压边|压纹|fold|折边/i.test(combined) || isCoffeeFilterFamily
-    ? "[STRUCTURE: pressed side seam and bottom fold]"
-    : "[STRUCTURE]";
+    ? "pressed side seam and bottom fold"
+    : "";
   const scene = inferUseScene(combined);
-  const sellingPoints = inferSellingPoints(combined, material, structure);
+  const sellingPoints = inferSellingPoints(combined, material);
   const dimensions = extractDimensions(combined);
   const cupRange = extractFirstMatch(combined, [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|人份))/i]);
   const packageCounts = Array.from(new Set(Array.from(combined.matchAll(/(?:100|200)\s*(?:pcs|片\/盒|片|PCS)/gi)).map((match) => match[0].replace(/\s+/g, " ")))).join(" / ");
@@ -961,10 +1135,10 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   const normalizedVariants = variants.length ? variants : [{
     id: "EXTRACTED-PRODUCT-1",
     label: "Extracted | Product 1",
-    spec: "[PRODUCT_SPEC]",
-    sizeCode: "[SIZE_CODE]",
-    pack: packageCounts ? `[PACKAGING_COUNT: ${packageCounts}]` : "[PACKAGING_COUNT]",
-    fit: "[COMPATIBLE_USE]",
+    spec: "",
+    sizeCode: "",
+    pack: packageCounts || "",
+    fit: "",
   }];
 
   return normalizedVariants.map((item) => {
@@ -976,12 +1150,12 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     label: item.label,
     productName: toCrossBorderProductName(productName, item.spec),
     shape: item.spec,
-    pack: item.pack || (packageCounts ? `[PACKAGING_COUNT: ${packageCounts}]` : "[PACKAGING_COUNT]"),
+    pack: item.pack || packageCounts || "",
     sizeCode: item.sizeCode || item.spec,
     groupKey: "",
     group: {
       promptName: item.spec,
-      promptSpecs: [item.spec, itemCupRange || "[CUP_RANGE]", item.pack || packageCounts || "[PACKAGING_COUNT]", material, structure],
+      promptSpecs: [item.spec, itemCupRange, item.pack || packageCounts, material, structure].filter(Boolean),
       dimensions,
     },
     dims: {
@@ -1011,92 +1185,246 @@ async function extractSources() {
   const purchaseFile = byId("purchaseFile").files[0];
   const supplierFile = byId("supplierFile").files[0];
   const competitorFile = byId("competitorFile").files[0];
+  const extractButton = byId("extractSources");
+  extractButton.disabled = true;
+  extractButton.setAttribute("aria-busy", "true");
   byId("extractStatus").textContent = "正在解析资料...";
 
-  const purchaseText = await readPdfText(purchaseFile);
-  const supplierHtml = await readFileAsText(supplierFile);
-  const competitorHtml = await readFileAsText(competitorFile);
-  const supplierSource = await extractSupplierSourceText(supplierHtml, (message) => {
-    byId("extractStatus").textContent = message;
-  });
-  sourcePayload = {
-    purchase: purchaseText,
-    supplier: supplierSource.text,
-    competitor: competitorHtml ? cleanHtmlText(competitorHtml) : "",
-  };
-  extractedProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
-  renderProductSelect(extractedProducts[0]?.id);
-  renderFields(true);
-  renderAll();
-  const ocrStatus = supplierSource.imageCount
-    ? `1688 图片 OCR：找到 ${supplierSource.imageCount} 张，成功 ${supplierSource.scannedCount} 张，失败 ${supplierSource.failedCount} 张。`
-    : "未找到可识别的 1688 图片。";
-  const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
-    ? "OCR 引擎未加载成功，已跳过图片文字识别。"
-    : "";
-  byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / SKU。PDF、HTML 与详情图 OCR 已尝试读取。${ocrStatus}${ocrAvailability}`;
+  try {
+    const purchaseText = await readPdfText(purchaseFile);
+    const supplierHtml = await readFileAsText(supplierFile);
+    const competitorHtml = await readFileAsText(competitorFile);
+    const supplierSource = await extractSupplierSourceText(supplierHtml, (message) => {
+      byId("extractStatus").textContent = message;
+    });
+    sourcePayload = {
+      purchase: purchaseText,
+      supplier: supplierSource.text,
+      competitor: competitorHtml ? cleanHtmlText(competitorHtml) : "",
+    };
+    extractedProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
+    renderProductSelect(extractedProducts[0]?.id);
+    renderFields(true);
+    renderAll();
+    const ocrStatus = supplierSource.imageCount
+      ? `1688 图片 OCR：找到 ${supplierSource.imageCount} 张，成功 ${supplierSource.scannedCount} 张，失败 ${supplierSource.failedCount} 张。`
+      : "未找到可识别的 1688 图片。";
+    const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
+      ? "OCR 引擎未加载成功，已跳过图片文字识别。"
+      : "";
+    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / SKU。PDF、HTML 与详情图 OCR 已尝试读取。${ocrStatus}${ocrAvailability}`;
+  } finally {
+    extractButton.disabled = false;
+    extractButton.removeAttribute("aria-busy");
+  }
 }
 
 function negativePrompt() {
-  return "Avoid invented details, wrong materials, distorted proportions, extra accessories, logos, watermark, cluttered text, and unrealistic rendering.";
+  return "Avoid invented details, wrong materials, distorted proportions, extra accessories, logos, watermark, dense text blocks, visible placeholder tokens, bracketed field names, cluttered labels, and unrealistic rendering.";
 }
 
-function sizeInstruction(data) {
-  const verifiedParams = [
-    ensureParameterToken("CURRENT_SKU_SPEC", data.singleSpec),
-    ensureParameterToken("PACKAGING_COUNT", data.packagingCount),
-    ensureParameterToken("MATERIAL", data.material),
-    ensureParameterToken("STRUCTURE", data.structure),
-    ensureParameterToken("COMPATIBLE_USE", data.fit),
-  ].filter(hasTokenContent);
+function isPlaceholderName(value) {
+  const clean = String(value || "").trim();
+  const knownPlaceholders = new Set([
+    "PRODUCT_NAME",
+    "PRODUCT_SPEC",
+    "PACKAGING_COUNT",
+    "MATERIAL",
+    "COLOR",
+    "STRUCTURE",
+    "COMPATIBLE_USE",
+    "USE_SCENE",
+    "SELLING_POINT_1",
+    "SELLING_POINT_2",
+    "VARIANT_LIST",
+    "SPEC_LIST",
+    "VERIFIED_DIMENSIONS",
+    "SIZE_CODE",
+    "CUP_RANGE",
+  ]);
+  return knownPlaceholders.has(clean) || /^[A-Z0-9_ ]+$/.test(clean) && clean.includes("_");
+}
 
-  if (data.dimensionList) {
-    return `Use only these verified product parameter texts: ${verifiedParams.join(", ")}. Use only these verified dimension texts: ${data.dimensionList}. Do not display bare placeholder names without values.`;
+function promptValue(value, fallback = "") {
+  const clean = cleanTokenValue(value);
+  if (!clean || isPlaceholderName(clean)) return fallback;
+  return clean;
+}
+
+function packagingValue(data) {
+  const candidates = [
+    cleanTokenValue(data.pack),
+    cleanTokenValue(data.packagingCount),
+  ].filter(Boolean);
+  return candidates.find((value) => /(?:pcs|片|pack|包)/i.test(value) && !/cups?|人份/i.test(value)) || "";
+}
+
+function cupTypeValue(value) {
+  return cleanTokenValue(value)
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part && !/(?:pcs|片|pack|包|cups?|人份)/i.test(part))
+    .join(", ");
+}
+
+function promptFacts(sku, data) {
+  const group = productGroups[sku.groupKey] || sku.group || {};
+  const productName = promptValue(data.productName, sku.shape || "the product");
+  const selectedSpec = promptValue(data.singleSpec, sku.shape || "selected product specification");
+  const cupType = promptValue(cupTypeValue(group.promptName || sku.shape || selectedSpec), sku.shape || selectedSpec || "selected product specification");
+  const pack = packagingValue(data);
+  const material = promptValue(data.material, "verified product material");
+  const color = promptValue(data.color, "accurate product color");
+  const fit = promptValue(data.fit, sku.fit || "compatible use");
+  const scene = promptValue(data.scene, "realistic product use scene");
+  const feature1 = promptValue(data.feature1, "verified product benefit");
+  const feature2 = promptValue(data.feature2, "verified secondary benefit");
+  const variants = promptValue(data.variantList, "available verified product options");
+  const dimensions = promptValue(data.dimensionList, "");
+  const cupRange = promptValue(sku.dims?.cupRange || extractFirstMatch(data.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]), "");
+  const specs = [
+    selectedSpec,
+    pack,
+    material,
+    fit,
+    dimensions,
+  ].filter(Boolean).join(" / ");
+
+  return {
+    productName,
+    cupType,
+    selectedSpec,
+    pack,
+    material,
+    color,
+    fit,
+    scene,
+    feature1,
+    feature2,
+    variants,
+    specs,
+    dimensions,
+    cupRange,
+  };
+}
+
+function categoryStyleRule(facts) {
+  const combined = [
+    facts.productName,
+    facts.cupType,
+    facts.material,
+    facts.fit,
+    facts.scene,
+  ].join(" ").toLowerCase();
+
+  if (/filter|滤纸|paper|pulp|wood pulp|dripper|pour-over|pour over/.test(combined)) {
+    return "Category background: coffee filter paper category, use a bright coffee brewing counter or light studio coffee setup with dripper/cup hints; paper texture and warm beige-white lighting; do not copy the metal basket scene.";
   }
+  if (/basket|portafilter|espresso|stainless|steel|metal|304/.test(combined)) {
+    return "Category background: espresso metal accessory category, use a clean marble coffee bar with soft espresso-machine and cup props, matching the reference mood without copying its exact product.";
+  }
+  if (/kitchen|cup|mug|bottle|jar|container/.test(combined)) {
+    return "Category background: kitchenware category, use a bright kitchen or studio countertop with subtle matching props, realistic light, uncluttered composition.";
+  }
+  return "Category background: choose surface, props, and color mood from the product category; keep it realistic, light, uncluttered, and suitable for Amazon listing images.";
+}
 
-  return `No verified single-filter dimensions are provided. Do not add measurement arrows, size numbers, or placeholder dimensions. Show only these verified product parameter texts: ${verifiedParams.join(", ")}. Do not display bare placeholder names without values.`;
+function sizeReferenceRule(facts) {
+  const measurementBlock = facts.dimensions
+    ? `Measurement layer: show clean arrows and dashed guide lines only for ${facts.dimensions}; black pill labels, bold dimension values, no extra measurements.`
+    : "Measurement layer: no verified dimensions, so no arrows, no dashed guides, no rulers, no dimension labels, no fake numbers.";
+  const packText = facts.pack || "omit pack if blank";
+  const cupRangeText = facts.cupRange || "omit cup range if blank";
+  return [
+    "Style: 1:1 square Amazon size-reference infographic. Follow the attached reference as a layout blueprint only: large top title, small product subtitle, compact black/gold spec capsule, centered product, measurement callouts, bottom rounded information strip.",
+    categoryStyleRule(facts),
+    `Top layout: title text 'Size Reference'. Under it, smaller subtitle/product name: ${facts.productName}. Under subtitle, a compact black rounded capsule that highlights packaging quantity ${packText} and cup type ${facts.cupType}; keep the capsule modest, not a large banner.`,
+    "Center: show the product large and accurate, preserving real shape/proportion; use one main view plus one small supporting angle/stack view only if it helps explain size.",
+    measurementBlock,
+    `Bottom strip: white rounded bar with 3-4 small icon-like items only: compatible use ${facts.fit}, cup range ${cupRangeText}, packaging quantity ${packText}; packaging quantity should be visually clear and never replaced by cup range.`,
+    "Hard rules: 1:1 square image; show only product name, cup type, packaging quantity, compatible cup range/use, and verified dimensions; no material, features, selling points, benefits, paragraphs, decorative spec tables, or invented numbers.",
+  ].join(" ");
+}
+
+function hardRules(extra = "") {
+  return `Hard rules: 1:1 square image; preserve reference product shape/proportion; no logos, watermark, raw placeholders, dense text, or invented parameters.${extra ? ` ${extra}` : ""}`;
+}
+
+function promptLine(style, params, rules = "") {
+  return `Style: ${style}\nParameters: ${params}\n${hardRules(rules)}`;
 }
 
 function promptFor(templateId, typeId, sku, data) {
-  const negative = negativePrompt();
-  const shortCopyRule = "Each feature description, benefit caption, headline, or summary phrase must be an English phrase of 3 to 5 words maximum, not a full sentence.";
-  const mainImageNoTextRule = "This is the first image in the selected template, so the image must contain no text, no letters, no numbers, no badges, and no labels.";
-  const commonRule = `Use only the placeholder product information already included in this prompt. If a parameter is blank or not provided, omit it completely. Do not borrow, infer, or invent any numbers. ${shortCopyRule}\n\nNegative prompt: ${negative}`;
+  const facts = promptFacts(sku, data);
+  const visualReference = sourcePayload.competitor ? "Use competitor reference only for composition rhythm, not claims or text." : "Use clean Amazon listing composition.";
 
   const specPrompts = {
-    "1": `Generate a premium Amazon hero image for one ${data.productName} based on the provided reference image. Combine a clean real-life ${data.scene} with a strong product focus. Show one large product as the dominant subject, preserving the true appearance, ${data.color}, ${data.structure}, and proportions from the reference image.\n\nThis image should clearly represent the selected specification through the product itself: ${data.singleSpec}. ${mainImageNoTextRule} ${commonRule}`,
-    "2": `Generate a realistic Amazon lifestyle image for ${data.productName} based on the provided reference image. Show the selected ${sku.shape} being used in a natural ${data.scene}, with the product clearly visible and accurately scaled. The scene should help customers understand the real size, fit, and usage context of ${data.singleSpec}.\n\nUse soft natural lighting, a clean coffee environment, realistic paper texture, and premium e-commerce photography style. Add no text or only one very small verified specification label if needed. ${commonRule}`,
-    "3A": `Generate a premium Amazon multi-scene lifestyle infographic for ${data.productName} based on the provided reference image. Show 3 to 4 realistic usage scenes in one clean collage layout: product preparation, placement or setup, active use, and after-use storage or disposal. Keep the product visible in every scene, with accurate scale, material texture, color, and proportions.\n\nIf specification labels are needed, use only short verified labels such as [SIZE_CODE], ${data.singleSpec}, or ${data.fit}. ${commonRule}`,
-    "3B": `Generate a premium Amazon step-by-step usage scene image for ${data.productName} based on the provided reference image. Show the real product in a practical workflow using 3 to 4 simple steps: prepare the product, set it up with the compatible object if applicable, use it in the intended scene, and show the final result.\n\nThe image should feel instructional but still premium and visually clean. Use realistic material texture, consistent lighting, and a clean e-commerce layout. Add only short step labels and verified specification text if needed. ${commonRule}`,
-    "4": `Generate a premium Amazon size reference infographic for ${data.productName} based on the provided reference image. Use a top-view focused composition with a bright, clean, premium e-commerce style. Show one product large and centered.\n\n${sizeInstruction(data)} Keep the product realistic, sharp, and proportionally accurate, with accurate natural paper texture. ${commonRule}`,
-    "5": `Generate a premium Amazon infographic showing multiple specification options for ${data.productName} based on the provided reference images or verified product data. Present the available product options in a clean, visually organized layout: ${data.variantList}, with package quantity options shown separately.\n\nShow realistic product options with accurate shape, material texture, pressed seams, and consistent scale relationship. Do not invent unavailable sizes or variants. ${commonRule}`,
-    "6": `Generate a premium Amazon product feature image for ${data.productName} based on the provided reference image. Highlight only one verified specification-based selling point: ${data.feature1}.\n\nUse a clean bright background, realistic close-up paper texture, and minimal supporting text. Do not mix multiple major selling points in one image. ${commonRule}`,
-    "7": `Generate a premium Amazon close-up detail image for ${data.productName} based on the provided reference image. Show macro-level detail of the natural paper fiber texture, pressed side seam, bottom fold, layered edge, and disposable paper structure.\n\nUse tasteful zoom-in composition, sharp realistic detail, and a clean premium layout. Add only very short verified labels if needed. ${commonRule}`,
-    "8": `Generate a premium Amazon summary infographic for ${data.productName} based on the provided reference image. Use one clean central product image with a simple layout that visually recaps the main confirmed specifications: ${data.specList}, ${data.material}, ${data.structure}, and ${data.fit}.\n\nKeep the image minimal, organized, and easy to read at a glance. Do not include unverified specifications or unsupported compatibility claims. ${commonRule}`,
+    "1": promptLine(
+      `premium Amazon hero photo, product dominant, clean ${facts.scene}, soft commercial lighting, no text`,
+      `${facts.productName}; spec ${facts.selectedSpec}; color ${facts.color}`,
+      "First image must contain no text, letters, numbers, badges, or labels.",
+    ),
+    "2": promptLine(
+      "realistic lifestyle coffee scene, product clearly in use, shallow depth of field, warm natural light",
+      `${facts.productName}; spec ${facts.selectedSpec}; scene ${facts.scene}; fit ${facts.fit}`,
+      "Visible text none or one tiny spec tag only.",
+    ),
+    "3A": promptLine(
+      "3-4 panel lifestyle collage, tidy editorial grid, thin dividers, consistent lighting",
+      `${facts.productName}; show preparation, setup, use, storage/disposal; fit ${facts.fit}`,
+      "Short scene labels only if needed.",
+    ),
+    "3B": promptLine(
+      "step-by-step usage infographic, 3-4 visual steps, clean e-commerce layout",
+      `${facts.productName}; workflow prepare, set up, use, final result; fit ${facts.fit}`,
+      "Number markers allowed; no long sentences.",
+    ),
+    "4": sizeReferenceRule(facts),
+    "5": promptLine(
+      "multi-spec option infographic, clean grid, realistic product options, small option tags",
+      `${facts.productName}; variants ${facts.variants}`,
+      "Do not add unavailable variants.",
+    ),
+    "6": promptLine(
+      "single feature proof image, bright clean background, product close-up or use proof",
+      `${facts.productName}; one message ${facts.feature1}`,
+      "One short headline maximum.",
+    ),
+    "7": promptLine(
+      "macro close-up detail, sharp texture, visible edges, optional small magnifier inset",
+      `${facts.productName}; material ${facts.material}`,
+      "Very short labels only if needed.",
+    ),
+    "8": promptLine(
+      "summary infographic, central product, airy layout, up to 4 short callouts",
+      `${facts.productName}; confirmed specs ${facts.specs}`,
+      "No dense text wall.",
+    ),
   };
 
   const featurePrompts = {
-    "1": `Generate a professional Amazon main image for ${data.productName} based on the provided reference image. Preserve the exact product shape, material appearance, color, texture, structure, and proportions from the reference image. Show only the selected product clearly and prominently, centered in the frame, against a pure white background.\n\n${mainImageNoTextRule} No props, packaging, logos, icons, extra accessories, or decorative elements. Focus on clean product identity. ${commonRule}`,
-    "2": `Generate a realistic Amazon single-scene lifestyle image for ${data.productName} based on the provided reference image. Show one clear realistic scene only: ${data.scene}, where the product is being used through [REAL_USE_ACTION].\n\nKeep the product large, sharp, and easy to recognize. If any text is added, use only one short headline of 2 to 4 words. ${commonRule}`,
-    "3": `Generate a premium Amazon multi-scene lifestyle infographic for ${data.productName} based on the provided reference image. Show 4 to 6 realistic usage scenes in one clean grid or collage layout: preparation, setup, real use, close interaction, after-use placement, and storage if applicable.\n\nIn every panel, the product must remain clearly visible and recognizable, with accurate shape, material texture, color, and proportions. ${commonRule}`,
-    "4": `Generate a clean Amazon product display image showing accurate views of ${data.productName}: flat view, opened view, side seam close-up, bottom fold close-up, and stack view. Preserve the real paper texture, color, structure, and visible details from the reference image.\n\nUse a white or very light neutral background, professional lighting, realistic rendering, and clear spacing. ${commonRule}`,
-    "5": `Generate a clean Amazon SKU selection image for the product line based on verified product data. Show the available options in a neat horizontal or grid layout: ${data.variantList}.\n\nEach option should be clearly separated and easy to compare. Do not add unavailable variants. ${commonRule}`,
-    "6": `Generate a realistic Amazon lifestyle selling-point image for ${data.productName} based on the provided reference image. Focus on one clear message only: ${data.feature1}. Show a realistic scene or close-up that visually proves this point.\n\nKeep the product large and clearly visible. If any text is added, use only one short headline: [SHORT_HEADLINE_1]. ${commonRule}`,
-    "7": `Generate a clean Amazon selling-point image for ${data.productName} based on the provided reference image. Focus on one clear message only: ${data.feature2}. Use a realistic close-up, simple use scene, or proof-focused composition to highlight the verified material, structure, or use benefit.\n\nAvoid busy infographic structures, dense text, extra icons, or unsupported claims. If any text is added, use only one short headline: [SHORT_HEADLINE_2]. ${commonRule}`,
-    "8": `Generate a clean Amazon summary image for ${data.productName} based on the provided reference image. Place the product in the center and summarize the product with only 4 short feature words around it: [SUMMARY_WORD_1] / [SUMMARY_WORD_2] / [SUMMARY_WORD_3] / [SUMMARY_WORD_4].\n\nKeep the layout very simple, airy, and easy to scan. ${commonRule}`,
+    "1": promptLine("pure white Amazon main image, centered product only", `${facts.productName}; color ${facts.color}`, "No text, props, logos, packaging, or accessories."),
+    "2": promptLine("single realistic lifestyle scene, product-first composition", `${facts.productName}; scene ${facts.scene}; fit ${facts.fit}`, "One short headline only if needed."),
+    "3": promptLine("4-6 panel multi-scene collage, clean grid", `${facts.productName}; preparation, setup, use, interaction, storage`, "Short labels only."),
+    "4": promptLine("catalog product display, flat/open/edge/texture/stack views", `${facts.productName}; material ${facts.material}; color ${facts.color}`, "Text minimal or none."),
+    "5": promptLine("SKU selection grid, realistic options, small quantity tags", `variants ${facts.variants}`, "No unavailable variants."),
+    "6": promptLine("single selling-point proof image, realistic scene or close-up", `${facts.productName}; message ${facts.feature1}`, "One short headline maximum."),
+    "7": promptLine("second selling-point proof image, clean close-up or use scene", `${facts.productName}; message ${facts.feature2}`, "No dense icons or unsupported claims."),
+    "8": promptLine("summary image, central product, 4 short callouts", `${facts.productName}; specs ${facts.specs}`, "No specification table."),
   };
 
   const scenePrompts = {
-    "1": `Generate a premium Amazon main scene image for ${data.productName} based on the provided reference image. Show the product as the dominant subject in a clean, realistic ${data.scene}. Preserve the true product appearance, ${data.color}, ${data.structure}, material texture, and proportions from the reference image.\n\nThe product should be large, sharp, and easy to recognize, with the most distinctive visual features clearly shown: ${sku.shape} and ${data.structure}. Use realistic lighting, a clean commercial composition, and a premium e-commerce style. The scene should support product understanding without overpowering the product.\n\n${mainImageNoTextRule} Do not add unrelated props, extra accessories, unsupported functions, random logos, packaging, or misleading scale. Focus on one clear message only: product identity in its strongest real-use scene. ${commonRule}`,
-    "2": `Generate a premium Amazon multi-scene lifestyle infographic for ${data.productName} based on the provided reference image. Show 4 to 6 realistic and highly relevant use scenes in a clean grid or collage layout: [MULTI_SCENE_LIST: ${cleanTokenValue(data.scene) || "main use scene"} / ${cleanTokenValue(data.fit) || "compatible use"}].\n\nEach scene should show the product clearly and naturally in use, with accurate scale, material texture, color, and proportions. The scenes should communicate real usage width, not random decoration. Keep lighting, style, and product appearance consistent across all panels.\n\nUse minimal text only, such as one short headline: [SHORT_HEADLINE: Multi-Use Design]. Do not add unrelated scenes, dense paragraphs, complicated callout blocks, or unsupported functions. Focus on one clear message only: multiple real-life use scenarios. ${commonRule}`,
-    "3": `Generate a clean Amazon product structure image for ${data.productName} based on the provided reference image. Show the product on a white or very light neutral background with multiple accurate views, such as flat view, opened view, side view, edge view, bottom fold view, and close-up detail view if applicable.\n\nPreserve the exact product shape, structure, material texture, color, and proportions. Highlight the key visible structure: ${data.structure}. Use clear spacing, soft studio lighting, realistic rendering, and a premium catalog-style layout.\n\nDo not add lifestyle props, extra accessories, unsupported parts, exaggerated labels, or dense text. Focus on one clear message only: product structure and physical details. ${commonRule}`,
-    "4": `Generate a realistic Amazon usage convenience image for ${data.productName} based on the provided reference image. Show the product being used in a simple real-life action: [USE_ACTION]. Focus on one clear message only: [CONVENIENCE_BENEFIT].\n\nThe product should remain large, clear, and accurately shaped, with true material texture, color, and proportions. The scene should make the convenience easy to understand visually, without relying on long text. Use clean lighting, natural hand or body interaction if needed, and a premium e-commerce presentation.\n\nDo not mix multiple convenience claims in one image. Do not also explain material, comfort, technical performance, or multi-scene use in this image. Add only one short headline if needed: [SHORT_HEADLINE]. ${commonRule}`,
-    "5": `Generate a premium Amazon comfort or material experience image for ${data.productName} based on the provided reference image. Focus on one clear experience point only: [EXPERIENCE_BENEFIT]. Use a realistic close-up, touch interaction, wearing scene, carrying scene, or simple comparison-like visual that makes this experience easy to understand.\n\nKeep the product realistic, large, and visually dominant. Show the relevant material or form detail clearly: ${data.material}. Use soft realistic lighting, clean composition, and premium e-commerce styling.\n\nDo not combine lightweight, breathable, soft, flexible, and portable all in one image. Do not add dense text, excessive icons, or unsupported claims. Add only one short headline if needed: [SHORT_HEADLINE]. ${commonRule}`,
-    "6": `Generate a proof-focused Amazon feature evidence image for ${data.productName} based on the provided reference image. Focus on one core function only: ${data.feature1}. Show clear visual evidence that explains why the function works, such as ${data.structure} or [EVIDENCE_DETAIL].\n\nUse a realistic close-up, cutaway-style visual, action proof scene, or clean callout composition if helpful. The product must stay accurate in shape, material, color, and proportions. The evidence should be visible and easy to understand, not abstract or exaggerated.\n\nDo not create a function collage. Do not claim multiple performance points in one image. Do not use unrealistic effects, fake science graphics, unsupported certifications, or unverified technical claims. Focus on one clear message only: visual proof of the selected core function. ${commonRule}`,
-    "7": `Generate a clean Amazon feature summary image for ${data.productName} based on the provided reference image. Place the product as the visual center with a simple, premium layout and space for around 4 short selling points: ${data.feature1} / ${data.feature2} / [SUMMARY_POINT_3] / [SUMMARY_POINT_4].\n\nThe summary points should only revisit what has already been shown in previous images, such as main use scene, multi-use value, convenience, material, or core function evidence. Keep the design minimal, airy, and easy to scan.\n\nDo not overcrowd the page, do not add long paragraphs, and do not introduce many new claims. Use a white or light neutral background, realistic product rendering, clean spacing, and short labels only. Focus on one clear message only: quick final product understanding before purchase. ${commonRule}`,
+    "1": promptLine("premium main scene, product dominant, realistic lighting", `${facts.productName}; scene ${facts.scene}; color ${facts.color}`, "No text."),
+    "2": promptLine("4-6 panel usage collage, consistent style", `${facts.productName}; scene ${facts.scene}; fit ${facts.fit}`, "Short labels only."),
+    "3": promptLine("product display detail image, multiple views, studio background", `${facts.productName}; exact shape; material ${facts.material}`, "No lifestyle props."),
+    "4": promptLine("usage convenience scene, one simple real action", `${facts.productName}; scene ${facts.scene}`, "One short headline if needed."),
+    "5": promptLine("material/handling close-up, soft realistic light", `${facts.productName}; material ${facts.material}`, "No unsupported comfort claims."),
+    "6": promptLine("feature evidence image, close-up or action proof", `${facts.productName}; message ${facts.feature1}`, "No fake science graphics."),
+    "7": promptLine("feature summary, central product, clean callouts", `${facts.productName}; ${facts.feature1}; ${facts.feature2}`, "Four short points maximum."),
   };
 
-  return ({ spec: specPrompts, feature: featurePrompts, scene: scenePrompts }[templateId] || specPrompts)[typeId];
+  const prompt = ({ spec: specPrompts, feature: featurePrompts, scene: scenePrompts }[templateId] || specPrompts)[typeId];
+  return bracketPromptVariables(`${prompt}\n${visualReference}`, facts, typeId);
 }
 
 function renderFacts() {
@@ -1119,6 +1447,7 @@ function renderProductPromptGrid() {
   const sku = selectedSku();
   const template = selectedTemplate();
   const data = currentPromptData(sku);
+  const facts = promptFacts(sku, data);
   promptStore = template.imageTypes.map((type) => ({
     id: type.id,
     prompt: promptFor(template.id, type.id, sku, data),
@@ -1135,13 +1464,15 @@ function renderProductPromptGrid() {
           </div>
           <button type="button" class="copy-prompt" data-prompt-index="${index}">Copy</button>
         </div>
-        <pre class="prompt-preview">${highlightPlaceholders(prompt)}</pre>
+        <pre class="prompt-preview">${highlightPromptVariables(prompt, facts, type.id)}</pre>
       </article>
     `;
   }).join("");
 
   grid.querySelectorAll(".copy-prompt").forEach((button) => {
-    button.addEventListener("click", () => copyText(promptStore[Number(button.dataset.promptIndex)]?.prompt || "", "已复制该图提示词。"));
+    button.addEventListener("click", () => {
+      copyText(promptStore[Number(button.dataset.promptIndex)]?.prompt || "", "已复制该图提示词。", button);
+    });
   });
 }
 
@@ -1151,8 +1482,9 @@ function renderPrompt() {
 
 function renderAll() {
   renderProductParameters();
+  renderSourceSummary();
   renderFacts();
-  renderPrompt();
+  fieldSnapshot = currentFieldSignature();
 }
 
 function allPromptsForSku() {
@@ -1162,19 +1494,88 @@ function allPromptsForSku() {
   return template.imageTypes.map((type) => `## ${type.promptName || type.name}\n\n${promptFor(template.id, type.id, sku, data)}`).join("\n\n---\n\n");
 }
 
-async function copyText(text, message) {
+function showCopyFeedback(button, state, label) {
+  if (!button) return;
+
+  const originalText = button.dataset.defaultText || button.textContent;
+  button.dataset.defaultText = originalText;
+  button.classList.remove("copy-success", "copy-failed");
+  button.classList.add(state === "success" ? "copy-success" : "copy-failed");
+  button.textContent = label || (state === "success" ? "Copied" : "Failed");
+  button.setAttribute("aria-live", "polite");
+
+  const card = button.closest(".prompt-card");
+  if (card && state === "success") {
+    card.classList.add("just-copied");
+  }
+
+  window.setTimeout(() => {
+    button.classList.remove("copy-success", "copy-failed");
+    button.textContent = originalText;
+    card?.classList.remove("just-copied");
+  }, 2400);
+}
+
+async function copyText(text, message, button) {
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("Clipboard API unavailable");
+    }
     byId("copyStatus").textContent = message;
+    showCopyFeedback(button, "success");
   } catch {
-    byId("copyStatus").textContent = "复制失败，请手动选中文本复制。";
+    const fallbackOk = fallbackCopyText(text);
+    if (fallbackOk) {
+      byId("copyStatus").textContent = message;
+      showCopyFeedback(button, "success");
+    } else {
+      selectPromptTextForManualCopy(button);
+      byId("copyStatus").textContent = button?.closest(".prompt-card")
+        ? "复制失败，已选中该图提示词，可按 Cmd+C 手动复制。"
+        : "复制失败，请手动选中文本复制。";
+      showCopyFeedback(button, "failed", "Selected");
+    }
   }
 }
 
+function selectPromptTextForManualCopy(button) {
+  const preview = button?.closest(".prompt-card")?.querySelector(".prompt-preview");
+  if (!preview) return;
+  const range = document.createRange();
+  range.selectNodeContents(preview);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function fallbackCopyText(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  textarea.remove();
+  return ok;
+}
+
 function init() {
+  window.renderAll = renderAll;
   fillSelects();
   renderFields(true);
   renderAll();
+  startFieldWatcher();
 
   byId("skuSelect").addEventListener("change", () => {
     renderFields(true);
@@ -1195,7 +1596,7 @@ function init() {
     renderFields(true);
     renderAll();
   });
-  byId("copyCurrent").addEventListener("click", () => copyText(allPromptsForSku(), "已复制当前 SKU 全部图组。"));
+  byId("copyCurrent").addEventListener("click", () => copyText(allPromptsForSku(), "已复制当前 SKU 全部图组。", byId("copyCurrent")));
 }
 
 init();
