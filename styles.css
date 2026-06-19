@@ -147,6 +147,17 @@ textarea:focus {
   gap: 10px;
 }
 
+.empty-state {
+  margin: 0;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .product-param-list {
   display: grid;
   gap: 10px;
