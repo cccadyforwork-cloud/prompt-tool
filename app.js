@@ -188,14 +188,15 @@ const templates = [
 
 const fields = [
   ["productName", "Product Name", "[PRODUCT_NAME]"],
-  ["pack", "Packaging Count", ""],
+  ["pack", "Packaging / Quantity", ""],
+  ["cupRange", "Capacity", ""],
   ["material", "Material", ""],
   ["color", "Color", ""],
-  ["topWidth", "Top Width", ""],
-  ["sideLength", "Side / Height", ""],
-  ["bottomWidth", "Bottom Width", ""],
-  ["weight", "Sheet Weight", ""],
-  ["fit", "Compatible Use", ""],
+  ["topWidth", "Dimension 1", ""],
+  ["sideLength", "Dimension 2", ""],
+  ["bottomWidth", "Dimension 3", ""],
+  ["weight", "Weight / Capacity", ""],
+  ["fit", "Compatible Object / Use", ""],
   ["scene", "Use Scene", ""],
   ["feature1", "Selling Point 1", ""],
   ["feature2", "Selling Point 2", ""],
@@ -246,6 +247,7 @@ function valueMap(sku) {
     material: cleanFieldDisplayValue(sku.material || "[MATERIAL: natural wood pulp paper / unbleached brown paper]"),
     color: cleanFieldDisplayValue(sku.color || "[COLOR: natural brown]"),
     structure: cleanFieldDisplayValue(sku.structure || "[STRUCTURE: pressed side seam and bottom fold]"),
+    cupRange: cleanFieldDisplayValue(sku.dims?.cupRange || ""),
     topWidth: sku.dims?.topWidth || "",
     sideLength: sku.dims?.sideLength || "",
     bottomWidth: sku.dims?.bottomWidth || "",
@@ -366,7 +368,7 @@ function renderProductParameters() {
   list.innerHTML = rows.map((row) => {
     const params = [
       ["Cup Type", row.title],
-      ["Cup Range", row.cupRange],
+      ["Capacity", row.cupRange],
       ["Compatible Use", row.fit],
       ["Material", row.material],
       ["Top Width", row.topWidth],
@@ -595,7 +597,7 @@ function currentPromptData(sku) {
   const productName = promptValue(data.productName, defaultProductName(sku));
   const productSpec = productName || group.promptName || sku.shape || cleanTokenValue(base.singleSpec) || "[PRODUCT_SPEC]";
   const pack = fieldsData.pack || "";
-  const cupRange = sku.dims?.cupRange || extractFirstMatch(base.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
+  const cupRange = fieldsData.cupRange || sku.dims?.cupRange || extractFirstMatch(base.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
   data.productName = productName;
   data.packagingCount = ensureParameterToken("PACKAGING_COUNT", pack);
   data.singleSpec = `[CURRENT_SKU_SPEC: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
@@ -632,6 +634,9 @@ function addImageUrl(urls, seen, value) {
   if (!/\.(?:jpe?g|png|webp)(?:[?#]|$)/i.test(normalized)) return;
   if (!/alicdn|cbu01|itemcdn|taobao|tmall/i.test(normalized)) return;
   if (/\.(?:gif|svg)(?:[?#]|$)/i.test(normalized)) return;
+  if (/(?:logo|icon|avatar|sprite|loading|blank|placeholder|qrcode|qr-code)/i.test(normalized)) return;
+  if (/(?:^|[_-])(?:20|30|40|50|60|70|80)x(?:20|30|40|50|60|70|80)(?:[_\-.]|$)/i.test(normalized)) return;
+  if (/[?&](?:w|width|h|height)=(?:[1-9]|[1-9]\d)(?:&|$)/i.test(normalized)) return;
   seen.add(normalized);
   urls.push(normalized);
 }
@@ -740,6 +745,16 @@ function cleanOcrText(text) {
     .trim();
 }
 
+function canLoadImage(url) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(true);
+    image.onerror = () => resolve(false);
+    image.src = url;
+  });
+}
+
 function withTimeout(promise, timeoutMs, message) {
   return Promise.race([
     promise,
@@ -767,6 +782,11 @@ async function ocrImageUrls(imageUrls, onProgress) {
     const url = imageUrls[index];
     onProgress?.(`正在识别 1688 详情图文字... ${index + 1}/${imageUrls.length}`);
     try {
+      const canLoad = await withTimeout(canLoadImage(url), 10000, "Image load timed out");
+      if (!canLoad) {
+        failedCount += 1;
+        continue;
+      }
       const result = await withTimeout(
         Tesseract.recognize(url, "chi_sim+eng"),
         30000,
@@ -1207,7 +1227,7 @@ async function extractSources() {
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
-      ? `1688 图片 OCR：找到 ${supplierSource.imageCount} 张，成功 ${supplierSource.scannedCount} 张，失败 ${supplierSource.failedCount} 张。`
+      ? `1688 图片 OCR：找到 ${supplierSource.imageCount} 张，成功 ${supplierSource.scannedCount} 张，跳过/失败 ${supplierSource.failedCount} 张。远程图片可能因跨域、防盗链或超时无法在浏览器内识别。`
       : "未找到可识别的 1688 图片。";
     const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
       ? "OCR 引擎未加载成功，已跳过图片文字识别。"
@@ -1220,7 +1240,7 @@ async function extractSources() {
 }
 
 function negativePrompt() {
-  return "Avoid invented details, wrong materials, distorted proportions, extra accessories, logos, watermark, dense text blocks, visible placeholder tokens, bracketed field names, cluttered labels, and unrealistic rendering.";
+  return "No invented specs, wrong shape, wrong material, extra accessories, logos, watermark, unreadable text, cluttered layout, blurry product, or exaggerated effects.";
 }
 
 function isPlaceholderName(value) {
@@ -1279,13 +1299,22 @@ function promptFacts(sku, data) {
   const scene = promptValue(data.scene, "realistic product use scene");
   const feature1 = promptValue(data.feature1, "verified product benefit");
   const feature2 = promptValue(data.feature2, "verified secondary benefit");
+  const feature3 = promptValue(data.feature3, "");
   const variants = promptValue(data.variantList, "available verified product options");
   const dimensions = promptValue(data.dimensionList, "");
-  const cupRange = promptValue(sku.dims?.cupRange || extractFirstMatch(data.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]), "");
+  const cupRange = promptValue(data.cupRange || sku.dims?.cupRange || extractFirstMatch(data.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]), "");
+  const dimension1 = data.topWidth ? cleanTokenValue(data.topWidth) : "";
+  const dimension2 = data.sideLength ? cleanTokenValue(data.sideLength) : "";
+  const dimension3 = data.bottomWidth ? cleanTokenValue(data.bottomWidth) : "";
+  const weightOrCapacity = data.weight ? cleanTokenValue(data.weight) : "";
+  const structure = promptValue(data.structure, sku.structure || "");
+  const surfaceFinish = promptValue(data.surfaceFinish, "");
+  const detailParameter = promptValue(data.detailParameter, "");
   const specs = [
     selectedSpec,
     pack,
     material,
+    structure,
     fit,
     dimensions,
   ].filter(Boolean).join(" / ");
@@ -1301,9 +1330,17 @@ function promptFacts(sku, data) {
     scene,
     feature1,
     feature2,
+    feature3,
     variants,
     specs,
     dimensions,
+    dimension1,
+    dimension2,
+    dimension3,
+    weightOrCapacity,
+    structure,
+    surfaceFinish,
+    detailParameter,
     cupRange,
   };
 }
@@ -1347,16 +1384,85 @@ function sizeReferenceRule(facts) {
 }
 
 function hardRules(extra = "") {
-  return `Hard rules: 1:1 square image; preserve reference product shape/proportion; no logos, watermark, raw placeholders, dense text, or invented parameters.${extra ? ` ${extra}` : ""}`;
+  return `Hard rules: 1:1 square image; preserve reference product shape/proportion. Combine concise readable text with small icons, simple illustrations, and arrows to communicate key information; avoid long paragraphs and repeated information. No logos, watermark, raw placeholders, dense text, or invented parameters.${extra ? ` ${extra}` : ""}`;
 }
 
 function promptLine(style, params, rules = "") {
   return `Style: ${style}\nParameters: ${params}\n${hardRules(rules)}`;
 }
 
+function specGlobalRules() {
+  return [
+    "Rules: 1:1 Amazon image. Match the reference product shape, material, color, and proportions. Combine concise readable text with small icons, simple illustrations, and arrows to communicate key information; avoid long paragraphs and repeated information. No invented specs, brands, logos, watermarks, or extra accessories.",
+  ].join("\n");
+}
+
+function specModulePrompt(typeId, facts) {
+  const dimensionLine = [
+    facts.dimension1 && `Dimension 1: ${facts.dimension1}`,
+    facts.dimension2 && `Dimension 2: ${facts.dimension2}`,
+    facts.dimension3 && `Dimension 3: ${facts.dimension3}`,
+    facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
+  ].filter(Boolean).join(" / ");
+  const sizeGuide = dimensionLine ? `Use clean arrows/dashed guides only for verified dimensions: ${dimensionLine}.` : "Do not add measurement arrows or dimension numbers when no verified dimensions are provided.";
+  const capacityGuide = facts.cupRange ? `Highlight capacity clearly as ${facts.cupRange}.` : "Do not create a capacity value.";
+  const helperIconLabels = [
+    facts.material,
+    facts.structure,
+    facts.feature1,
+    facts.feature2,
+  ]
+    .filter(Boolean)
+    .filter((value) => {
+      const text = String(value).toLowerCase();
+      return !text.includes(String(facts.cupRange || "").toLowerCase())
+        && !text.includes(String(facts.selectedSpec || "").toLowerCase())
+        && !text.includes(String(facts.pack || "").toLowerCase())
+        && !/(?:pcs|pieces|packaging|quantity|\d+\s*-\s*\d+\s*cup)/i.test(text);
+    })
+    .slice(0, 3)
+    .join(", ");
+  const bottomStripGuide = helperIconLabels
+    ? `Optional bottom icons: use up to 3 small auxiliary symbols/mini illustrations for ${helperIconLabels}; keep labels tiny and do not repeat capacity, SKU/spec name, or packaging quantity.`
+    : "Optional bottom icons: use only small auxiliary symbols if helpful; do not repeat capacity, SKU/spec name, or packaging quantity.";
+
+  const modules = {
+    "1": `Image 1 Hero: premium clean product hero. One large product centered/slightly low, 65%-80% of image, bright white/light gray or simple ${facts.scene} background. Text: none, or one tiny ${facts.selectedSpec} label only.`,
+    "2": `Image 2 Lifestyle: realistic use photo in ${facts.scene}. Show the product clearly in use with ${facts.fit}; natural scale, soft real lighting. Text: none, or one tiny spec label only.`,
+    "3A": `Image 3A Multi-scene: 3-4 equal panels showing different real use scenes. Each panel uses a short readable label plus a small symbol/icon; no dimensions or long captions.`,
+    "3B": `Image 3B How-to: 2x2 step grid with four realistic action panels. Use number badges 1-4, small step icons, and one short readable caption per step.`,
+    "4": `Image 4 Size/Capacity: size/capacity reference infographic. Large product is the focus. Show capacity as a clear main text callout paired with a small cup/container icon: ${facts.cupRange || "do not create a capacity value"}. ${sizeGuide} Use clean arrows and simple mini illustrations where helpful. ${bottomStripGuide}`,
+    "5": `Image 5 Options: visual comparison. 3-5 horizontal product columns with consistent angle and scale. Each column: product image, short option label, and a small supporting icon if helpful. Only show verified options: ${facts.variants}.`,
+    "6": `Image 6 Feature: one visual selling point for ${facts.feature1}. Product large; use one short headline plus 2-3 short icon-supported labels (${[facts.feature2, facts.material, facts.structure].filter(Boolean).join(", ")}).`,
+    "7": `Image 7 Detail: macro close-up of material/structure detail (${[facts.material, facts.surfaceFinish, facts.structure, facts.detailParameter].filter(Boolean).join(" / ")}). Use 2-3 short labels paired with small line icons.`,
+    "8": `Image 8 Summary: visual summary. Central product with 3-4 icon modules max. Each module has a short text label plus small icon. Summarize: ${[facts.material, facts.structure, facts.fit, facts.feature1, facts.feature2].filter(Boolean).join(" / ")}. Do not repeat main spec, capacity, or packaging quantity.`,
+  };
+
+  return modules[typeId] || modules["1"];
+}
+
+function specTemplatePrompt(typeId, sku, data) {
+  const facts = promptFacts(sku, data);
+  const referenceRule = sourcePayload.competitor
+    ? "Use competitor reference only for composition rhythm. Do not copy claims, text, brand, or unverified parameters."
+    : "Use clean Amazon listing composition.";
+
+  return [
+    specModulePrompt(typeId, facts),
+    "",
+    specGlobalRules(),
+    `Negative: ${negativePrompt()}`,
+    `Reference: ${referenceRule}`,
+  ].join("\n");
+}
+
 function promptFor(templateId, typeId, sku, data) {
   const facts = promptFacts(sku, data);
   const visualReference = sourcePayload.competitor ? "Use competitor reference only for composition rhythm, not claims or text." : "Use clean Amazon listing composition.";
+
+  if (templateId === "spec") {
+    return bracketPromptVariables(specTemplatePrompt(typeId, sku, data), facts, typeId);
+  }
 
   const specPrompts = {
     "1": promptLine(
