@@ -78,7 +78,7 @@ Image 3B How-to: 2x2 step grid with four realistic action panels. Use number bad
 ### 4. 尺寸 / 容量参数图
 
 ```text
-Image 4 Size/Capacity: size/capacity reference infographic. Top layout must keep the fixed parameter style: large title “Size Reference”, short subtitle with 【产品名称】, and a dark rounded spec capsule showing 【当前SKU/主规格】 + 【包装数量】. Do not put packaging quantity in the title or subtitle; show packaging quantity only once inside the spec capsule. Large product is the focus in the main area. Show capacity as a clear main text callout paired with a small cup/container icon: 【容量/适用杯量】. Use clean arrows/dashed guides only for verified dimensions: 【尺寸1】 / 【尺寸2】 / 【尺寸3】 / 【重量/容量】. Use clean arrows and simple mini illustrations where helpful.
+Image 4 Size/Capacity: size/capacity reference infographic. Top layout must keep the fixed parameter style: large title “Size Reference”, short subtitle with 【当前SKU/主规格】, and a dark rounded spec capsule showing packaging quantity only: 【包装数量】. Do not put packaging quantity in the title or subtitle. Do not include product name or spec name inside the capsule. Large product is the focus in the main area. Show capacity as a clear main text callout paired with a small cup/container icon: 【容量/适用杯量】. Use clean arrows/dashed guides only for verified dimensions: 【尺寸1】 / 【尺寸2】 / 【尺寸3】 / 【重量/容量】. Use clean arrows and simple mini illustrations where helpful.
 
 Optional bottom icons: use up to 3 small auxiliary symbols/mini illustrations for 【材质】 / 【结构/工艺】 / 【卖点1】 / 【卖点2】. Do not repeat capacity, SKU/spec name, or packaging quantity in the bottom strip.
 ```

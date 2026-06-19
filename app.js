@@ -1367,20 +1367,7 @@ function categoryStyleRule(facts) {
 }
 
 function sizeReferenceRule(facts) {
-  const measurementBlock = facts.dimensions
-    ? `Measurement layer: show clean arrows and dashed guide lines only for ${facts.dimensions}; black pill labels, bold dimension values, no extra measurements.`
-    : "Measurement layer: no verified dimensions, so no arrows, no dashed guides, no rulers, no dimension labels, no fake numbers.";
-  const packText = facts.pack || "omit pack if blank";
-  const cupRangeText = facts.cupRange || "omit cup range if blank";
-  return [
-    "Style: 1:1 square Amazon size-reference infographic. Follow the attached reference as a layout blueprint only: large top title, small product subtitle, compact black/gold spec capsule, centered product, measurement callouts, bottom rounded information strip.",
-    categoryStyleRule(facts),
-    `Top layout: title text 'Size Reference'. Under it, smaller subtitle/product name: ${facts.productName}. Under subtitle, a compact black rounded capsule that highlights packaging quantity ${packText} and cup type ${facts.cupType}; keep the capsule modest, not a large banner.`,
-    "Center: show the product large and accurate, preserving real shape/proportion; use one main view plus one small supporting angle/stack view only if it helps explain size.",
-    measurementBlock,
-    `Bottom strip: white rounded bar with 3-4 small icon-like items only: compatible use ${facts.fit}, cup range ${cupRangeText}, packaging quantity ${packText}; packaging quantity should be visually clear and never replaced by cup range.`,
-    "Hard rules: 1:1 square image; show only product name, cup type, packaging quantity, compatible cup range/use, and verified dimensions; no material, features, selling points, benefits, paragraphs, decorative spec tables, or invented numbers.",
-  ].join(" ");
+  return `${specModulePrompt("4", facts)}\n${specGlobalRules()}`;
 }
 
 function hardRules(extra = "") {
@@ -1404,10 +1391,7 @@ function specModulePrompt(typeId, facts) {
     facts.dimension3 && `Dimension 3: ${facts.dimension3}`,
     facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
   ].filter(Boolean).join(" / ");
-  const specCapsuleItems = [
-    facts.titleSpec,
-    facts.pack,
-  ].filter(Boolean).join(" + ");
+  const specCapsuleItems = facts.pack || "omit packaging if blank";
   const sizeGuide = dimensionLine ? `Use clean arrows/dashed guides only for verified dimensions: ${dimensionLine}.` : "Do not add measurement arrows or dimension numbers when no verified dimensions are provided.";
   const capacityGuide = facts.cupRange ? `Highlight capacity clearly as ${facts.cupRange}.` : "Do not create a capacity value.";
   const helperIconLabels = [
@@ -1452,7 +1436,7 @@ function specModulePrompt(typeId, facts) {
     "2": `Image 2 Lifestyle: realistic use photo in ${facts.scene}. Show the product clearly in use with ${facts.fit}; natural scale, soft real lighting. Text: none, or one tiny spec label only.`,
     "3A": `Image 3A Multi-scene: 3-4 equal panels showing different real use scenes. Each panel uses a short readable label plus a small symbol/icon; no dimensions or long captions.`,
     "3B": `Image 3B How-to: 2x2 step grid with four realistic action panels. Use number badges 1-4, small step icons, and one short readable caption per step.`,
-    "4": `Image 4 Size/Capacity: size/capacity reference infographic. Top layout must keep the fixed parameter style: large title “Size Reference”, short subtitle with ${facts.productName}, and a dark rounded spec capsule showing ${specCapsuleItems || facts.titleSpec}. Do not put packaging quantity in the title or subtitle; show packaging quantity only once inside the spec capsule. Large product is the focus in the main area. Show capacity as a clear main text callout paired with a small cup/container icon: ${facts.cupRange || "do not create a capacity value"}. ${sizeGuide} Use clean arrows and simple mini illustrations where helpful. ${bottomStripGuide}`,
+    "4": `Image 4 Size/Capacity: size/capacity reference infographic. Top layout must keep the fixed parameter style: large title “Size Reference”, short subtitle with ${facts.titleSpec}, and a dark rounded spec capsule showing packaging quantity only: ${specCapsuleItems}. Do not put packaging quantity in the title or subtitle. Do not include product name or spec name inside the capsule. Large product is the focus in the main area. Show capacity as a clear main text callout paired with a small cup/container icon: ${facts.cupRange || "do not create a capacity value"}. ${sizeGuide} Use clean arrows and simple mini illustrations where helpful. ${bottomStripGuide}`,
     "5": `Image 5 Options: visual comparison. 3-5 horizontal product columns with consistent angle and scale. Each column: product image, short option label, and a small supporting icon if helpful. Only show verified options: ${facts.variants}.`,
     "6": `Image 6 Feature: one visual selling point for ${facts.feature1}. Product large; use one short headline plus 2-3 short icon-supported labels (${[facts.feature2, facts.material, facts.structure].filter(Boolean).join(", ")}).`,
     "7": `Image 7 Detail: macro close-up of material/structure detail (${[facts.material, facts.surfaceFinish, facts.structure, facts.detailParameter].filter(Boolean).join(" / ")}). Use 2-3 short labels paired with small line icons.`,
@@ -1717,6 +1701,7 @@ function fallbackCopyText(text) {
 
 function init() {
   window.renderAll = renderAll;
+  window.promptForSku = promptFor;
   fillSelects();
   renderFields(true);
   renderAll();
