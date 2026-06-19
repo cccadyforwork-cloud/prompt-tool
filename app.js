@@ -406,27 +406,8 @@ function escapeHtml(value) {
 function highlightPromptVariables(text, facts, typeId = "") {
   const escapedText = escapeHtml(text);
   const escapePattern = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const sizeReferenceValues = [
-    facts.productName,
-    facts.cupType,
-    facts.pack,
-    facts.cupRange,
-    facts.fit,
-    facts.dimensions,
-  ];
-  const defaultValues = [
-    facts.productName,
-    facts.selectedSpec,
-    facts.pack,
-    facts.material,
-    facts.color,
-    facts.fit,
-    facts.scene,
-    facts.feature1,
-    facts.feature2,
-    facts.dimensions,
-  ];
-  const values = (typeId === "4" ? sizeReferenceValues : defaultValues)
+
+  const values = promptVariableValues(facts)
     .filter(Boolean)
     .map((value) => String(value).trim())
     .filter((value) => value.length >= 3)
@@ -447,35 +428,40 @@ function highlightPromptVariables(text, facts, typeId = "") {
   return escapedText.replace(new RegExp(patterns.join("|"), "g"), (match) => `<span class="variable-token">◆ ${match}</span>`);
 }
 
-function bracketValue(value) {
-  const clean = String(value || "").trim();
-  return clean ? `[${clean}]` : "";
-}
-
-function bracketPromptVariables(text, facts, typeId = "") {
-  const sizeReferenceValues = [
+function promptVariableValues(facts) {
+  return [
     facts.productName,
     facts.cupType,
-    facts.pack,
-    facts.cupRange,
-    facts.fit,
-    facts.dimensions,
-  ];
-  const defaultValues = [
-    facts.productName,
     facts.selectedSpec,
     facts.pack,
+    facts.cupRange,
     facts.material,
     facts.color,
     facts.fit,
     facts.scene,
     facts.feature1,
     facts.feature2,
+    facts.feature3,
     facts.variants,
     facts.specs,
     facts.dimensions,
+    facts.dimension1,
+    facts.dimension2,
+    facts.dimension3,
+    facts.weightOrCapacity,
+    facts.structure,
+    facts.surfaceFinish,
+    facts.detailParameter,
   ];
-  const values = (typeId === "4" ? sizeReferenceValues : defaultValues)
+}
+
+function bracketValue(value) {
+  const clean = String(value || "").trim();
+  return clean ? `[${clean}]` : "";
+}
+
+function bracketPromptVariables(text, facts, typeId = "") {
+  const values = promptVariableValues(facts)
     .filter(Boolean)
     .map((value) => String(value).trim())
     .filter((value) => value.length >= 3)
@@ -1310,6 +1296,7 @@ function promptFacts(sku, data) {
   const structure = promptValue(data.structure, sku.structure || "");
   const surfaceFinish = promptValue(data.surfaceFinish, "");
   const detailParameter = promptValue(data.detailParameter, "");
+  const titleSpec = stripRepeatedValue(selectedSpec, pack) || productName || selectedSpec;
   const specs = [
     selectedSpec,
     pack,
@@ -1321,6 +1308,7 @@ function promptFacts(sku, data) {
 
   return {
     productName,
+    titleSpec,
     cupType,
     selectedSpec,
     pack,
@@ -1345,9 +1333,21 @@ function promptFacts(sku, data) {
   };
 }
 
+function stripRepeatedValue(value, repeatedValue) {
+  const clean = String(value || "").trim();
+  const repeated = String(repeatedValue || "").trim();
+  if (!clean || !repeated) return clean;
+  return clean
+    .replace(new RegExp(repeated.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "")
+    .replace(/\s*,\s*,/g, ",")
+    .replace(/^[\s,/-]+|[\s,/-]+$/g, "")
+    .trim();
+}
+
 function categoryStyleRule(facts) {
   const combined = [
     facts.productName,
+    facts.titleSpec,
     facts.cupType,
     facts.material,
     facts.fit,
@@ -1404,6 +1404,10 @@ function specModulePrompt(typeId, facts) {
     facts.dimension3 && `Dimension 3: ${facts.dimension3}`,
     facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
   ].filter(Boolean).join(" / ");
+  const specCapsuleItems = [
+    facts.titleSpec,
+    facts.pack,
+  ].filter(Boolean).join(" + ");
   const sizeGuide = dimensionLine ? `Use clean arrows/dashed guides only for verified dimensions: ${dimensionLine}.` : "Do not add measurement arrows or dimension numbers when no verified dimensions are provided.";
   const capacityGuide = facts.cupRange ? `Highlight capacity clearly as ${facts.cupRange}.` : "Do not create a capacity value.";
   const helperIconLabels = [
@@ -1425,20 +1429,55 @@ function specModulePrompt(typeId, facts) {
   const bottomStripGuide = helperIconLabels
     ? `Optional bottom icons: use up to 3 small auxiliary symbols/mini illustrations for ${helperIconLabels}; keep labels tiny and do not repeat capacity, SKU/spec name, or packaging quantity.`
     : "Optional bottom icons: use only small auxiliary symbols if helpful; do not repeat capacity, SKU/spec name, or packaging quantity.";
+  const summarySideLabels = uniquePromptItems([
+    facts.material,
+    facts.structure,
+    facts.feature1,
+  ]).slice(0, 3);
+  const summaryBottomLabels = uniquePromptItems([
+    facts.fit,
+    facts.feature2,
+    facts.color,
+    facts.detailParameter,
+  ], [
+    ...summarySideLabels,
+    facts.titleSpec,
+    facts.selectedSpec,
+    facts.pack,
+    facts.cupRange,
+  ]).slice(0, 4);
 
   const modules = {
     "1": `Image 1 Hero: premium clean product hero. One large product centered/slightly low, 65%-80% of image, bright white/light gray or simple ${facts.scene} background. Text: none, or one tiny ${facts.selectedSpec} label only.`,
     "2": `Image 2 Lifestyle: realistic use photo in ${facts.scene}. Show the product clearly in use with ${facts.fit}; natural scale, soft real lighting. Text: none, or one tiny spec label only.`,
     "3A": `Image 3A Multi-scene: 3-4 equal panels showing different real use scenes. Each panel uses a short readable label plus a small symbol/icon; no dimensions or long captions.`,
     "3B": `Image 3B How-to: 2x2 step grid with four realistic action panels. Use number badges 1-4, small step icons, and one short readable caption per step.`,
-    "4": `Image 4 Size/Capacity: size/capacity reference infographic. Large product is the focus. Show capacity as a clear main text callout paired with a small cup/container icon: ${facts.cupRange || "do not create a capacity value"}. ${sizeGuide} Use clean arrows and simple mini illustrations where helpful. ${bottomStripGuide}`,
+    "4": `Image 4 Size/Capacity: size/capacity reference infographic. Top layout must keep the fixed parameter style: large title “Size Reference”, short subtitle with ${facts.productName}, and a dark rounded spec capsule showing ${specCapsuleItems || facts.titleSpec}. Do not put packaging quantity in the title or subtitle; show packaging quantity only once inside the spec capsule. Large product is the focus in the main area. Show capacity as a clear main text callout paired with a small cup/container icon: ${facts.cupRange || "do not create a capacity value"}. ${sizeGuide} Use clean arrows and simple mini illustrations where helpful. ${bottomStripGuide}`,
     "5": `Image 5 Options: visual comparison. 3-5 horizontal product columns with consistent angle and scale. Each column: product image, short option label, and a small supporting icon if helpful. Only show verified options: ${facts.variants}.`,
     "6": `Image 6 Feature: one visual selling point for ${facts.feature1}. Product large; use one short headline plus 2-3 short icon-supported labels (${[facts.feature2, facts.material, facts.structure].filter(Boolean).join(", ")}).`,
     "7": `Image 7 Detail: macro close-up of material/structure detail (${[facts.material, facts.surfaceFinish, facts.structure, facts.detailParameter].filter(Boolean).join(" / ")}). Use 2-3 short labels paired with small line icons.`,
-    "8": `Image 8 Summary: visual summary. Central product with 3-4 icon modules max. Each module has a short text label plus small icon. Summarize: ${[facts.material, facts.structure, facts.fit, facts.feature1, facts.feature2].filter(Boolean).join(" / ")}. Do not repeat main spec, capacity, or packaging quantity.`,
+    "8": `Image 8 Summary: key-points summary poster, similar to a premium Amazon final selling-points image. Top: large bold product/spec title ${facts.titleSpec}; do not put packaging quantity in the title. If packaging quantity exists, show it once as a gold pill badge near the title: ${facts.pack || "omit packaging if blank"}. Show capacity once as a clear small callout near the title or product hero, paired with a cup/container icon: ${facts.cupRange || "omit capacity if blank"}. Center: large realistic product stack/main product as the hero. Left side: 2-3 circular detail insets with short labels for ${summarySideLabels.join(", ")}. Right side: one circular use-scene inset showing ${facts.fit || facts.scene}. Bottom: dark/brown horizontal icon bar with 2-4 short icon-supported key points from ${summaryBottomLabels.join(", ") || "remaining non-repeated verified selling points"}. Do not repeat any left-side detail inset information in the bottom bar. Do not repeat packaging quantity, capacity, or the main spec in the bottom bar. If there are not enough unique verified points, use fewer bottom icons instead of repeating information.`,
   };
 
   return modules[typeId] || modules["1"];
+}
+
+function uniquePromptItems(items, exclusions = []) {
+  const excluded = exclusions
+    .filter(Boolean)
+    .map((item) => String(item).toLowerCase());
+  const seen = new Set();
+  return items
+    .filter(Boolean)
+    .map((item) => String(item).trim())
+    .filter((item) => {
+      const lower = item.toLowerCase();
+      if (!lower) return false;
+      if (excluded.some((excludedItem) => excludedItem && (lower.includes(excludedItem) || excludedItem.includes(lower)))) return false;
+      if (seen.has(lower)) return false;
+      seen.add(lower);
+      return true;
+    });
 }
 
 function specTemplatePrompt(typeId, sku, data) {
