@@ -223,7 +223,8 @@ let sourcePayload = {
 };
 let fieldOverrides = {};
 let fieldSnapshot = "";
-const OCR_IMAGE_LIMIT = 12;
+const OCR_IMAGE_LIMIT = 32;
+const OCR_FALLBACK_IMAGE_LIMIT = 6;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
 
 function byId(id) {
@@ -280,6 +281,8 @@ function valueMap(sku) {
     scene: cleanFieldDisplayValue(sku.scene || "[USE_SCENE]"),
     feature1: cleanFieldDisplayValue(sku.feature1 || feature1Fallback),
     feature2: cleanFieldDisplayValue(sku.feature2 || feature2Fallback),
+    surfaceFinish: cleanFieldDisplayValue(sku.surfaceFinish || ""),
+    detailParameter: cleanFieldDisplayValue(sku.detailParameter || ""),
     packagingCount: ensureParameterToken("PRODUCT_COUNT_OR_SET", sku.pack || ""),
     singleSpec: sku.singleSpec || `[CURRENT_PRODUCT_OPTION: ${group.promptName || "[PRODUCT_SPEC]"}, ${sku.pack || "[PRODUCT_COUNT_OR_SET]"}]`,
     specList: sku.specList || `[SPEC_LIST: ${(group.promptSpecs || ["[SPECIFICATION_LIST]"]).join(" / ")}]`,
@@ -298,7 +301,7 @@ function fillSelects() {
 
 function renderProductSelect(selectedId = byId("skuSelect")?.value) {
   const products = currentProducts();
-  byId("skuSelect").innerHTML = products.map((sku) => `<option value="${sku.id}">${escapeHtml(sku.label)}</option>`).join("");
+  byId("skuSelect").innerHTML = products.map((sku) => `<option value="${sku.id}">${escapeHtml(skuDisplayLabel(sku))}</option>`).join("");
   if (selectedId && products.some((sku) => sku.id === selectedId)) {
     byId("skuSelect").value = selectedId;
   }
@@ -340,7 +343,20 @@ function cleanTokenValue(value) {
 function cleanFieldDisplayValue(value) {
   const raw = String(value || "").trim();
   if (/^\[[A-Z0-9_ ]+\]$/i.test(raw)) return "";
-  return cleanTokenValue(raw);
+  const clean = cleanTokenValue(raw);
+  return isCodeLikeValue(clean) || isInvalidParameterValue(clean) ? "" : clean;
+}
+
+function isCodeLikeValue(value) {
+  return /<\s*\/?\s*(?:script|style|html|body)|\b(?:body|html)\s*\{|display\s*:|window\.|traceId|polyfill|RegeneratorRuntime|<\/script|src\s*=|PRODUCT_ATTRIBUTE|SKU_OPTION|PRODUCT_TITLE|Source HTML file|Purchase order image OCR|model\s*=|colorEnglish\s*=|[{}]{2,}/i.test(String(value || ""));
+}
+
+function isInvalidParameterValue(value) {
+  const clean = String(value || "").trim();
+  if (!clean) return true;
+  if (!/[0-9A-Za-z\u4e00-\u9fff]/.test(clean)) return true;
+  if (/^\.\s*g$/i.test(clean)) return true;
+  return false;
 }
 
 function ensureParameterToken(name, value) {
@@ -367,6 +383,9 @@ function productParameterRows() {
       cupRange: "",
       fit: cleanTokenValue(values.fit),
       material: cleanTokenValue(values.material),
+      structure: cleanTokenValue(values.structure),
+      surfaceFinish: cleanTokenValue(values.surfaceFinish),
+      detailParameter: cleanTokenValue(values.detailParameter),
       topWidth: sku.dims?.topWidth || values.topWidth || "",
       sideLength: sku.dims?.sideLength || values.sideLength || "",
       bottomWidth: sku.dims?.bottomWidth || values.bottomWidth || "",
@@ -374,10 +393,13 @@ function productParameterRows() {
     };
 
     if (isSelected || !existing.cupRange) {
-      existing.cupRange = sku.dims?.cupRange || extractFirstMatch((values.specList || sku.fit || ""), [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]);
+      existing.cupRange = validRangeValue(sku.dims?.cupRange || values.cupRange || extractFirstMatch((values.specList || sku.fit || ""), [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]));
     }
     if (isSelected || !existing.fit) existing.fit = cleanTokenValue(values.fit);
     if (isSelected || !existing.material) existing.material = cleanTokenValue(values.material);
+    if (isSelected || !existing.structure) existing.structure = cleanTokenValue(values.structure);
+    if (isSelected || !existing.surfaceFinish) existing.surfaceFinish = cleanTokenValue(values.surfaceFinish);
+    if (isSelected || !existing.detailParameter) existing.detailParameter = cleanTokenValue(values.detailParameter);
     if (isSelected || !existing.topWidth) existing.topWidth = values.topWidth || sku.dims?.topWidth || "";
     if (isSelected || !existing.sideLength) existing.sideLength = values.sideLength || sku.dims?.sideLength || "";
     if (isSelected || !existing.bottomWidth) existing.bottomWidth = values.bottomWidth || sku.dims?.bottomWidth || "";
@@ -386,6 +408,13 @@ function productParameterRows() {
   });
 
   return Array.from(groups.values());
+}
+
+function validRangeValue(value) {
+  const clean = cleanFieldDisplayValue(value);
+  if (!clean) return "";
+  if (isCodeLikeValue(clean)) return "";
+  return clean;
 }
 
 function renderProductParameters() {
@@ -400,9 +429,12 @@ function renderProductParameters() {
   list.innerHTML = rows.map((row) => {
     const params = [
       ["Product / Option", row.title],
-      ["Capacity / Range", row.cupRange],
+      ["Size / Range", row.cupRange],
       ["Compatible Use / Scene", row.fit],
       ["Material", row.material],
+      ["Structure / Craft", row.structure],
+      ["Technology", row.surfaceFinish],
+      ["Detail Features", row.detailParameter],
       ["Length / Size 1", row.topWidth],
       ["Width / Size 2", row.sideLength],
       ["Height / Size 3", row.bottomWidth],
@@ -637,7 +669,11 @@ function currentPromptData(sku) {
 }
 
 function cleanHtmlText(html) {
-  const doc = new DOMParser().parseFromString(html, "text/html");
+  const strippedHtml = String(html || "")
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, " ");
+  const doc = new DOMParser().parseFromString(strippedHtml, "text/html");
   doc.querySelectorAll("script, style, noscript, svg").forEach((node) => node.remove());
   const title = doc.querySelector("title")?.textContent || "";
   const metaDescription = doc.querySelector('meta[name="description"]')?.getAttribute("content") || "";
@@ -658,17 +694,110 @@ function normalizeImageUrl(value) {
   return "";
 }
 
-function addImageUrl(urls, seen, value) {
+function imageInfoKeywordScore(text) {
+  const source = String(text || "");
+  const keywordMatches = source.match(/产品参数|产品信息|产品详情|详细资料|品名|克重|尺码|尺寸|面料|材质|材料|工艺|特殊工艺|厚薄|弹力|针数|柔软|规格|型号|重量|容量|PRODUCT\s*NAME|GRAM\s*WEIGHT|SIZE|MATERIAL|TECHNOLOGY|DETAIL|PARAMETER/gi);
+  const largeDetailMatches = source.match(/详情|描述|detail|desc|offer-detail|product-description|商品介绍|产品介绍/gi);
+  return (keywordMatches ? keywordMatches.length * 8 : 0) + (largeDetailMatches ? largeDetailMatches.length * 5 : 0);
+}
+
+function productDetailLabelScore(text) {
+  const source = String(text || "");
+  const labels = source.match(/品\s*名|PRODUCT\s*NAME|克\s*重|GRAM\s*WEIGHT|尺\s*码|SIZE|面\s*料|MATERIAL|工\s*艺|TECHNOLOGY|特\s*殊\s*工\s*艺|厚\s*薄|弹\s*力|针\s*数|柔\s*软|产品参数|产品信息|详细资料|规格参数/gi);
+  return labels ? labels.length : 0;
+}
+
+function isFactoryOrServiceImageText(text) {
+  return /源头厂家|品质保障|为什么选择|工厂面积|厂房面积|生产设备|日发量|日产量|发货员|包装工|仓库面积|仓储能力|行业经验|实力认证|分销代理|代理加盟|网络代销|资质齐全|发货支持|产品支持|运营支持|客服支持|售前咨询|售后指导|来图来样|定制logo|提供精美图片包|48H|48小时|常备库存|快速打样|设计团队|质量保证|厂房|工厂|仓库|物流|发货|退货|开票|服务规则|买家保障|跨境服务|factory|warehouse|production\s+capacity|daily\s+output|shipping|return\s+policy|customer\s+service|distribution\s+agent/i.test(String(text || ""));
+}
+
+function isCommerceOrRecommendationText(text) {
+  return /店铺推荐|爆款推荐|热卖|严选|¥|￥|价格|起批|拿货|下单|包邮|现货|只做精品|包装可定制|支持混批|一件代发|跨境货源|货源|厂家直销|批发|供应商|seller|price|wholesale|dropshipping/i.test(String(text || ""));
+}
+
+function productFeatureTextScore(text) {
+  const matches = String(text || "").match(/防滑|硅胶|点胶|抓地|弹力|高弹|柔软|透气|棉|聚酯|氨纶|尺码|克重|重量|尺寸|材质|面料|工艺|厚薄|针数|袜|鞋|服装|衣服|裤|裙|箱包|背包|手提包|杯|滤纸|cotton|spandex|polyester|silicone|grip|anti.?slip|non.?slip|size|material|weight|texture/gi);
+  return matches ? matches.length : 0;
+}
+
+function isProductInfoImageText(text) {
+  return imageInfoKeywordScore(text) > 0 || productFeatureTextScore(text) > 0;
+}
+
+function urlImageSizeHint(url) {
+  const source = String(url || "");
+  const candidates = [];
+  for (const match of source.matchAll(/(?:^|[._-])([1-9]\d{1,4})x([1-9]\d{1,4})(?:[._-]|$)/gi)) {
+    candidates.push({ width: Number(match[1]), height: Number(match[2]) });
+  }
+  for (const match of source.matchAll(/(?:tps|size)[_-]([1-9]\d{1,4})[_-]([1-9]\d{1,4})/gi)) {
+    candidates.push({ width: Number(match[1]), height: Number(match[2]) });
+  }
+  for (const match of source.matchAll(/[-_]([1-9]\d{1,4})[-_]([1-9]\d{1,4})(?=\.(?:jpe?g|png|webp|gif)(?:[?#]|$))/gi)) {
+    candidates.push({ width: Number(match[1]), height: Number(match[2]) });
+  }
+  const query = source.match(/[?&](?:w|width)=([1-9]\d{1,4})(?:&|$).*?[?&](?:h|height)=([1-9]\d{1,4})(?:&|$)/i)
+    || source.match(/[?&](?:h|height)=([1-9]\d{1,4})(?:&|$).*?[?&](?:w|width)=([1-9]\d{1,4})(?:&|$)/i);
+  if (query) candidates.push({ width: Number(query[1]), height: Number(query[2]) });
+  return candidates.find((size) => Number.isFinite(size.width) && Number.isFinite(size.height)) || null;
+}
+
+function isSmallOrThumbnailImageUrl(url) {
+  const source = String(url || "");
+  if (/alicdn\.com\/cms\/upload\//i.test(source)) return true;
+  if (/\.(?:summ|search|icon|small|thumb|avatar|logo)\.(?:jpe?g|png|webp|gif)(?:[?#]|$)/i.test(source)) return true;
+  if (/\.(?:jpe?g|png|webp|gif)_(?:[1-9]\d{1,3}x[1-9]\d{1,3}|q\d+)(?:[?#]|$)/i.test(source)) return true;
+  if (/(?:^|[._-])(?:16|24|32|40|48|50|58|60|64|80|88|100|120|150|160|180|200|220|240|260|300|310)x(?:16|24|32|40|48|50|58|60|64|80|88|100|120|150|160|180|200|220|240|260|300|310)(?:[._-]|$)/i.test(source)) return true;
+  const size = urlImageSizeHint(source);
+  if (size && (Math.min(size.width, size.height) < 480 || size.width * size.height < 450000)) return true;
+  if (/[?&](?:w|width|h|height)=(?:[1-9]|[1-9]\d|[12]\d\d|3[01]\d)(?:&|$)/i.test(source)) return true;
+  return false;
+}
+
+function isDetailSource(meta) {
+  return String(meta?.source || "").toLowerCase() === "detail";
+}
+
+function isDetailDescriptionGifUrl(url, meta = {}) {
+  const source = String(url || "");
+  return isDetailSource(meta)
+    && /\.gif(?:[?#]|$)/i.test(source)
+    && /cbu01\.alicdn\.com\/img\/ibank\//i.test(source)
+    && !/cms\/upload|(?:logo|icon|avatar|sprite|loading|blank|placeholder|qrcode|qr-code)/i.test(source);
+}
+
+function isSupportedProductImageUrl(url, meta = {}) {
+  const source = String(url || "");
+  if (/\.(?:jpe?g|png|webp)(?:[?#]|$)/i.test(source)) return true;
+  return isDetailDescriptionGifUrl(source, meta);
+}
+
+function isLikelyProductDetailImageCandidate(candidate) {
+  const url = imageCandidateUrl(candidate);
+  const context = typeof candidate === "string" ? "" : candidate?.context || "";
+  if (!url || isSmallOrThumbnailImageUrl(url)) return false;
+  if (isFactoryOrServiceImageText(context) && !isProductInfoImageText(context)) return false;
+  if (isCommerceOrRecommendationText(context) && productDetailLabelScore(context) < 2) return false;
+  return true;
+}
+
+function addImageUrl(urls, seen, value, meta = {}) {
   const normalized = normalizeImageUrl(value);
   if (!normalized || seen.has(normalized)) return;
-  if (!/\.(?:jpe?g|png|webp)(?:[?#]|$)/i.test(normalized)) return;
+  if (!isSupportedProductImageUrl(normalized, meta)) return;
   if (!/alicdn|cbu01|itemcdn|taobao|tmall/i.test(normalized)) return;
-  if (/\.(?:gif|svg)(?:[?#]|$)/i.test(normalized)) return;
+  if (/\.(?:svg)(?:[?#]|$)/i.test(normalized)) return;
   if (/(?:logo|icon|avatar|sprite|loading|blank|placeholder|qrcode|qr-code)/i.test(normalized)) return;
-  if (/(?:^|[_-])(?:20|30|40|50|60|70|80)x(?:20|30|40|50|60|70|80)(?:[_\-.]|$)/i.test(normalized)) return;
-  if (/[?&](?:w|width|h|height)=(?:[1-9]|[1-9]\d)(?:&|$)/i.test(normalized)) return;
+  if (isSmallOrThumbnailImageUrl(normalized)) return;
+  if (isFactoryOrServiceImageText(meta.context || "") && !isProductInfoImageText(meta.context || "")) return;
   seen.add(normalized);
-  urls.push(normalized);
+  urls.push({
+    url: normalized,
+    source: meta.source || "html",
+    context: meta.context || "",
+    index: Number.isFinite(meta.index) ? meta.index : urls.length,
+    score: (meta.score || 0) + imageInfoKeywordScore(meta.context || ""),
+  });
 }
 
 function extractSrcsetUrls(value) {
@@ -678,26 +807,38 @@ function extractSrcsetUrls(value) {
     .filter(Boolean);
 }
 
-function extractImageUrlsFromHtml(html) {
+function nearbyImageContext(html, index, radius = 500) {
+  const source = String(html || "");
+  const start = Math.max(0, index - radius);
+  const end = Math.min(source.length, index + radius);
+  return cleanHtmlText(source.slice(start, end)).slice(0, 600);
+}
+
+function extractImageUrlsFromHtml(html, sourceName = "html") {
   const urls = [];
   const seen = new Set();
   const doc = new DOMParser().parseFromString(html, "text/html");
   const imageAttrs = ["src", "data-src", "data-original", "data-lazy-src", "data-img", "original", "imageurl", "imageUrl"];
   const srcsetAttrs = ["srcset", "data-srcset"];
 
-  doc.querySelectorAll("img, source").forEach((node) => {
-    imageAttrs.forEach((attr) => addImageUrl(urls, seen, node.getAttribute(attr)));
+  doc.querySelectorAll("img, source").forEach((node, index) => {
+    const context = [node.getAttribute("alt"), node.getAttribute("title"), node.getAttribute("data-title")].filter(Boolean).join(" ");
+    imageAttrs.forEach((attr) => addImageUrl(urls, seen, node.getAttribute(attr), { source: sourceName, context, index }));
     srcsetAttrs.forEach((attr) => {
-      extractSrcsetUrls(node.getAttribute(attr)).forEach((url) => addImageUrl(urls, seen, url));
+      extractSrcsetUrls(node.getAttribute(attr)).forEach((url) => addImageUrl(urls, seen, url, { source: sourceName, context, index }));
     });
   });
 
-  const urlPattern = /(?:https?:\\?\/\\?\/|\/\/)[^"'<>\s\\]+?\.(?:jpe?g|png|webp)(?:\?[^"'<>\s\\]*)?/gi;
+  const urlPattern = /(?:https?:\\?\/\\?\/|\/\/)[^"'<>\s\\]+?\.(?:jpe?g|png|webp|gif)(?:\?[^"'<>\s\\]*)?/gi;
   for (const match of html.matchAll(urlPattern)) {
-    addImageUrl(urls, seen, match[0]);
+    addImageUrl(urls, seen, match[0], {
+      source: sourceName,
+      context: nearbyImageContext(html, match.index || 0),
+      index: match.index || urls.length,
+    });
   }
 
-  return urls.slice(0, OCR_IMAGE_LIMIT);
+  return urls;
 }
 
 function extractDetailUrlsFromHtml(html) {
@@ -711,7 +852,7 @@ function extractDetailUrlsFromHtml(html) {
   patterns.forEach((pattern) => {
     for (const match of html.matchAll(pattern)) {
       const url = normalizeImageUrl(match[1]);
-      if (url && !seen.has(url)) {
+      if (url && isProductDetailFragmentUrl(url) && !seen.has(url)) {
         seen.add(url);
         urls.push(url);
       }
@@ -719,6 +860,11 @@ function extractDetailUrlsFromHtml(html) {
   });
 
   return urls.slice(0, 2);
+}
+
+function isProductDetailFragmentUrl(url) {
+  return /(?:itemcdn\.tmall\.com\/1688offer|desc\.alicdn\.com|cbu01\.alicdn\.com|detail\.1688\.com)/i.test(String(url || ""))
+    && !/finance|credit|quota|rule|service|agreement/i.test(String(url || ""));
 }
 
 async function fetchDetailHtml(detailUrls, onProgress) {
@@ -737,16 +883,57 @@ async function fetchDetailHtml(detailUrls, onProgress) {
   return fragments.join("\n");
 }
 
-function uniqueImageUrls(...groups) {
-  const urls = [];
+function imageCandidateUrl(candidate) {
+  return typeof candidate === "string" ? normalizeImageUrl(candidate) : normalizeImageUrl(candidate?.url);
+}
+
+function imageCandidateScore(candidate, fallbackIndex = 0) {
+  if (typeof candidate === "string") return fallbackIndex;
+  const sourceScore = candidate.source === "detail" ? 100 : candidate.source === "html" ? 10 : 0;
+  const context = candidate.context || "";
+  const productInfoBoost = productDetailLabelScore(context) * 20 + (isProductInfoImageText(context) ? 12 : 0);
+  const factoryPenalty = isFactoryOrServiceImageText(context) ? 80 : 0;
+  return sourceScore + (candidate.score || 0) + productInfoBoost - factoryPenalty - Math.min(candidate.index || fallbackIndex, 10000) / 10000;
+}
+
+function uniqueImageCandidates(...groups) {
+  const candidates = [];
   const seen = new Set();
-  groups.flat().forEach((url) => {
-    const normalized = normalizeImageUrl(url);
+  groups.flat().forEach((candidate, index) => {
+    const normalized = imageCandidateUrl(candidate);
     if (!normalized || seen.has(normalized)) return;
+    const normalizedCandidate = typeof candidate === "string"
+      ? { url: normalized, source: "html", context: "", index, score: imageCandidateScore(candidate, index) }
+      : { ...candidate, url: normalized };
+    if (!isLikelyProductDetailImageCandidate(normalizedCandidate)) return;
     seen.add(normalized);
-    urls.push(normalized);
+    candidates.push({ ...normalizedCandidate, score: imageCandidateScore(normalizedCandidate, index) });
   });
-  return urls.slice(0, OCR_IMAGE_LIMIT);
+  const detailCandidates = candidates
+    .filter((candidate) => candidate.source === "detail")
+    .sort((left, right) => right.score - left.score);
+  const keywordCandidates = candidates
+    .filter((candidate) => candidate.source !== "detail" && isProductInfoImageText(candidate.context))
+    .sort((left, right) => right.score - left.score);
+  const fallbackCandidates = candidates
+    .filter((candidate) => candidate.source !== "detail" && !isProductInfoImageText(candidate.context))
+    .sort((left, right) => right.score - left.score)
+    .slice(0, OCR_FALLBACK_IMAGE_LIMIT);
+  return uniqueByUrl([
+    ...detailCandidates,
+    ...keywordCandidates,
+    ...fallbackCandidates,
+  ]).slice(0, OCR_IMAGE_LIMIT);
+}
+
+function uniqueByUrl(candidates) {
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    const url = imageCandidateUrl(candidate);
+    if (!url || seen.has(url)) return false;
+    seen.add(url);
+    return true;
+  });
 }
 
 function loadOcrEngine() {
@@ -775,6 +962,205 @@ function cleanOcrText(text) {
     .trim();
 }
 
+function isUsefulOcrText(text) {
+  const clean = cleanOcrText(text);
+  if (clean.length < 8) return false;
+  if (isFactoryOrServiceImageText(clean) && productDetailLabelScore(clean) < 2) return false;
+  if (isCommerceOrRecommendationText(clean) && productDetailLabelScore(clean) < 2) return false;
+  if (Object.keys(extractProductDetailAttributes(clean)).length) return true;
+  if (imageInfoKeywordScore(clean) > 0) return true;
+  if (!isProductInfoImageText(clean)) return false;
+  const meaningfulChars = (clean.match(/[A-Za-z0-9\u4e00-\u9fff]/g) || []).length;
+  return meaningfulChars >= 12 && meaningfulChars / clean.length >= 0.35;
+}
+
+function hasEnoughProductDetail(text) {
+  const attrs = extractProductDetailAttributes(text);
+  return productDetailLabelScore(text) >= 3 || Boolean(attrs.Material && (attrs.Size || attrs.Weight || attrs.Technology || attrs.SpecialCraft));
+}
+
+function compactOcrKeyText(text) {
+  return String(text || "")
+    .replace(/[·•"“”'‘’()[\]{}|_~:：,，.。;；/\\-]+/g, " ")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function normalizeDetailValue(value) {
+  return cleanFieldDisplayValue(String(value || "")
+    .replace(/[-—]{2,}/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:：,，.。;；/\\-]+|[\s:：,，.。;；/\\-]+$/g, "")
+    .trim());
+}
+
+function usefulDetailValue(value) {
+  const clean = normalizeDetailValue(value);
+  if (!clean || !/[0-9A-Za-z\u4e00-\u9fff]/.test(clean)) return "";
+  if (isCodeLikeValue(clean)) return "";
+  const compact = compactOcrKeyText(clean).toLowerCase();
+  const labelOnlyValues = new Set([
+    "productname",
+    "gramweight",
+    "size",
+    "material",
+    "technology",
+    "品名",
+    "克重",
+    "尺码",
+    "面料",
+    "工艺",
+    "特殊工艺",
+  ]);
+  return labelOnlyValues.has(compact) ? "" : clean;
+}
+
+function isOverlongDetailValue(value) {
+  const clean = String(value || "").trim();
+  return clean.length > 120 || clean.split(/\s+/).length > 18;
+}
+
+function normalizeMaterialPercent(value) {
+  const clean = String(value || "").replace(/[^\d.]/g, "");
+  if (!clean) return "";
+  const numeric = Number(clean);
+  if (!Number.isFinite(numeric)) return "";
+  if (numeric <= 100) return clean.replace(/\.0+$/, "");
+  if (/^\d{3}$/.test(clean) && clean.endsWith("3")) return clean.slice(0, 2);
+  if (/^\d{3}$/.test(clean) && Number(clean.slice(0, 2)) <= 100) return clean.slice(0, 2);
+  return "";
+}
+
+function extractPercentAfterLabel(text, labelPattern) {
+  const match = String(text || "").match(new RegExp(`(?:${labelPattern})\\s*([0-9.]+)\\s*%`, "i"));
+  return normalizeMaterialPercent(match?.[1] || "");
+}
+
+function translateProductDetailValue(key, value) {
+  const clean = usefulDetailValue(value);
+  if (!clean) return "";
+  const normalized = compactOcrKeyText(clean).toLowerCase();
+  if (key === "Material") {
+    const cotton = extractPercentAfterLabel(clean, "棉|cotton");
+    const spandex = extractPercentAfterLabel(clean, "氨\\s*纶|氨\\s*给|各\\s*纶|胺\\s*纶|spandex");
+    const polyester = extractPercentAfterLabel(clean, "聚\\s*[酯酷醒酮]\\s*纤\\s*维|聚\\s*[酯酷醒酮]|polyester");
+    const parts = [
+      cotton && `${cotton}% cotton`,
+      spandex && `${spandex}% spandex`,
+      polyester && `${polyester}% polyester fiber`,
+    ].filter(Boolean);
+    return parts.length ? parts.join(", ") : "";
+  }
+  if (key === "Weight") {
+    const weight = clean.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:g|克)/i)?.[1];
+    return weight ? `${weight} g` : "";
+  }
+  if (key === "Size") {
+    const womenSize = clean.match(/(?:WOMAN|WOMEN|女士|女)\s*[\(（]?\s*([0-9]+\s*[-~]\s*[0-9]+)\s*[\)）]?/i)?.[1];
+    if (womenSize) return `women's ${womenSize.replace(/\s+/g, "")}`;
+    if (/均码|one\s*size|free\s*size/i.test(clean) && !isOverlongDetailValue(clean)) return "one size";
+    return "";
+  }
+  if (key === "Technology") {
+    const values = [];
+    if (/灵活|flex/.test(clean)) values.push("flexible fit");
+    if (/防滑|anti.?slip|grip/i.test(clean)) values.push("anti-slip grip");
+    if (/胶印|printed?|print/i.test(clean)) values.push("printed grip pattern");
+    return values.length ? values.join(", ") : "";
+  }
+  if (key === "SpecialCraft") {
+    const values = [];
+    if (/厚薄|适中|medium/i.test(clean)) values.push("medium thickness");
+    if (/柔软|细腻|soft/i.test(clean)) values.push("soft and delicate texture");
+    if (/高弹|橡筋|elastic/i.test(clean)) values.push("high-elastic cuff");
+    if (/针数|密|dense|knit/i.test(clean)) values.push("dense knit count");
+    if (/阻菌|抗菌|防臭|antibacterial|deodor/i.test(clean)) values.push("antibacterial deodorizing");
+    if (/受力|均匀|pressure/i.test(clean)) values.push("even pressure distribution");
+    return values.length ? values.join(", ") : "";
+  }
+  if (key === "Product Detail Name") {
+    const compact = clean.replace(/\s+/g, "");
+    if (/五[指趾].*袜/.test(compact)) {
+      const height = /中[筒商]|mid/i.test(compact) ? "mid-calf " : "";
+      const antiSlip = /防[滑涓]|anti.?slip|grip/i.test(compact) ? "anti-slip " : "";
+      return `solid color five-toe ${height}${antiSlip}socks`.replace(/\s+/g, " ").trim();
+    }
+    return clean;
+  }
+  return normalized || clean;
+}
+
+function translateAttributeValue(key, value) {
+  const clean = cleanFieldDisplayValue(value);
+  if (!clean) return "";
+  if (/^Material$/i.test(key)) {
+    const detailMaterial = translateProductDetailValue("Material", clean);
+    if (detailMaterial) return detailMaterial;
+    if (/^棉$/i.test(clean)) return "cotton";
+    if (/氨纶/.test(clean)) return "spandex";
+    if (/聚酯|涤纶/.test(clean)) return "polyester";
+  }
+  if (/^Size$/i.test(key)) return translateProductDetailValue("Size", clean);
+  if (/^Weight$/i.test(key)) return translateProductDetailValue("Weight", clean);
+  if (/^Technology$/i.test(key)) return translateProductDetailValue("Technology", clean);
+  if (/^SpecialCraft$/i.test(key)) return translateProductDetailValue("SpecialCraft", clean);
+  return clean;
+}
+
+function mergeDetailFeatureValues(...values) {
+  const seen = new Set();
+  return values
+    .filter(Boolean)
+    .flatMap((value) => String(value).split(/\s*,\s*/))
+    .map((value) => value.trim())
+    .filter((value) => {
+      const key = value.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join(", ");
+}
+
+function extractTextureScaleDetails(text) {
+  const source = String(text || "");
+  const values = [];
+  const thickness = extractFirstMatch(source, [
+    /(?:厚\s*薄|Thickness)\s*[:：]\s*(薄|适中|厚|thin|medium|thick)/i,
+  ]);
+  const elasticity = extractFirstMatch(source, [
+    /(?:弹\s*力|Elasticity)\s*[:：]\s*(无|微弹|高弹|高|none|low|medium|high)/i,
+  ]);
+  const knitCount = extractFirstMatch(source, [
+    /(?:针\s*数|Knit\s*Count|Needle\s*Count)\s*[:：]\s*(粗|密|coarse|dense)/i,
+  ]);
+  const softness = extractFirstMatch(source, [
+    /(?:柔\s*软|Softness)\s*[:：]\s*(硬|适中|软|hard|medium|soft)/i,
+  ]);
+  if (/适中|medium/i.test(thickness)) values.push("medium thickness");
+  if (/薄|thin/i.test(thickness)) values.push("thin fabric thickness");
+  if (/厚|thick/i.test(thickness)) values.push("thick fabric feel");
+  if (/高弹|高|high/i.test(elasticity)) values.push("high elasticity");
+  if (/微弹|medium|low/i.test(elasticity)) values.push("slight elasticity");
+  if (/无|none/i.test(elasticity)) values.push("no stretch");
+  if (/密|dense/i.test(knitCount)) {
+    values.push("dense knit count");
+  }
+  if (/粗|coarse/i.test(knitCount)) {
+    values.push("coarse knit count");
+  }
+  if (/软|soft/i.test(softness)) {
+    values.push("soft hand feel");
+  }
+  if (/适中|medium/i.test(softness)) {
+    values.push("medium-soft hand feel");
+  }
+  if (/硬|hard/i.test(softness)) {
+    values.push("firm hand feel");
+  }
+  return values.join(", ");
+}
+
 function decodeHtmlEntities(value) {
   return String(value || "")
     .replace(/&gt;/gi, ">")
@@ -784,22 +1170,45 @@ function decodeHtmlEntities(value) {
     .replace(/&#39;|&apos;/gi, "'");
 }
 
+function isSockFamilyText(text) {
+  return /瑜伽袜|普拉提袜|五指袜|五趾袜|分趾袜|船袜|短袜|隐形袜|浅口袜|袜子|袜|toe socks|grip socks|no[-\s]?show socks?|liner socks?|ankle socks?|socks/i.test(text);
+}
+
+function isYogaSockText(text) {
+  return isSockFamilyText(text) && /瑜伽|普拉提|防滑|点胶|硅胶|yoga|pilates|barre|grip|non[-\s]?slip|silicone/i.test(text);
+}
+
 function colorName(rawColor) {
   const clean = String(rawColor || "").replace(/[()（）百人复购\s]/g, "").trim();
   const colorMap = {
+    白: "white",
     白色: "white",
+    本白: "white",
+    本色: "white",
+    本全: "white",
+    米白: "off white",
+    乳白: "off white",
+    奶白: "off white",
+    象牙白: "ivory white",
     草绿: "grass green",
+    绿: "green",
     绿色: "green",
+    蓝: "blue",
     蓝色: "blue",
     水蓝: "light blue",
     淡蓝: "light blue",
+    紫: "purple",
     紫色: "purple",
     浅紫: "light purple",
+    黑: "black",
     黑色: "black",
+    粉: "pink",
     粉色: "pink",
     浅粉: "light pink",
     粉红: "pink",
+    红: "red",
     红色: "red",
+    灰: "gray",
     灰色: "gray",
     银灰: "silver gray",
     深灰: "dark gray",
@@ -814,9 +1223,91 @@ function colorName(rawColor) {
   return colorMap[clean] || clean;
 }
 
+function displayColorName(rawColor, fallback = "") {
+  const source = String(rawColor || fallback || "")
+    .replace(/（[^）]*）|\([^)]*\)/g, "")
+    .replace(/[()（）百人复购]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!source) return "";
+  const directChinese = colorFromTextSegment(source, []);
+  if (directChinese) return directChinese;
+  const normalized = source.toLowerCase().replace(/[\s_-]+/g, "");
+  const englishMap = {
+    white: "白色",
+    offwhite: "米白",
+    ivorywhite: "象牙白",
+    ivory: "象牙白",
+    black: "黑色",
+    gray: "灰色",
+    grey: "灰色",
+    silvergray: "银灰",
+    darkgray: "深灰",
+    blue: "蓝色",
+    lightblue: "淡蓝",
+    green: "绿色",
+    grassgreen: "草绿",
+    beangreen: "豆绿",
+    purple: "紫色",
+    lightpurple: "浅紫",
+    pink: "粉色",
+    lightpink: "浅粉",
+    nudepink: "肉粉",
+    red: "红色",
+    khaki: "卡其",
+    lightkhaki: "浅卡",
+  };
+  return englishMap[normalized] || source;
+}
+
+function canonicalColorKey(value) {
+  const raw = String(value || "")
+    .toLowerCase()
+    .replace(/[()（）百人复购\s_-]+/g, "")
+    .trim();
+  const named = colorName(value).toLowerCase().replace(/\s+/g, "");
+  const groups = {
+    white: ["白", "白色", "本白", "本色", "本全", "米白", "乳白", "奶白", "象牙白", "white", "offwhite", "ivorywhite", "ivory", "cream"],
+    black: ["黑", "黑色", "black"],
+    gray: ["灰", "灰色", "银灰", "深灰", "gray", "grey", "silvergray", "darkgray"],
+    blue: ["蓝", "蓝色", "水蓝", "淡蓝", "blue", "lightblue"],
+    green: ["绿", "绿色", "草绿", "豆绿", "green", "grassgreen", "beangreen"],
+    purple: ["紫", "紫色", "浅紫", "purple", "lightpurple"],
+    pink: ["粉", "粉色", "浅粉", "粉红", "肉粉", "pink", "lightpink", "nudepink"],
+    red: ["红", "红色", "red"],
+    khaki: ["浅卡", "卡其", "khaki", "lightkhaki"],
+  };
+  const matched = Object.entries(groups).find(([, aliases]) => aliases.includes(raw) || aliases.includes(named));
+  return matched ? matched[0] : named || raw;
+}
+
+function colorAliasValues(value) {
+  const canonical = canonicalColorKey(value);
+  const aliases = {
+    white: ["白", "白色", "本白", "本色", "本全", "米白", "乳白", "奶白", "象牙白", "white", "off white", "ivory", "cream"],
+    black: ["黑", "黑色", "black"],
+    gray: ["灰", "灰色", "银灰", "深灰", "gray", "grey", "silver gray", "dark gray"],
+    blue: ["蓝", "蓝色", "水蓝", "淡蓝", "blue", "light blue"],
+    green: ["绿", "绿色", "草绿", "豆绿", "green", "grass green", "bean green"],
+    purple: ["紫", "紫色", "浅紫", "purple", "light purple"],
+    pink: ["粉", "粉色", "浅粉", "粉红", "肉粉", "pink", "light pink", "nude pink"],
+    red: ["红", "红色", "red"],
+    khaki: ["浅卡", "卡其", "khaki", "light khaki"],
+  };
+  return Array.from(new Set([
+    String(value || "").replace(/\s+/g, ""),
+    colorName(value),
+    ...(aliases[canonical] || []),
+  ].filter(Boolean)));
+}
+
 function normalizeModelText(text) {
   return decodeHtmlEntities(text)
+    .replace(/(阿里)\s+([A-Z]{1,4}\d{2,5})/gi, "$1$2")
+    .replace(/\b([1-9]\d?)\s*[。.,，]\s*(?=(?:阿里\s*)?[A-Z]{1,4}\s*\d{2,5})/g, "$1 ")
+    .replace(/\b([A-Z]{1,4})\s+(\d{2,5})\b/gi, "$1$2")
     .replace(/([A-Z]{1,4}\d{2})\s+(\d)(?=[\u4e00-\u9fff])/g, "$1$2")
+    .replace(/\b([A-Z]{1,4}\d{2,4})\s+(\d)(?=\s*(?:黑|白|本白|本色|本全|米白|乳白|奶白|粉|蓝|绿|草绿|紫|灰|红|浅卡|卡其|颜色|尺码|均码))/gi, "$1$2")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -855,10 +1346,108 @@ function extractSupplierTitles(html) {
   return titles;
 }
 
+function detailValueBetween(source, startPattern, endPatterns) {
+  const match = source.match(startPattern);
+  if (!match) return "";
+  const start = (match.index || 0) + match[0].length;
+  const tail = source.slice(start, start + 260);
+  const endIndexes = endPatterns
+    .map((pattern) => {
+      const endMatch = tail.match(pattern);
+      return endMatch ? endMatch.index : -1;
+    })
+    .filter((index) => index > 0);
+  const end = endIndexes.length ? Math.min(...endIndexes) : tail.length;
+  return normalizeDetailValue(tail.slice(0, end));
+}
+
+function firstUsefulDetailValue(source, startPatterns, endPatterns) {
+  for (const pattern of startPatterns) {
+    const value = usefulDetailValue(detailValueBetween(source, pattern, endPatterns));
+    if (value) return value;
+  }
+  return "";
+}
+
+function extractProductDetailAttributes(text) {
+  const source = decodeHtmlEntities(text || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!source) return {};
+  const endLabels = [
+    /品\s*名\s*(?:[\(（]\s*PRODUCT\s*NAME\s*[\)）])?|PRODUCT\s*NAME/i,
+    /克\s*重\s*(?:[\(（]\s*GRAM\s*WEIGHT\s*[\)）])?|GRAM\s*WEIGHT/i,
+    /尺\s*码\s*(?:[\(（]\s*SIZE\s*[\)）])?|SIZE/i,
+    /面\s*料\s*(?:[\(（]\s*MATERIAL\s*[\)）])?|MATERIAL/i,
+    /工\s*艺\s*(?:[\(（]\s*TECHNOLOGY\s*[\)）])?|TECHNOLOGY/i,
+    /特\s*殊\s*工\s*艺/i,
+    /厚\s*薄|弹\s*力|针\s*数|柔\s*软/i,
+  ];
+  const attrs = {};
+  const entries = [
+    ["Product Detail Name", [
+      /品\s*名\s*[\(（]\s*PRODUCT\s*NAME\s*[\)）]\s*[:：]?\s*/i,
+      /(?:品\s*名|PRODUCT\s*NAME)\s*[:：]?\s*/i,
+    ]],
+    ["Weight", [
+      /克\s*重\s*[\(（]\s*GRAM\s*WEIGHT\s*[\)）]\s*[:：]?\s*/i,
+      /(?:克\s*重|GRAM\s*WEIGHT)\s*[:：]?\s*/i,
+    ]],
+    ["Size", [
+      /尺\s*码\s*[\(（]\s*SIZE\s*[\)）]\s*[:：]?\s*/i,
+      /(?:尺\s*码|SIZE)\s*[:：]?\s*/i,
+    ]],
+    ["Material", [
+      /面\s*料\s*[\(（]\s*MATERIAL\s*[\)）]\s*[:：]?\s*/i,
+      /(?:面\s*料|MATERIAL)\s*[:：]?\s*/i,
+    ]],
+    ["Technology", [
+      /工\s*艺\s*[\(（]\s*TECHNOLOGY\s*[\)）]\s*[:：]?\s*/i,
+      /(?:工\s*艺|TECHNOLOGY)\s*[:：]?\s*/i,
+    ]],
+    ["SpecialCraft", [
+      /特\s*殊\s*工\s*艺\s*[:：]?\s*/i,
+    ]],
+  ];
+  entries.forEach(([key, startPatterns]) => {
+    const rawValue = firstUsefulDetailValue(source, startPatterns, endLabels);
+    const value = translateProductDetailValue(key, rawValue);
+    if (value) attrs[key] = value;
+  });
+
+  if (!attrs.Material) {
+    const material = translateProductDetailValue("Material", source);
+    if (material) attrs.Material = material;
+  }
+  if (!attrs.Weight) {
+    const weight = extractFirstMatch(source, [/(?:克\s*重|GRAM\s*WEIGHT)?\s*([0-9]+(?:\.[0-9]+)?)\s*[gG克]/i]);
+    if (weight) attrs.Weight = `${weight} g`;
+  }
+  if (!attrs.Size) {
+    const size = extractFirstMatch(source, [/(?:WOMAN|WOMEN|女士|女)\s*[\(（]?\s*([0-9]+\s*[-~]\s*[0-9]+)\s*[\)）]?/i]);
+    if (size) attrs.Size = `women's ${size.replace(/\s+/g, "")}`;
+  }
+  if (!attrs.Technology && /灵活|防滑|胶印/i.test(source)) {
+    attrs.Technology = translateProductDetailValue("Technology", source);
+  }
+  if (!attrs.SpecialCraft && /厚薄|弹力|针数|柔软|细腻|高弹|橡筋|阻菌|抗菌|防臭|受力|均匀/i.test(source)) {
+    attrs.SpecialCraft = translateProductDetailValue("SpecialCraft", source);
+  }
+  const textureScaleDetails = extractTextureScaleDetails(source);
+  if (textureScaleDetails) {
+    attrs.SpecialCraft = mergeDetailFeatureValues(attrs.SpecialCraft, textureScaleDetails);
+  }
+  return attrs;
+}
+
 function simplifySupplierTitle(title, context = "") {
   const combined = `${title} ${context}`;
-  if (/瑜伽袜|普拉提|五指袜|五趾袜|分趾袜|toe socks|grip socks|pilates|yoga/i.test(combined)) {
+  if (isYogaSockText(combined)) {
     return "women's non-slip five-toe yoga pilates socks";
+  }
+  if (isSockFamilyText(combined)) {
+    return "women's no-show grip socks";
   }
   if (/咖啡滤纸|filter paper|coffee filter/i.test(combined)) {
     return "natural unbleached coffee paper filters";
@@ -968,18 +1557,58 @@ function extractSupplierStructuredText(html) {
     const value = extractFirstMatch(decoded, [new RegExp(`"${sourceLabel}"\\s*:\\s*"([^"]+)"`, "i")]);
     return value ? `PRODUCT_ATTRIBUTE: ${targetLabel}=${value}` : "";
   }).filter(Boolean);
-
   return [...titleLines, ...attrLines, ...skuLines].join("\n");
 }
 
-function canLoadImage(url) {
+function imageHasEnoughReadableSize(size) {
+  if (!size) return false;
+  return Math.min(size.width, size.height) >= 480 && size.width * size.height >= 450000;
+}
+
+function loadImageMeta(url) {
   return new Promise((resolve) => {
     const image = new Image();
     image.crossOrigin = "anonymous";
-    image.onload = () => resolve(true);
-    image.onerror = () => resolve(false);
+    image.onload = () => resolve({
+      ok: true,
+      width: image.naturalWidth || image.width || 0,
+      height: image.naturalHeight || image.height || 0,
+    });
+    image.onerror = () => resolve({ ok: false, width: 0, height: 0 });
     image.src = url;
   });
+}
+
+function loadImageForCanvas(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Image failed to load"));
+    image.src = url;
+  });
+}
+
+async function imageUrlToOcrInput(url) {
+  try {
+    const image = await loadImageForCanvas(url);
+    const width = image.naturalWidth || image.width || 0;
+    const height = image.naturalHeight || image.height || 0;
+    if (!imageHasEnoughReadableSize({ width, height })) return { input: url, size: { ok: false, width, height } };
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return { input: url, size: { ok: true, width, height } };
+    context.drawImage(image, 0, 0, width, height);
+    return {
+      input: canvas.toDataURL("image/png"),
+      size: { ok: true, width, height },
+    };
+  } catch {
+    const size = await loadImageMeta(url);
+    return { input: url, size };
+  }
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -993,34 +1622,43 @@ function withTimeout(promise, timeoutMs, message) {
 
 async function ocrImageUrls(imageUrls, onProgress) {
   if (!imageUrls.length) {
-    return { text: "", scannedCount: 0, failedCount: 0, available: false };
+    return { text: "", scannedCount: 0, failedCount: 0, acceptedCount: 0, available: false };
   }
 
   let Tesseract;
   try {
     Tesseract = await loadOcrEngine();
   } catch {
-    return { text: "", scannedCount: 0, failedCount: imageUrls.length, available: false };
+    return { text: "", scannedCount: 0, failedCount: imageUrls.length, acceptedCount: 0, available: false };
   }
 
   const texts = [];
   let failedCount = 0;
+  let attemptedCount = 0;
   for (let index = 0; index < imageUrls.length; index += 1) {
-    const url = imageUrls[index];
-    onProgress?.(`正在识别 1688 详情图文字... ${index + 1}/${imageUrls.length}`);
+    const candidate = typeof imageUrls[index] === "string" ? { url: imageUrls[index], source: "html" } : imageUrls[index];
+    const url = imageCandidateUrl(candidate);
+    if (!url) continue;
+    attemptedCount += 1;
+    const sourceLabel = candidate.source === "detail" ? "详情描述图" : "页面图片";
+    onProgress?.(`正在识别 1688 ${sourceLabel}文字... ${index + 1}/${imageUrls.length}`);
     try {
-      const canLoad = await withTimeout(canLoadImage(url), 10000, "Image load timed out");
-      if (!canLoad) {
+      const ocrInput = await withTimeout(imageUrlToOcrInput(url), 15000, "Image load timed out");
+      const imageMeta = ocrInput.size;
+      if (!imageMeta.ok || !imageHasEnoughReadableSize(imageMeta)) {
         failedCount += 1;
         continue;
       }
       const result = await withTimeout(
-        Tesseract.recognize(url, "chi_sim+eng"),
-        30000,
+        Tesseract.recognize(ocrInput.input, "chi_sim+eng"),
+        45000,
         "OCR timed out",
       );
       const text = cleanOcrText(result?.data?.text || "");
-      if (text) texts.push(text);
+      if (isUsefulOcrText(text)) {
+        texts.push(text);
+        if (candidate.source !== "detail" && hasEnoughProductDetail(texts.join("\n"))) break;
+      }
     } catch {
       failedCount += 1;
     }
@@ -1028,8 +1666,9 @@ async function ocrImageUrls(imageUrls, onProgress) {
 
   return {
     text: texts.join("\n"),
-    scannedCount: imageUrls.length - failedCount,
+    scannedCount: attemptedCount - failedCount,
     failedCount,
+    acceptedCount: texts.length,
     available: true,
   };
 }
@@ -1067,28 +1706,38 @@ async function ocrLocalImageFile(file, onProgress) {
 
 async function extractSupplierSourceText(html, onProgress) {
   if (!html) {
-    return { text: "", imageCount: 0, scannedCount: 0, failedCount: 0, ocrAvailable: false };
+    return { text: "", imageCount: 0, candidateCount: 0, scannedCount: 0, failedCount: 0, ocrAvailable: false };
   }
 
   const baseText = cleanHtmlText(html);
   const structuredText = extractSupplierStructuredText(html);
   const detailUrls = extractDetailUrlsFromHtml(html);
   const detailHtml = detailUrls.length ? await fetchDetailHtml(detailUrls, onProgress) : "";
-  const imageUrls = uniqueImageUrls(
-    extractImageUrlsFromHtml(html),
-    detailHtml ? extractImageUrlsFromHtml(detailHtml) : [],
-  );
+  const htmlImageCandidates = extractImageUrlsFromHtml(html, "html");
+  const detailImageCandidates = detailHtml ? extractImageUrlsFromHtml(detailHtml, "detail") : [];
+  const allImageCandidates = [...htmlImageCandidates, ...detailImageCandidates];
+  const imageUrls = uniqueImageCandidates(detailImageCandidates, htmlImageCandidates);
   if (!imageUrls.length) {
-    return { text: [baseText, structuredText].filter(Boolean).join("\n"), imageCount: 0, scannedCount: 0, failedCount: 0, ocrAvailable: false };
+    const attributeSource = productAttributeSourceText(structuredText);
+    const detailAttrLines = Object.entries(extractProductDetailAttributes(attributeSource)).map(([key, value]) => (
+      `PRODUCT_ATTRIBUTE: ${key}=${value}`
+    ));
+    return { text: [baseText, structuredText, ...detailAttrLines].filter(Boolean).join("\n"), imageCount: 0, candidateCount: allImageCandidates.length, scannedCount: 0, failedCount: 0, ocrAvailable: false };
   }
 
-  onProgress?.(`已找到 ${imageUrls.length} 张 1688 图片，正在尝试 OCR 识别详情图文字...`);
+  onProgress?.(`已找到 ${allImageCandidates.length} 张 1688 图片，全局筛选后优先识别 ${imageUrls.length} 张疑似产品详情/参数图...`);
   const ocr = await ocrImageUrls(imageUrls, onProgress);
+  const attributeSource = productAttributeSourceText(structuredText, ocr.text);
+  const detailAttrLines = Object.entries(extractProductDetailAttributes(attributeSource)).map(([key, value]) => (
+    `PRODUCT_ATTRIBUTE: ${key}=${value}`
+  ));
   return {
-    text: [baseText, structuredText, cleanHtmlText(detailHtml), ocr.text && `1688 image OCR text: ${ocr.text}`].filter(Boolean).join("\n"),
+    text: [baseText, structuredText, ...detailAttrLines, attributeSource && `1688 image OCR text: ${attributeSource}`].filter(Boolean).join("\n"),
     imageCount: imageUrls.length,
+    candidateCount: allImageCandidates.length,
     scannedCount: ocr.scannedCount,
     failedCount: ocr.failedCount,
+    acceptedCount: ocr.acceptedCount,
     ocrAvailable: ocr.available,
   };
 }
@@ -1170,8 +1819,11 @@ function inferProductName(text) {
   if (explicit && /coffee|filter/i.test(explicit)) {
     return explicit.replace(/^[:：\s]+/, "");
   }
-  if (/瑜伽袜|普拉提|五指袜|分趾袜|yoga|pilates|toe socks|grip socks/i.test(text)) {
+  if (isYogaSockText(text)) {
     return "non-slip five-toe yoga socks";
+  }
+  if (isSockFamilyText(text)) {
+    return "women's no-show socks";
   }
   return "";
 }
@@ -1180,7 +1832,7 @@ function inferUseScene(text) {
   if (/V60|dripper|pour over|手冲|挂耳|滤杯/i.test(text)) {
     return "pour-over coffee brewing / drip coffee maker setup";
   }
-  if (/瑜伽|普拉提|pilates|yoga|barre|dance|workout|hospital|barefoot/i.test(text)) {
+  if (isYogaSockText(text) || /瑜伽|普拉提|pilates|yoga|barre|dance|workout|hospital|barefoot/i.test(text)) {
     return "yoga / pilates / barre / home workout";
   }
   if (/kitchen|home & kitchen|厨房/i.test(text)) {
@@ -1190,12 +1842,23 @@ function inferUseScene(text) {
 }
 
 function inferSellingPoints(text, material) {
-  if (/瑜伽袜|普拉提|五指袜|分趾袜|toe socks|grip socks|防滑|硅胶|silicone|pilates|yoga/i.test(text)) {
+  const attrs = supplierAttributeMap(text);
+  if (isSockFamilyText(text)) {
+    const specialCraft = attrs.SpecialCraft || "";
+    const technology = attrs.Technology || "";
     return {
       feature1: /防滑|硅胶|non[-\s]?slip|grip|点胶/i.test(text)
         ? "non-slip grip sole"
         : "stable grip for yoga and pilates",
-      feature2: /五指|五趾|分趾|toe/i.test(text)
+      feature2: /antibacterial|deodorizing|阻菌|抗菌|防臭/i.test(specialCraft)
+        ? "antibacterial deodorizing comfort"
+        : /elastic|高弹|橡筋/i.test(specialCraft)
+          ? "high-elastic comfortable cuff"
+          : /soft|柔软|细腻/i.test(specialCraft)
+            ? "soft and delicate fabric texture"
+            : /printed grip|胶印/i.test(technology)
+              ? "printed anti-slip grip pattern"
+              : /五指|五趾|分趾|toe/i.test(text)
         ? "five-toe separated design"
         : "breathable cotton comfort",
     };
@@ -1325,15 +1988,68 @@ function supplierSkuMap(text) {
 
 function supplierAttributeMap(text) {
   const attrs = {};
-  for (const match of String(text || "").matchAll(/PRODUCT_ATTRIBUTE:\s*([^=\n]+)=([^\n]+)/gi)) {
-    attrs[match[1].trim()] = match[2].trim();
+  const source = String(text || "");
+  for (const match of source.matchAll(/PRODUCT_ATTRIBUTE:\s*([^=\n]+)=([^\n]+)/gi)) {
+    const key = match[1].trim();
+    const value = translateAttributeValue(key, match[2].trim());
+    if (!value) continue;
+    if (!attrs[key] || shouldReplaceAttributeValue(key, attrs[key], value)) attrs[key] = value;
   }
+  const productDetailText = productAttributeSourceText(
+    ...Array.from(source.matchAll(/1688 image OCR text:\s*([\s\S]*?)(?=\n(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|SKU_OPTION|Source HTML file|Purchase order image OCR text|1688 image OCR text)\s*:|$)/gi)).map((match) => match[1]),
+  );
+  Object.entries(extractProductDetailAttributes(productDetailText)).forEach(([key, value]) => {
+    if (value && (!attrs[key] || shouldReplaceAttributeValue(key, attrs[key], value))) attrs[key] = value;
+  });
   return attrs;
 }
 
+function stripInternalExtractionLines(text) {
+  return String(text || "")
+    .split(/\n+/)
+    .filter((line) => !/^\s*(?:PRODUCT_ATTRIBUTE|SKU_OPTION|PRODUCT_TITLE|Source HTML file|Purchase order image OCR text)\s*:/i.test(line))
+    .join("\n");
+}
+
+function productAttributeSourceText(...parts) {
+  return parts
+    .filter(Boolean)
+    .join("\n")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (/^\s*PRODUCT_ATTRIBUTE\s*:/i.test(line)) return true;
+      if (productDetailLabelScore(line) >= 2) return true;
+      if (isFactoryOrServiceImageText(line) && productDetailLabelScore(line) < 2) return false;
+      if (isCommerceOrRecommendationText(line) && productDetailLabelScore(line) < 2 && productFeatureTextScore(line) < 3) return false;
+      return isProductInfoImageText(line) && productFeatureTextScore(line) >= 2;
+    })
+    .join("\n");
+}
+
+function shouldReplaceAttributeValue(key, current, next) {
+  const currentClean = cleanFieldDisplayValue(current);
+  const nextClean = cleanFieldDisplayValue(next);
+  if (!nextClean) return false;
+  if (!currentClean) return true;
+  if (/^Material$/i.test(key)) {
+    const currentHasPercent = /%/.test(currentClean);
+    const nextHasPercent = /%/.test(nextClean);
+    if (nextHasPercent && !currentHasPercent) return true;
+  }
+  if (/^Weight$/i.test(key)) {
+    return /^\.\s*g$/i.test(currentClean) || /[0-9]/.test(nextClean) && !/[0-9]/.test(currentClean);
+  }
+  return nextClean.length > currentClean.length && !currentClean.includes(nextClean);
+}
+
 function genericProductSpecForModel(model, combinedText) {
-  const isYogaSock = /瑜伽袜|普拉提|五指袜|分趾袜|toe socks|grip socks|pilates|yoga/i.test(combinedText);
-  return isYogaSock ? `${model} five-toe yoga grip socks` : `${model} product`;
+  const isYogaSock = isYogaSockText(combinedText);
+  const isSock = isSockFamilyText(combinedText);
+  if (isYogaSock) return `${model} five-toe yoga grip socks`;
+  if (isSock) return `${model} no-show socks`;
+  return `${model} product`;
 }
 
 function extractProductUnitCount(text) {
@@ -1375,7 +2091,7 @@ function isSameColorName(left, right) {
   const leftRaw = String(left || "").trim();
   const rightRaw = String(right || "").trim();
   if (!leftRaw || !rightRaw) return false;
-  return leftRaw === rightRaw || colorName(leftRaw).toLowerCase() === colorName(rightRaw).toLowerCase();
+  return leftRaw === rightRaw || canonicalColorKey(leftRaw) === canonicalColorKey(rightRaw);
 }
 
 function selectSupplierOption(options, color, usedOptionKeys) {
@@ -1404,32 +2120,42 @@ function addGenericPurchaseItem(items, seen, usedSupplierOptions, suppliers, com
   if (!model) return;
   const normalizedModel = model.toUpperCase();
   const supplierOptions = suppliers.get(normalizedModel) || [];
-  const fallbackOption = selectSupplierOption(supplierOptions, color, usedSupplierOptions);
+  const exactOption = color
+    ? supplierOptions.find((option) => option.color && isSameColorName(option.color, color))
+    : null;
+  const fallbackOption = exactOption || selectSupplierOption(supplierOptions, color, usedSupplierOptions);
   const supplierColorIsSafe = allowSupplierColorFallback || supplierOptions.length === 1;
   const finalColor = color || (supplierColorIsSafe ? fallbackOption.color : "") || "";
-  const finalSize = size || fallbackOption.size || "";
-  const optionKey = `${fallbackOption.model || normalizedModel}-${fallbackOption.color || ""}-${fallbackOption.size || ""}`;
-  const key = rowKey || `${normalizedModel}-${finalColor || items.length}-${quantity || ""}`;
+  const matchedOption = finalColor && fallbackOption.color && isSameColorName(fallbackOption.color, finalColor)
+    ? fallbackOption
+    : {};
+  const finalSize = size || matchedOption.size || "";
+  const optionKey = `${matchedOption.model || normalizedModel}-${matchedOption.color || ""}-${matchedOption.size || ""}`;
+  const key = rowKey || (finalColor ? `${normalizedModel}-${canonicalColorKey(finalColor)}` : `${normalizedModel}-${items.length}-${quantity || ""}`);
   if (seen.has(key)) return;
   seen.add(key);
-  if (fallbackOption.model) usedSupplierOptions.add(optionKey);
+  if (matchedOption.model) usedSupplierOptions.add(optionKey);
   const rowLabel = !finalColor && /^row-\d+$/i.test(rowKey) ? `purchase ${rowKey.replace("row-", "row ")}` : "";
+  const displayColor = displayColorName(finalColor, matchedOption.colorEnglish);
+  const specParts = [displayColor || colorName(finalColor) || finalColor, cleanFieldDisplayValue(finalSize), rowLabel].filter(Boolean);
   items.push({
     key: normalizedModel.toLowerCase(),
+    purchaseRowKey: rowKey,
     model: normalizedModel,
     color: finalColor,
-    colorEnglish: finalColor ? colorName(finalColor) || fallbackOption.colorEnglish || "" : "",
-    spec: [colorName(finalColor) || finalColor, cleanFieldDisplayValue(finalSize), rowLabel].filter(Boolean).join(" / "),
-    sizeCode: [colorName(finalColor) || finalColor, cleanFieldDisplayValue(finalSize), rowLabel].filter(Boolean).join(" / "),
+    displayColor,
+    colorEnglish: finalColor ? colorName(finalColor) || matchedOption.colorEnglish || "" : "",
+    spec: specParts.join(" / "),
+    sizeCode: specParts.join(" / "),
     pack: unitCount || "",
     productUnitCount: unitCount || "",
     quantity,
     price,
-    fit: /瑜伽袜|普拉提|五指袜|分趾袜|toe socks|grip socks|pilates|yoga/i.test(combinedText)
+    fit: isSockFamilyText(combinedText)
       ? "yoga, pilates, barre, dance, home workout"
       : "",
-    dims: fallbackOption.dims || {},
-    supplierOption: fallbackOption,
+    dims: matchedOption.dims || {},
+    supplierOption: matchedOption,
     inferredColorFromSupplier: !color && Boolean(finalColor),
   });
 }
@@ -1437,18 +2163,29 @@ function addGenericPurchaseItem(items, seen, usedSupplierOptions, suppliers, com
 function extractIndexedPurchaseRows(source) {
   const items = [];
   const seenRows = new Set();
-  const rowPattern = /(?:^|\s)([1-9]\d?)\s+([A-Z]{1,4}\d{3,5})(?:-[A-Z]{1,4}\d{3,5})?(?:\s+([A-Z]{1,4}\d{3,5}))?[\s\S]{0,90}?([1-9]\d*)\s+[0-9]+(?:\.[0-9]+)?\s*\/\s*[-+]?[0-9]+(?:\.[0-9]+)?\s+[0-9]+(?:\.[0-9]+)?/gi;
-  for (const match of source.matchAll(rowPattern)) {
-    const rowNumber = match[1];
-    if (seenRows.has(rowNumber)) continue;
+  let lastModel = "";
+  purchaseOptionRowSegments(source).forEach((segment) => {
+    const rowNumber = extractFirstMatch(segment, [/^\s*([1-9]\d?)\s+/]);
+    if (!rowNumber || seenRows.has(rowNumber)) return;
+    const purchaseOption = purchaseOptionFromSegment(segment);
+    const modelMatch = segment.match(/(?:^|\s)(?:[1-9]\d?\s+)?(?:阿里)?\s*([A-Z]{1,4}\d{2,5})(?:-[A-Z]{1,4}\d{2,5})?(?:\s+([A-Z]{1,4}\d{2,5}))?/i);
+    const model = (modelMatch?.[2] || modelMatch?.[1] || purchaseOption.model || lastModel || "").toUpperCase();
+    if (!model) return;
+    lastModel = model;
     seenRows.add(rowNumber);
     items.push({
       rowKey: `row-${rowNumber}`,
-      model: match[3] || match[2],
-      quantity: match[4],
-      unitCount: extractProductUnitCount(match[0]),
+      model,
+      quantity: extractFirstMatch(segment, [
+        /(?:^|\s)([1-9]\d*)\s+[0-9]+(?:\.[0-9]+)?\s*\/\s*[-+]?[0-9]+(?:\.[0-9]+)?/i,
+        /(?:数量|Qty|Quantity)\s*[:：]?\s*([1-9]\d*)/i,
+      ]),
+      unitCount: extractProductUnitCount(segment),
+      color: purchaseOption.color,
+      size: extractPurchaseSize(segment),
+      segment,
     });
-  }
+  });
   return items;
 }
 
@@ -1461,19 +2198,8 @@ function looseSequencePattern(value) {
 }
 
 function colorAliasPatterns(value) {
-  const clean = String(value || "").replace(/\s+/g, "");
-  const aliases = {
-    白色: ["白色", "本全", "本色"],
-    蓝色: ["蓝色", "蓝"],
-    紫色: ["紫色", "紫"],
-    草绿: ["草绿"],
-    绿色: ["绿色", "绿"],
-    黑色: ["黑色", "黑"],
-    粉色: ["粉色", "粉"],
-    深灰: ["深灰"],
-    灰色: ["灰色", "灰"],
-  };
-  return Array.from(new Set([clean, ...(aliases[clean] || [])]))
+  return colorAliasValues(value)
+    .map((alias) => String(alias).replace(/\s+/g, ""))
     .filter(Boolean)
     .map((alias) => looseSequencePattern(alias));
 }
@@ -1482,6 +2208,71 @@ function purchaseSegmentQuantity(segment, matchedText) {
   const index = String(segment || "").indexOf(matchedText || "");
   const tail = index > -1 ? String(segment).slice(index + String(matchedText || "").length) : String(segment || "");
   return tail.match(/^\s*([1-9]\d*)\s+[0-9]+(?:\.[0-9]+)?/)?.[1] || "";
+}
+
+function extractPurchaseSize(segment) {
+  return cleanFieldDisplayValue(extractFirstMatch(segment, [
+    /尺码\s*[:：]\s*(one\s+size|free\s+size)(?=\s|$)/i,
+    /尺码\s*[:：]\s*([^\s,，;；。]{1,16})/i,
+  ]));
+}
+
+function purchaseColorWindow(segment) {
+  const source = normalizeModelText(segment || "");
+  const priceIndex = source.search(/\s[1-9]\d*\s+[0-9]+(?:\.[0-9]+)?\s*(?:元|\/|双|pcs|件|只|个)/i);
+  const beforePrice = priceIndex > -1 ? source.slice(0, priceIndex) : source;
+  const colorIndex = beforePrice.search(/颜色\s*[:：]/i);
+  if (colorIndex > -1) {
+    return beforePrice.slice(colorIndex, colorIndex + 180);
+  }
+  const rowModel = beforePrice.match(/(?:^|\s)[1-9]\d?\s+(?:阿里)?\s*[A-Z]{1,4}\d{2,5}\b/i);
+  if (rowModel) {
+    return beforePrice.slice(rowModel.index || 0, (rowModel.index || 0) + 220);
+  }
+  return beforePrice.slice(0, 220);
+}
+
+function purchaseOptionFromSegment(segment) {
+  const source = purchaseColorWindow(segment || "");
+  const colorText = extractFirstMatch(source, [
+    /颜色\s*[:：]\s*(?:阿里)?\s*(?:[A-Z]{1,4}\d{2,5})?\s*([\u4e00-\u9fff]{1,8})/i,
+    /(?:阿里)?\s*[A-Z]{1,4}\d{2,5}\s*([\u4e00-\u9fff]{1,8})/i,
+  ]);
+  const fallbackColor = colorFromTextSegment(source, []);
+  const model = extractFirstMatch(source, [
+    /颜色\s*[:：]\s*(?:阿里)?\s*([A-Z]{1,4}\d{2,5})/i,
+    /(?:^|\s)(?:[1-9]\d?\s+)?(?:阿里)?\s*([A-Z]{1,4}\d{2,5})/i,
+  ]);
+  return {
+    model,
+    color: colorFromTextSegment(colorText || "", []) || fallbackColor,
+  };
+}
+
+function colorFromTextSegment(segment, supplierOptions = []) {
+  const aliases = [
+    "白色", "本白", "本色", "本全", "米白", "乳白", "奶白", "象牙白", "白",
+    "黑色", "黑",
+    "粉色", "浅粉", "粉红", "肉粉", "粉",
+    "蓝色", "水蓝", "淡蓝", "蓝",
+    "绿色", "草绿", "豆绿", "绿",
+    "紫色", "浅紫", "紫",
+    "灰色", "银灰", "深灰", "灰",
+    "红色", "红",
+    "浅卡", "卡其",
+  ];
+  const direct = aliases.find((alias) => new RegExp(`(?:^|\\s|颜色\\s*[:：]|[A-Z]{1,4}\\d{2,5})${looseSequencePattern(alias)}(?:\\s|$|尺码|均码|数量|Qty|Quantity|（|\\()`, "i").test(String(segment || "")));
+  if (direct) return direct;
+  const matchedSupplierColor = supplierOptions.find((option) => (
+    option.color && purchaseMentionsColorText(segment, option.color)
+  ));
+  return matchedSupplierColor?.color || "";
+}
+
+function purchaseMentionsColorText(source, color) {
+  const patterns = colorAliasPatterns(color);
+  if (!patterns.length) return false;
+  return patterns.some((pattern) => new RegExp(pattern, "i").test(String(source || "")));
 }
 
 function bestSupplierOptionInPurchaseSegment(segment, supplierOptions) {
@@ -1516,7 +2307,8 @@ function bestSupplierOptionInPurchaseSegment(segment, supplierOptions) {
 
 function purchaseOptionRowSegments(source) {
   const normalized = normalizeModelText(source || "");
-  const rowMatches = Array.from(normalized.matchAll(/(?:^|\s)([1-9]\d?)\s+(?=(?:阿里)?[A-Z]{1,4}\d{2,5}|[^\s]{0,24}颜色\s*[:：])/gi));
+  const rowPattern = /(?:^|\s)([1-9]\d?)\s+(?=(?:阿里\s*)?[A-Z]{1,4}\d{2,5}\b)/gi;
+  const rowMatches = Array.from(normalized.matchAll(rowPattern));
   if (!rowMatches.length) return [normalized];
   return rowMatches.map((match, index) => {
     const start = match.index || 0;
@@ -1568,7 +2360,7 @@ function extractIndexedRowColorHints(source, indexedRows, suppliers) {
       rowKey: row.rowKey,
       model: matched.option.model,
       color: matched.option.color,
-      size: matched.option.size || "",
+      size: extractPurchaseSize(segment) || matched.option.size || "",
       quantity: row.quantity || purchaseSegmentQuantity(segment, matched.text),
       unitCount: extractProductUnitCount(segment),
       sourceIndex: matched.index || 0,
@@ -1591,7 +2383,7 @@ function extractPurchaseColorHints(source, suppliers) {
     hints.push({
       model: match[1],
       color: match[2],
-      size: match[3],
+      size: extractPurchaseSize(match[0]) || match[3],
       quantity: match[4],
       unitCount: extractProductUnitCount(match[0]),
       sourceIndex: match.index || 0,
@@ -1604,13 +2396,17 @@ function extractPurchaseColorHints(source, suppliers) {
     const segment = rawSegment.split(/颜色\s*[:：]/i)[0].slice(0, 240);
     const matched = bestSupplierOptionInPurchaseSegment(segment, supplierOptions);
     runningIndex += rawSegment.length;
-    if (!matched?.option) return;
-    if (hints.some((hint) => hint.model === matched.option.model && isSameColorName(hint.color, matched.option.color))) return;
+    const fallbackColor = colorFromTextSegment(segment, supplierOptions);
+    const fallbackModel = extractFirstMatch(segment, [/(?:阿里)?\s*([A-Z]{1,4}\d{2,5})/i]);
+    const model = matched?.option?.model || fallbackModel;
+    const color = matched?.option?.color || fallbackColor;
+    if (!color) return;
+    if (hints.some((hint) => Math.abs((hint.sourceIndex || 0) - runningIndex) < 3)) return;
     hints.push({
-      model: matched.option.model,
-      color: matched.option.color,
-      size: extractFirstMatch(segment, [/尺码\s*[:：]\s*([\u4e00-\u9fffA-Za-z0-9 -]{1,20})/i]) || matched.option.size || "",
-      quantity: purchaseSegmentQuantity(segment, matched.text),
+      model,
+      color,
+      size: extractPurchaseSize(segment) || matched?.option?.size || "",
+      quantity: purchaseSegmentQuantity(segment, matched?.text || ""),
       unitCount: extractProductUnitCount(segment),
       sourceIndex: runningIndex,
     });
@@ -1636,24 +2432,61 @@ function extractGenericPurchaseItems(purchaseText, combinedText) {
   const ocrSource = purchaseOcrSource(source);
   const colorHints = extractPurchaseColorHints(ocrSource, suppliers);
   const rowHints = extractIndexedRowColorHints(ocrSource, indexedRows, suppliers);
-
-  if (indexedRows.length && colorHints.length) {
-    const usedHints = new Set();
-    indexedRows.forEach((row) => {
-      let hintIndex = colorHints.findIndex((hint, index) => !usedHints.has(index) && hint.rowKey === row.rowKey);
-      if (hintIndex < 0) hintIndex = colorHints.findIndex((hint, index) => !usedHints.has(index));
-      const sequenceHint = hintIndex > -1 ? colorHints[hintIndex] : null;
-      const hint = sequenceHint || rowHints.find((candidate) => candidate.rowKey === row.rowKey);
-      if (hintIndex > -1) usedHints.add(hintIndex);
-      addItem({
-        ...row,
-        color: hint?.color || "",
-        size: hint?.size || row.size || "",
-        quantity: row.quantity || hint?.quantity || "",
-        unitCount: hint?.unitCount || row.unitCount || "",
-        allowSupplierColorFallback: Boolean(hint?.color),
-      });
+  const usedHintIndexes = new Set();
+  const hintedRows = indexedRows.map((row) => {
+    let hintIndex = colorHints.findIndex((hint, index) => !usedHintIndexes.has(index) && hint.rowKey === row.rowKey);
+    if (hintIndex < 0) hintIndex = colorHints.findIndex((hint, index) => !usedHintIndexes.has(index));
+    const sequenceHint = hintIndex > -1 ? colorHints[hintIndex] : null;
+    if (hintIndex > -1) usedHintIndexes.add(hintIndex);
+    const rowHint = rowHints.find((candidate) => candidate.rowKey === row.rowKey);
+    const supplierOptions = suppliers.get(String(row.model || "").toUpperCase()) || [];
+    const rowColor = purchaseOptionFromSegment(row.segment).color
+      || colorFromTextSegment(purchaseColorWindow(row.segment), supplierOptions);
+    return {
+      ...row,
+      color: rowColor || sequenceHint?.color || rowHint?.color || row.color || "",
+      size: sequenceHint?.size || rowHint?.size || row.size || "",
+      quantity: row.quantity || sequenceHint?.quantity || rowHint?.quantity || "",
+      unitCount: sequenceHint?.unitCount || rowHint?.unitCount || row.unitCount || "",
+      allowSupplierColorFallback: Boolean(rowColor || sequenceHint?.color || rowHint?.color),
+    };
+  });
+  if (hintedRows.length) {
+    const usedColorKeysByModel = new Map();
+    hintedRows.forEach((row) => {
+      if (!row.color) return;
+      const modelKey = String(row.model || "").toUpperCase();
+      if (!usedColorKeysByModel.has(modelKey)) usedColorKeysByModel.set(modelKey, new Set());
+      usedColorKeysByModel.get(modelKey).add(canonicalColorKey(row.color));
     });
+    hintedRows.forEach((row) => {
+      if (row.color) return;
+      const modelKey = String(row.model || "").toUpperCase();
+      const usedColors = usedColorKeysByModel.get(modelKey) || new Set();
+      const unusedOptions = (suppliers.get(modelKey) || []).filter((option) => (
+        option.color && !usedColors.has(canonicalColorKey(option.color))
+      ));
+      if (unusedOptions.length !== 1) return;
+      row.color = unusedOptions[0].color;
+      row.size = row.size || unusedOptions[0].size || "";
+      row.allowSupplierColorFallback = true;
+      usedColors.add(canonicalColorKey(row.color));
+      usedColorKeysByModel.set(modelKey, usedColors);
+    });
+  }
+
+  if (colorHints.length > indexedRows.length) {
+    colorHints.forEach((hint, index) => addItem({
+      ...hint,
+      model: hint.model || indexedRows[index]?.model || indexedRows[0]?.model || "",
+      rowKey: hint.rowKey || `color-${index + 1}`,
+      allowSupplierColorFallback: Boolean(hint.color),
+    }));
+    if (items.length) return items;
+  }
+
+  if (hintedRows.length && (colorHints.length || rowHints.length || hintedRows.some((row) => row.color))) {
+    hintedRows.forEach((row) => addItem(row));
     if (items.length) return items;
   }
 
@@ -1670,7 +2503,16 @@ function extractGenericPurchaseItems(purchaseText, combinedText) {
   colorHints.forEach((hint, index) => addItem({ ...hint, rowKey: `color-${index}`, allowSupplierColorFallback: true }));
   if (items.length) return items;
 
-  indexedRows.forEach((row) => addItem(row));
+  indexedRows.forEach((row) => {
+    const supplierOptions = suppliers.get(String(row.model || "").toUpperCase()) || [];
+    const rowColor = purchaseOptionFromSegment(row.segment).color
+      || colorFromTextSegment(purchaseColorWindow(row.segment), supplierOptions);
+    addItem({
+      ...row,
+      color: rowColor || row.color || "",
+      allowSupplierColorFallback: Boolean(rowColor),
+    });
+  });
   if (items.length) return items;
 
   const loosePattern = /(?:^|\s)([1-9]\d?)\s+([A-Z]{1,4}\d{3,5})(?:-[A-Z]{1,4}\d{3,5})?(?:\s+([A-Z]{1,4}\d{3,5}))?(?:\s+([1-9]\d*))?/gi;
@@ -1796,19 +2638,62 @@ function toCrossBorderProductName(productName, fallbackSpec) {
   return normalized;
 }
 
+function displayProductName(productName, context = "") {
+  const combined = [productName, context].filter(Boolean).join(" ");
+  if (isYogaSockText(combined)) return "五指瑜伽袜";
+  if (isSockFamilyText(combined)) return "船袜";
+  return stripSupplierModelCodes(cleanFieldDisplayValue(productName));
+}
+
+function crossBorderProductName(productName, context = "") {
+  const combined = [productName, context].filter(Boolean).join(" ");
+  if (isYogaSockText(combined)) return "five-toe yoga grip socks";
+  if (isSockFamilyText(combined)) return "no-show grip socks";
+  return toCrossBorderProductName(productName, "") || stripSupplierModelCodes(cleanFieldDisplayValue(productName));
+}
+
+function crossBorderColorName(item) {
+  return cleanFieldDisplayValue(item?.colorEnglish || colorName(item?.color || item?.displayColor || ""));
+}
+
+function crossBorderVariantName(productName, item, fallback = "Product") {
+  const baseName = promptValue(productName, fallback) || fallback;
+  const size = cleanFieldDisplayValue(item.size || "");
+  const parts = [
+    crossBorderColorName(item),
+    /^(?:均码|one size)$/i.test(size) ? "" : size,
+    item.productUnitCount || "",
+  ].filter(Boolean);
+  return displayVariantText([baseName, ...parts].filter(Boolean).join(" - "));
+}
+
 function variantAttributeParts(item, productUnitCount = "") {
   const size = cleanFieldDisplayValue(item.size || "");
   return [
-    item.colorEnglish || colorName(item.color),
+    item.displayColor || displayColorName(item.color, item.colorEnglish) || item.colorEnglish || colorName(item.color),
     /^(?:均码|one size)$/i.test(size) ? "" : size,
     productUnitCount,
   ].filter(Boolean);
 }
 
+function stripSupplierModelCodes(value) {
+  return String(value || "")
+    .replace(/\b[A-Z]{1,4}\d{2,5}\b/gi, " ")
+    .replace(/\b[A-Z]{1,4}\d{2,4}\s+\d\b/gi, " ")
+    .replace(/\s*-\s*-\s*/g, " - ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,/-]+|[\s,/-]+$/g, "")
+    .trim();
+}
+
+function displayVariantText(value) {
+  return stripSupplierModelCodes(value);
+}
+
 function productVariantName(productName, item, fallback = "Product") {
   const baseName = promptValue(productName, fallback) || fallback;
   const parts = variantAttributeParts(item, item.productUnitCount || "");
-  return [baseName, ...parts].filter(Boolean).join(" - ");
+  return displayVariantText([baseName, ...parts].filter(Boolean).join(" - "));
 }
 
 function productVariantLabel(productName, item, fallback = "Product") {
@@ -1838,46 +2723,82 @@ function disambiguateDuplicateLabels(items) {
   });
 }
 
+function dedupeExtractedVariants(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const rowKey = String(item.purchaseRowKey || item.rowKey || "").trim();
+    if (rowKey) {
+      if (seen.has(rowKey)) return false;
+      seen.add(rowKey);
+      return true;
+    }
+    const colorKey = canonicalColorKey(item.colorEnglish || item.color || item.spec || item.label || "");
+    const size = cleanFieldDisplayValue(item.size || item.sizeCode || "");
+    const pack = cleanFieldDisplayValue(item.pack || item.productUnitCount || "");
+    const model = String(item.model || item.key || "").toUpperCase();
+    const key = [model, colorKey, size, pack].filter(Boolean).join("|");
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   const combined = [purchaseText, supplierText, competitorText].join(" ");
   const supplierAttrs = supplierAttributeMap(supplierText);
   const productName = inferProductName(combined);
-  const isYogaSockFamily = /瑜伽袜|普拉提|五指袜|分趾袜|toe socks|grip socks|pilates|yoga/i.test(combined);
-  const material = /wood pulp|原木浆|木浆|unbleached/i.test(combined)
+  const isYogaSockFamily = isYogaSockText(combined);
+  const isSockFamily = isSockFamilyText(combined);
+  const detailAttributes = supplierAttributeMap(supplierText);
+  const material = detailAttributes.Material
+    || (/wood pulp|原木浆|木浆|unbleached/i.test(combined)
     ? "natural wood pulp paper / unbleached brown paper"
     : /主面料成分["：:]*棉|棉|cotton/i.test(combined) || /棉|cotton/i.test(supplierAttrs.Material || "")
-      ? "cotton blend fabric"
-    : "";
-  const color = isYogaSockFamily ? "" : /brown|本色|原色|natural/i.test(combined) ? "natural brown" : "";
+      ? translateAttributeValue("Material", supplierAttrs.Material) || "cotton blend fabric"
+    : "");
+  const color = isSockFamily ? "" : /brown|本色|原色|natural/i.test(combined) ? "natural brown" : "";
   const isCoffeeFilterFamily = /coffee filters|咖啡滤纸|V02|扇形02|扇形04|U02|#04/i.test(combined);
-  const structure = isYogaSockFamily
-      ? "five-toe separated design with non-slip grip sole"
+  const detailTechnology = detailAttributes.Technology || "";
+  const detailSpecialCraft = detailAttributes.SpecialCraft || "";
+  const structure = isSockFamily
+      ? ["five-toe separated design", detailTechnology || "non-slip grip sole"].filter(Boolean).join(" with ")
     : /pressed|压边|压纹|fold|折边/i.test(combined) || isCoffeeFilterFamily
       ? "pressed side seam and bottom fold"
     : "";
   const scene = inferUseScene(combined);
   const sellingPoints = inferSellingPoints(combined, material);
-  const dimensions = extractDimensions(combined);
-  const cupRange = extractFirstMatch(combined, [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|人份))/i]);
+  const dimensions = isSockFamily ? [] : extractDimensions(combined);
+  const sizeOrRange = detailAttributes.Size
+    || (isCoffeeFilterFamily ? extractFirstMatch(combined, [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|人份))/i]) : "");
   const productUnitCount = extractProductUnitCount(supplierText);
   const cleanProductName = toCrossBorderProductName(productName, "");
+  const displayName = displayProductName(cleanProductName || productName, combined) || cleanProductName;
+  const outputName = crossBorderProductName(cleanProductName || productName, combined) || cleanProductName || displayName;
   const purchaseItems = extractPurchaseItems(purchaseText, combined);
   const variants = [];
 
   if (purchaseItems.length) {
     variants.push(...purchaseItems.map((item, index) => {
       const itemUnitCount = productUnitCountForItem(item, supplierText);
+      const itemDisplayColor = displayColorName(item.displayColor || item.color, item.colorEnglish);
+      const itemForOutput = { ...item, productUnitCount: itemUnitCount };
       return {
         id: `EXTRACTED-${index + 1}-${[item.colorEnglish || item.color, item.size, itemUnitCount].filter(Boolean).join("-").replace(/[^A-Z0-9]+/gi, "-") || "ITEM"}`,
-        label: productVariantLabel(cleanProductName, { ...item, productUnitCount: itemUnitCount }, `Product ${index + 1}`),
+        label: productVariantLabel(displayName, { ...item, displayColor: itemDisplayColor, productUnitCount: itemUnitCount }, `Product ${index + 1}`),
+        outputLabel: crossBorderVariantName(outputName, itemForOutput, `Product ${index + 1}`),
         key: item.key,
+        purchaseRowKey: item.purchaseRowKey || item.rowKey,
         model: item.model,
         color: item.color,
+        displayColor: itemDisplayColor,
         colorEnglish: item.colorEnglish,
         size: item.size,
         productUnitCount: itemUnitCount,
-        spec: productVariantName(cleanProductName, { ...item, productUnitCount: itemUnitCount }, `Product ${index + 1}`),
+        spec: productVariantName(displayName, { ...item, displayColor: itemDisplayColor, productUnitCount: itemUnitCount }, `Product ${index + 1}`),
+        outputSpec: crossBorderVariantName(outputName, itemForOutput, `Product ${index + 1}`),
         sizeCode: variantAttributeParts(item, itemUnitCount).join(" / "),
+        outputSizeCode: [crossBorderColorName(itemForOutput), /^(?:均码|one size)$/i.test(cleanFieldDisplayValue(item.size || "")) ? "" : cleanFieldDisplayValue(item.size || "")].filter(Boolean).join(" / "),
         cupRange: item.cupRange,
         pack: itemUnitCount,
         quantity: item.quantity,
@@ -1892,56 +2813,68 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     if (/#04|扇形04|fan-shaped 04/i.test(combined)) variants.push({ ...productSpecForToken("fan 04"), id: "EXTRACTED-U04", label: "Extracted | Fan 04" });
   }
 
-  const normalizedVariants = variants.length ? disambiguateDuplicateLabels(variants) : [{
+  const normalizedVariants = variants.length ? disambiguateDuplicateLabels(dedupeExtractedVariants(variants)) : [{
     id: "EXTRACTED-PRODUCT-1",
-    label: cleanProductName || "Product 1",
+    label: displayName || "Product 1",
+    outputLabel: outputName || "Product 1",
     spec: "",
+    outputSpec: "",
     sizeCode: "",
+    outputSizeCode: "",
     pack: productUnitCount || "",
     fit: "",
   }];
 
   return normalizedVariants.map((item) => {
-    const itemCupRange = inferCupRangeForSpec(combined, item) || item.cupRange || cupRange || "";
+    const itemCupRange = isCoffeeFilterFamily
+      ? inferCupRangeForSpec(combined, item) || item.cupRange || sizeOrRange || ""
+      : sizeOrRange || item.cupRange || "";
     const fallbackDimensions = fallbackDimensionsForSpec(item, combined);
     const itemDimensions = [
       item.dims?.topWidth && `Length: ${item.dims.topWidth}`,
       item.dims?.sideLength && `Width: ${item.dims.sideLength}`,
       item.dims?.bottomWidth && `Height: ${item.dims.bottomWidth}`,
-      item.dims?.weight && `Weight: ${item.dims.weight}`,
+      (detailAttributes.Weight || (!isSockFamily && item.dims?.weight)) && `Weight: ${detailAttributes.Weight || item.dims?.weight}`,
     ].filter(Boolean);
     const dimensionList = dimensions.length
       ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]`
       : itemDimensions.length
         ? `[VERIFIED_DIMENSIONS: ${itemDimensions.join("; ")}]`
         : fallbackDimensions.dimensionList || "";
+    const itemDisplayColor = displayColorName(item.displayColor || item.color, item.colorEnglish);
     const itemColor = item.colorEnglish || colorName(item.color) || color;
     const itemMaterial = material;
     const itemStructure = structure;
-    const itemProductName = cleanProductName || toCrossBorderProductName(productName, item.spec);
-    const displaySpec = item.spec || productVariantName(itemProductName, { ...item, colorEnglish: itemColor, productUnitCount }, itemProductName || "selected product");
+    const itemProductName = displayProductName(cleanProductName || productName, combined) || toCrossBorderProductName(productName, item.spec);
+    const itemOutputName = crossBorderProductName(cleanProductName || productName, combined) || toCrossBorderProductName(productName, item.outputSpec || item.spec);
+    const itemForDisplay = { ...item, displayColor: itemDisplayColor, productUnitCount: item.productUnitCount || item.pack || productUnitCount };
+    const itemForOutput = { ...item, productUnitCount: item.productUnitCount || item.pack || productUnitCount };
+    const displaySpec = displayVariantText(item.spec || productVariantName(itemProductName, itemForDisplay, itemProductName || "selected product"));
+    const outputSpec = displayVariantText(item.outputSpec || crossBorderVariantName(itemOutputName, itemForOutput, itemOutputName || "selected product"));
     const variantList = normalizedVariants
-      .map((variant) => variant.spec || productVariantName(itemProductName, { ...variant, productUnitCount }, itemProductName || "product option"))
+      .map((variant) => displayVariantText(variant.outputSpec || crossBorderVariantName(itemOutputName, { ...variant, productUnitCount }, itemOutputName || "product option")))
       .filter(Boolean)
       .join(" / ");
+    const displaySizeCode = displayVariantText(item.outputSizeCode || outputSpec || item.sizeCode || item.spec || displaySpec);
     return {
     id: item.id,
-    label: item.label,
-    productName: itemProductName,
-    shape: displaySpec || item.spec,
+    label: displayVariantText(item.outputLabel || outputSpec || item.label),
+    displayLabel: displayVariantText(item.label),
+    productName: itemOutputName,
+    shape: outputSpec || displaySpec || item.spec,
     pack: item.pack || productUnitCount || "",
-    sizeCode: item.sizeCode || item.spec,
+    sizeCode: displaySizeCode,
     groupKey: "",
     group: {
-      promptName: displaySpec || item.spec,
-      promptSpecs: [displaySpec || item.spec, itemCupRange, item.pack || productUnitCount, itemMaterial, itemStructure].filter(Boolean),
+      promptName: outputSpec || displaySpec || displayVariantText(item.spec),
+      promptSpecs: [outputSpec || displaySpec || displayVariantText(item.spec), itemCupRange, item.pack || productUnitCount, itemMaterial, itemStructure].filter(Boolean),
       dimensions: dimensions.length ? dimensions : itemDimensions,
     },
     dims: {
       topWidth: extractFirstMatch(dimensions.join("; "), [/Top Width:\s*([^;]+)/i]) || item.dims?.topWidth || fallbackDimensions.topWidth || "",
       sideLength: extractFirstMatch(dimensions.join("; "), [/Side Length:\s*([^;]+)/i]) || item.dims?.sideLength || fallbackDimensions.sideLength || "",
       bottomWidth: extractFirstMatch(dimensions.join("; "), [/Bottom Width:\s*([^;]+)/i]) || item.dims?.bottomWidth || fallbackDimensions.bottomWidth || "",
-      weight: extractFirstMatch(dimensions.join("; "), [/Weight:\s*([^;]+)/i]) || item.dims?.weight || fallbackDimensions.weight || "",
+      weight: detailAttributes.Weight || extractFirstMatch(dimensions.join("; "), [/Weight:\s*([^;]+)/i]) || (!isSockFamily ? item.dims?.weight : "") || fallbackDimensions.weight || "",
       cupRange: itemCupRange,
       source: dimensions.length ? "Extracted from uploaded source files" : item.dims?.source || fallbackDimensions.source || "No verified dimensions extracted",
     },
@@ -1952,8 +2885,10 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     scene,
     feature1: sellingPoints.feature1,
     feature2: sellingPoints.feature2,
-    singleSpec: `[CURRENT_PRODUCT_OPTION: ${[displaySpec || item.spec, item.pack || productUnitCount].filter(Boolean).join(", ")}]`,
-    specList: `[SPEC_LIST: ${[displaySpec || item.spec, itemCupRange, item.pack || productUnitCount, itemMaterial, itemStructure].filter(Boolean).join(" / ")}]`,
+    surfaceFinish: detailTechnology,
+    detailParameter: detailSpecialCraft,
+    singleSpec: `[CURRENT_PRODUCT_OPTION: ${[outputSpec || displaySpec || displayVariantText(item.spec), item.pack || productUnitCount].filter(Boolean).join(", ")}]`,
+    specList: `[SPEC_LIST: ${[outputSpec || displaySpec || displayVariantText(item.spec), itemCupRange, item.pack || productUnitCount, itemMaterial, itemStructure].filter(Boolean).join(" / ")}]`,
     variantList: variantList ? `[VARIANT_LIST: ${variantList}]` : "",
     dimensionList,
   };
@@ -2002,7 +2937,7 @@ async function extractSources() {
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
-      ? `1688 图片 OCR：找到 ${supplierSource.imageCount} 张，成功 ${supplierSource.scannedCount} 张，跳过/失败 ${supplierSource.failedCount} 张。远程图片可能因跨域、防盗链或超时无法在浏览器内识别。`
+      ? `1688 图片 OCR：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 张图片，全局筛选后优先识别 ${supplierSource.imageCount} 张疑似产品详情/参数图，实际成功 ${supplierSource.scannedCount} 张，采纳 ${supplierSource.acceptedCount || 0} 张，跳过/失败 ${supplierSource.failedCount} 张。远程图片可能因跨域、防盗链、尺寸过小或内容过滤而跳过。`
       : "未找到可识别的 1688 图片。";
     const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
       ? "OCR 引擎未加载成功，已跳过图片文字识别。"
@@ -2022,7 +2957,7 @@ async function extractSources() {
 }
 
 function negativePrompt() {
-  return "No invented specs, wrong product, logos, watermark, clutter, blur.";
+  return "No invented specs, wrong product, unsupported claims, unrelated overlay info, added logos, added watermark, dense added text, blur; preserve authentic product markings, printed letters, woven labels, and packaging text.";
 }
 
 function isPlaceholderName(value) {
@@ -2095,6 +3030,14 @@ function promptFacts(sku, data) {
   const surfaceFinish = promptValue(data.surfaceFinish, "");
   const detailParameter = promptValue(data.detailParameter, "");
   const titleSpec = stripRepeatedValue(selectedSpec, pack) || productName || selectedSpec;
+  const skuOption = compactSkuOptionText(sku.sizeCode || titleSpec || selectedSpec, {
+    productName,
+    pack,
+    material,
+    structure,
+    fit,
+    cupRange,
+  });
   const specs = [
     selectedSpec,
     pack,
@@ -2107,6 +3050,7 @@ function promptFacts(sku, data) {
   return {
     productName,
     titleSpec,
+    skuOption,
     cupType,
     selectedSpec,
     pack,
@@ -2142,15 +3086,106 @@ function stripRepeatedValue(value, repeatedValue) {
     .trim();
 }
 
-function categoryStyleRule(facts) {
-  const combined = [
+function stripPromptFragments(value, fragments = []) {
+  return fragments.reduce((current, fragment) => {
+    const cleanFragment = cleanTokenValue(fragment);
+    return cleanFragment ? stripRepeatedValue(current, cleanFragment) : current;
+  }, cleanTokenValue(value))
+    .replace(/\s*,\s*,/g, ",")
+    .replace(/\s*\/\s*\/\s*/g, " / ")
+    .replace(/^[\s,/-]+|[\s,/-]+$/g, "")
+    .trim();
+}
+
+function compactSkuOptionText(value, context = {}) {
+  const clean = stripPromptFragments(value, [
+    context.productName,
+    context.pack,
+    context.material,
+    context.structure,
+    context.fit,
+    context.cupRange,
+  ]);
+  if (!clean) return "";
+
+  const parts = clean
+    .split(/\s*(?:\/|\||;|\s+-\s+)\s*/)
+    .map((part) => part.replace(/^[\s,/-]+|[\s,/-]+$/g, "").trim())
+    .filter(Boolean);
+  return uniquePromptItems(parts.length ? parts : [clean]).slice(0, 3).join(" / ");
+}
+
+function compactProductName(value) {
+  return cleanTokenValue(value)
+    .replace(/\s*,\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactDisplayTitle(facts, options = {}) {
+  const includePack = options.includePack !== false;
+  const productName = compactProductName(facts.productName) || "Product";
+  const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
+  const details = uniquePromptItems([
+    option,
+    includePack ? facts.pack : "",
+  ], [productName]).slice(0, includePack ? 2 : 1).join(" / ");
+  return displayVariantText([productName, details].filter(Boolean).join(" - ")) || productName;
+}
+
+function skuDisplayLabel(sku, data = null) {
+  if (sku.displayLabel && !data) return sku.displayLabel;
+  const facts = promptFacts(sku, data || valueMap(sku));
+  return compactDisplayTitle(facts, { includePack: true }) || sku.label || sku.id;
+}
+
+function promptContextText(facts) {
+  return [
     facts.productName,
     facts.titleSpec,
+    facts.selectedSpec,
     facts.cupType,
     facts.material,
+    facts.structure,
     facts.fit,
     facts.scene,
-  ].join(" ").toLowerCase();
+    facts.feature1,
+    facts.feature2,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function isApparelCategory(facts) {
+  return /sock|socks|toe|grip|apparel|clothing|garment|wear|activewear|sportswear|fashion|legging|shirt|dress|pants|shorts|bra|glove|hat|cap|shoe|shoes|服装|衣|裤|裙|袜|鞋|帽|瑜伽|普拉提/.test(promptContextText(facts));
+}
+
+function mainImageRule() {
+  return "Main image: do not add overlay text, titles, badges, labels, or captions; preserve authentic text or letters printed on the product/packaging; product occupies about 85% of the frame.";
+}
+
+function shortTextRule() {
+  return "Added on-image text: use only short phrases of 3-5 words max; no dense added text, long sentences, or paragraph copy; preserve authentic product/packaging text.";
+}
+
+function humanSceneRule(facts) {
+  const apparelRule = isApparelCategory(facts)
+    ? "For apparel or wearable categories, use European/American Instagram-style lifestyle photography, clean premium styling, natural poses, and modern activewear/fashion mood."
+    : "";
+  return [
+    "If any body, hands, feet, or wearing/usage model appears, use European/American models with natural realistic anatomy.",
+    apparelRule,
+  ].filter(Boolean).join(" ");
+}
+
+function sharedVisualRules(facts, typeId = "") {
+  return [
+    "4K clarity and sharp realistic detail.",
+    typeId === "1" ? mainImageRule() : shortTextRule(),
+    humanSceneRule(facts),
+  ].filter(Boolean).join(" ");
+}
+
+function categoryStyleRule(facts) {
+  const combined = promptContextText(facts);
 
   if (/filter|滤纸|paper|pulp|wood pulp|dripper|pour-over|pour over/.test(combined)) {
     return "Category background: coffee filter paper category, use a bright coffee brewing counter or light studio coffee setup with dripper/cup hints; paper texture and warm beige-white lighting; do not copy the metal basket scene.";
@@ -2161,19 +3196,84 @@ function categoryStyleRule(facts) {
   if (/kitchen|cup|mug|bottle|jar|container/.test(combined)) {
     return "Category background: kitchenware category, use a bright kitchen or studio countertop with subtle matching props, realistic light, uncluttered composition.";
   }
+  if (/sock|socks|toe|grip|pilates|yoga|barre|瑜伽|普拉提|袜/.test(combined)) {
+    return "Category background: premium yoga and pilates lifestyle setting, bright studio floor or calm home workout space, soft natural light, refined wellness props, clean high-end activewear mood.";
+  }
   return "Category background: choose surface, props, and color mood from the product category; keep it realistic, light, uncluttered, and suitable for Amazon listing images.";
 }
 
-function sizeReferenceRule(facts) {
-  return `${specModulePrompt("4", facts)}\n${specGlobalRules()}`;
+function basicImageRequirements(templateId, typeId, extra = "") {
+  const parts = ["1:1 Amazon listing image", "4K clarity", "sharp realistic detail"];
+  if (typeId === "1") {
+    parts.push("no added overlay text", "preserve authentic product/packaging text", "product occupies about 85% of the frame");
+    if (templateId === "feature") {
+      parts.push("pure white background");
+    } else {
+      parts.push("premium scene-based hero background matched to the product theme");
+    }
+  } else {
+    parts.push("verified added overlay text only when useful", "preserve authentic product/packaging text");
+  }
+  if (extra) parts.push(extra);
+  return compactPromptItems(parts, "", 8);
 }
 
-function hardRules(extra = "") {
-  return `Rules: 1:1 Amazon image; match reference; verified info only.${extra ? ` ${extra}` : ""}`;
+function dimensionText(facts) {
+  return compactSpecificPromptItems([
+    facts.dimension1 && `Dimension 1: ${facts.dimension1}`,
+    facts.dimension2 && `Dimension 2: ${facts.dimension2}`,
+    facts.dimension3 && `Dimension 3: ${facts.dimension3}`,
+    facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
+  ], "", 4);
 }
 
-function promptLine(style, params, rules = "") {
-  return [`Image: ${style}`, `Product: ${params}`, hardRules(rules)].join("\n");
+function productDetailText(facts, extraItems = [], limit = 8) {
+  const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
+  const structureIncludesTechnology = facts.structure && facts.surfaceFinish
+    && comparablePromptItem(facts.structure).includes(comparablePromptItem(facts.surfaceFinish));
+  const extraText = comparablePromptItem(extraItems.join(" "));
+  const extraIncludesMaterial = facts.material && extraText.includes(comparablePromptItem(facts.material));
+  const extraIncludesStructure = facts.structure && extraText.includes(comparablePromptItem(facts.structure));
+  const extraIncludesColor = facts.color && extraText.includes(comparablePromptItem(facts.color));
+  return compactSpecificPromptItems([
+    `Product: ${facts.productName}`,
+    option && `Current option: ${option}`,
+    facts.color && !extraIncludesColor && `Color: ${facts.color}`,
+    ...extraItems,
+    facts.material && !extraIncludesMaterial && `Material: ${facts.material}`,
+    facts.cupRange && `Size / range: ${facts.cupRange}`,
+    facts.pack && `Count / set: ${facts.pack}`,
+    facts.structure && !extraIncludesStructure && `Structure: ${facts.structure}`,
+    facts.surfaceFinish && !structureIncludesTechnology && `Technology: ${facts.surfaceFinish}`,
+    visibleDetailParameter(facts.detailParameter) && `Texture detail: ${visibleDetailParameter(facts.detailParameter)}`,
+  ], "", limit);
+}
+
+function overallStyleText(facts, typeId, extra = "") {
+  return compactPromptItems([
+    categoryStyleRule(facts),
+    humanSceneRule(facts),
+    typeId === "1" ? "" : shortTextRule(),
+    referenceRuleText(),
+    extra,
+  ], "", 6);
+}
+
+function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "" }) {
+  return [
+    promptSection("Basic Image Requirements", basic || basicImageRequirements(templateId, typeId)),
+    promptSection("Product Details", details || productDetailText(facts)),
+    promptSection("Overall Style", style || overallStyleText(facts, typeId)),
+    promptSection("Negative Prompt", negative || negativePrompt()),
+  ].join("\n");
+}
+
+function promptSection(label, value) {
+  const clean = String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/[.。]+$/g, "")
+    .trim();
+  return `${label}: ${clean}.`;
 }
 
 function compactPromptItems(items, fallback = "", limit = 5) {
@@ -2183,9 +3283,17 @@ function compactPromptItems(items, fallback = "", limit = 5) {
   const selected = [];
   cleanItems.forEach((item) => {
     const lower = comparablePromptItem(item);
+    const keywordSet = promptKeywordSet(item);
     const existingIndex = selected.findIndex((existing) => {
       const existingLower = comparablePromptItem(existing);
-      return lower.includes(existingLower) || existingLower.includes(lower);
+      const existingKeywordSet = promptKeywordSet(existing);
+      return lower.includes(existingLower)
+        || existingLower.includes(lower)
+        || Boolean(keywordSet && existingKeywordSet && (
+          keywordSet === existingKeywordSet
+          || promptKeywordSetContains(keywordSet, existingKeywordSet)
+          || promptKeywordSetContains(existingKeywordSet, keywordSet)
+        ));
     });
     if (existingIndex > -1) {
       if (item.length > selected[existingIndex].length) selected[existingIndex] = item;
@@ -2194,6 +3302,49 @@ function compactPromptItems(items, fallback = "", limit = 5) {
     selected.push(item);
   });
   return selected.length ? selected.slice(0, limit).join(" / ") : fallback;
+}
+
+function promptKeywordSet(value) {
+  return comparablePromptItem(value)
+    .split(" ")
+    .filter((word) => word.length > 2)
+    .sort()
+    .join(" ");
+}
+
+function promptKeywordSetContains(left, right) {
+  const leftSet = new Set(String(left || "").split(" ").filter(Boolean));
+  const rightWords = String(right || "").split(" ").filter(Boolean);
+  return rightWords.length >= 3 && rightWords.every((word) => leftSet.has(word));
+}
+
+function isGenericPromptFallback(value) {
+  const clean = comparablePromptItem(cleanTokenValue(value));
+  if (!clean) return true;
+  return [
+    "verified product material",
+    "accurate product color",
+    "compatible use",
+    "realistic product use scene",
+    "verified product benefit",
+    "verified secondary benefit",
+    "available verified product options",
+    "selected product specification",
+    "the product",
+  ].some((generic) => clean === generic);
+}
+
+function specificPromptValue(value, fallback = "") {
+  const clean = cleanTokenValue(value);
+  return isGenericPromptFallback(clean) ? fallback : clean;
+}
+
+function compactSpecificPromptItems(items, fallback = "", limit = 5) {
+  return compactPromptItems(
+    items.map((item) => specificPromptValue(item, "")).filter(Boolean),
+    fallback,
+    limit,
+  );
 }
 
 function comparablePromptItem(value) {
@@ -2229,39 +3380,32 @@ function shortOptionText(facts) {
   return option;
 }
 
-function productPromptLine(facts) {
-  const option = shortOptionText(facts);
-  return `Product: ${facts.productName}${option ? ` (${option})` : ""}.`;
+function visibleDetailParameter(value) {
+  return cleanTokenValue(value)
+    .split(/\s*,\s*|\s*\/\s*/)
+    .map((item) => item.trim())
+    .filter((item) => item && !/antibacterial|deodorizing|阻菌|抗菌|防臭/i.test(item))
+    .slice(0, 2)
+    .join(", ");
 }
 
-function verifiedPromptLine(facts, extraItems = []) {
-  const verified = compactPromptItems([
-    facts.pack,
-    facts.cupRange,
-    facts.color,
+function detailTextureText(facts, fallback = "accurate visible material texture from the reference") {
+  return compactSpecificPromptItems([
     facts.material,
     facts.structure,
-    facts.fit,
-    ...extraItems,
-  ], "match the uploaded reference only", 5);
-  return `Info: ${verified}.`;
+    facts.surfaceFinish,
+    visibleDetailParameter(facts.detailParameter),
+  ], fallback, 3);
 }
 
-function joinPromptParts(parts) {
-  return parts
-    .map((part) => String(part || "").replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join(" ");
+function visibleTextureDetails(facts) {
+  return compactSpecificPromptItems([detailTextureText(facts), facts.color], "visible material texture and true color", 4);
 }
 
 function referenceRuleText() {
   return sourcePayload.competitor
-    ? "Reference: use competitor composition only; do not copy claims/text/brand."
+    ? "Reference: use competitor composition only; do not copy competitor claims, overlay text, or brand; preserve authentic markings from the source product itself."
     : "Reference: clean Amazon listing style.";
-}
-
-function specGlobalRules() {
-  return "Rules: 1:1 Amazon image; match reference; verified text only.";
 }
 
 function specModulePrompt(typeId, facts) {
@@ -2280,7 +3424,7 @@ function specModulePrompt(typeId, facts) {
     facts.fit,
     facts.feature2,
     facts.color,
-    facts.detailParameter,
+    visibleDetailParameter(facts.detailParameter),
   ], [
     ...summarySideLabels,
     facts.titleSpec,
@@ -2295,39 +3439,80 @@ function specModulePrompt(typeId, facts) {
   const sceneUse = compactPromptItems([facts.scene, facts.fit], "realistic use scene", 3);
 
   const modules = {
-    "1": "Image 1 Hero: large clean product hero on white/light neutral background. Text: none.",
-    "2": `Image 2 Lifestyle: realistic product use scene: ${sceneUse}. Product stays clear and accurate.`,
-    "3A": `Image 3A Multi-scene: 3-4 clean panels showing different verified use scenes: ${sceneUse}. Short labels only.`,
-    "3B": `Image 3B How-to: simple 3-4 step usage infographic for ${facts.productName}. Short captions only.`,
-    "4": joinPromptParts([
-      `Image 4 Size/Range: clean infographic. Title "Size Reference"; subtitle "${shortOptionText(facts) || option}".`,
-      optionCount,
-      facts.cupRange ? `Range: ${facts.cupRange}.` : "",
-      dimensions,
-    ]),
-    "5": `Image 5 Options: product option comparison grid. Show only verified options: ${compactVariantText(facts)}.`,
-    "6": `Image 6 Feature: one focused selling point: ${facts.feature1}. Use product close-up or proof scene.`,
-    "7": `Image 7 Detail: macro detail of ${compactPromptItems([facts.material, facts.structure, facts.detailParameter], "material or structure")}.`,
-    "8": `Image 8 Summary: product centered with 3-4 points: ${compactPromptItems([...summarySideLabels, ...summaryBottomLabels], featureLabels, 4)}.`,
+    "1": {
+      basic: basicImageRequirements("spec", "1"),
+      details: productDetailText(facts, [option, facts.color], 6),
+      style: overallStyleText(facts, "1", "Premium product-theme hero scene; product is the dominant subject; no added title, no added labels, no added overlay text; keep authentic product markings."),
+    },
+    "2": {
+      basic: basicImageRequirements("spec", "2"),
+      details: productDetailText(facts, [sceneUse], 6),
+      style: overallStyleText(facts, "2", `Realistic lifestyle use scene: ${sceneUse}; product stays clear and accurate.`),
+    },
+    "3A": {
+      basic: basicImageRequirements("spec", "3A"),
+      details: productDetailText(facts, [sceneUse], 6),
+      style: overallStyleText(facts, "3A", `3-4 clean panels showing different verified use scenes: ${sceneUse}.`),
+    },
+    "3B": {
+      basic: basicImageRequirements("spec", "3B"),
+      details: productDetailText(facts, [facts.fit], 6),
+      style: overallStyleText(facts, "3B", `Simple 3-4 step usage infographic for ${facts.productName}; number markers and added captions allowed; added captions must stay short.`),
+    },
+    "4": {
+      basic: "Size/range infographic, 1:1 Amazon image, 4K, clean layout with concise verified text.",
+      details: productDetailText(facts, [
+        shortOptionText(facts) || option,
+        optionCount,
+        facts.cupRange ? `Range: ${facts.cupRange}` : "",
+        dimensions,
+      ], 8),
+      style: overallStyleText(facts, "4", "Clean size reference layout; added title can be \"Size Reference\"; no unverified measurements; preserve authentic product markings."),
+    },
+    "5": {
+      basic: basicImageRequirements("spec", "5"),
+      details: productDetailText(facts, [`Verified options: ${compactVariantText(facts)}`], 7),
+      style: overallStyleText(facts, "5", "Product option comparison grid; show only verified options; small added option tags only; preserve authentic product markings."),
+    },
+    "6": {
+      basic: basicImageRequirements("spec", "6"),
+      details: productDetailText(facts, [`Selling point: ${facts.feature1}`], 6),
+      style: overallStyleText(facts, "6", "Focused proof image using product close-up or realistic use evidence; one short added headline maximum."),
+    },
+    "7": {
+      basic: basicImageRequirements("spec", "7"),
+      details: productDetailText(facts, [`Macro focus: ${detailTextureText(facts, "material or structure")}`], 7),
+      style: overallStyleText(facts, "7", "Macro close-up detail; sharp texture, clean edges, optional small magnifier inset."),
+    },
+    "8": {
+      basic: basicImageRequirements("spec", "8"),
+      details: productDetailText(facts, [`Summary points: ${compactPromptItems([...summarySideLabels, ...summaryBottomLabels], featureLabels, 4)}`], 8),
+      style: overallStyleText(facts, "8", "Summary layout with product centered and 3-4 verified added callouts; no dense added specification table; preserve authentic product markings."),
+    },
   };
+  const selected = modules[typeId] || modules["1"];
 
-  return [
-    modules[typeId] || modules["1"],
-    productPromptLine(facts),
-    verifiedPromptLine(facts, [dimensionLine]),
-  ].filter(Boolean).join("\n");
+  return buildPromptSections({
+    facts,
+    templateId: "spec",
+    typeId,
+    basic: selected.basic,
+    details: selected.details,
+    style: selected.style,
+    negative: negativePrompt(),
+  });
 }
 
 function uniquePromptItems(items, exclusions = []) {
   const excluded = exclusions
     .filter(Boolean)
-    .map((item) => String(item).toLowerCase());
+    .map((item) => comparablePromptItem(item));
   const seen = new Set();
   return items
     .filter(Boolean)
     .map((item) => String(item).trim())
     .filter((item) => {
-      const lower = item.toLowerCase();
+      const lower = comparablePromptItem(item);
       if (!lower) return false;
       if (excluded.some((excludedItem) => excludedItem && (lower.includes(excludedItem) || excludedItem.includes(lower)))) return false;
       if (seen.has(lower)) return false;
@@ -2338,68 +3523,163 @@ function uniquePromptItems(items, exclusions = []) {
 
 function specTemplatePrompt(typeId, sku, data) {
   const facts = promptFacts(sku, data);
-  return [
-    specModulePrompt(typeId, facts),
-    `${specGlobalRules()} ${referenceRuleText()}`,
-    `Negative: ${negativePrompt()}`,
-  ].join("\n");
-}
-
-function sceneGlobalRules() {
-  return "Rules: 1:1 Amazon image; match reference; one clear message; short text only.";
+  return specModulePrompt(typeId, facts);
 }
 
 function sceneNegativePrompt() {
-  return "No wrong product, fake packaging, unsupported claims, dense text, logos, watermark, blur.";
+  return "No wrong product, fake packaging, unsupported claims, unrelated overlay info, dense added text, added logos, added watermark, blur, low-resolution output, cluttered background, hidden product, tiny product, distant shot, forced display pose, floating product, extreme macro crop, scene context cropped out, background blurred into abstract shapes, distorted product shape, incorrect product details, or props/model/environment competing with the product; preserve authentic product markings, printed letters, woven labels, and packaging text.";
+}
+
+function sceneQualityRule() {
+  return "Product-first premium lifestyle image. The product is the clearest main subject, shown in a natural real-use moment and integrated with the environment rather than isolated as a forced display. Use close-up or medium-close 3/4 lifestyle composition, with accurate material, color, structure, surface texture, functional details, scale, and use context clearly visible. Product edges must be crisp, with soft natural light, realistic contact shadows, and moderate shallow depth of field: the background is softly blurred but still recognizable as a clean category-matched scene. Keep props, people, and environment secondary.";
+}
+
+function sceneTextureLine(facts) {
+  const texture = visibleTextureDetails(facts);
+  return `Texture: ${texture}; realistic surface detail, clean edges, natural shadows.`;
 }
 
 function sceneModulePrompt(typeId, facts) {
-  const physicalDetails = uniquePromptItems([
+  const physicalDetails = compactSpecificPromptItems([
     facts.structure,
     facts.material,
     facts.color,
-  ]).join(" / ") || "visible product structure, material texture, and true color";
-  const sceneList = uniquePromptItems([
+  ], "visible product structure, material texture, and true color", 3);
+  const sceneList = compactSpecificPromptItems([
     facts.scene,
     facts.fit,
-  ]).join(" / ") || "verified realistic use scenes";
-  const summaryPoints = compactPromptItems([
+  ], "verified realistic use scenes", 3);
+  const mainScene = compactSpecificPromptItems([facts.scene, facts.fit], "a realistic premium category scene", 2);
+  const feature1 = specificPromptValue(facts.feature1, "the primary verified benefit");
+  const feature2 = specificPromptValue(facts.feature2, "the secondary verified benefit");
+  const summaryPoints = compactSpecificPromptItems([
     facts.fit || facts.scene,
     facts.feature1,
     facts.feature2,
     facts.material,
     facts.structure,
   ], "main scene / multi-use / key selling points", 4);
+  const themeBackground = categoryStyleRule(facts);
 
   const modules = {
-    "1": `Image 1 Main Scene: large product hero in ${facts.scene}. Text none or one short headline.`,
-    "2": `Image 2 Multi-Scene: 4-6 panels for ${sceneList}. Short labels only.`,
-    "3": `Image 3 Multi-Angle: front, side, back/top, and one detail view on light studio background.`,
-    "4": `Image 4 Product Explanation: product centered with 2-3 labels for ${compactPromptItems([facts.fit, physicalDetails], "", 3)}.`,
-    "5": `Image 5 Selling Point 5: focused visual for ${facts.feature1}.`,
-    "6": `Image 6 Selling Point 6: focused visual for ${facts.feature2}; make it distinct from Image 5.`,
-    "7": `Image 7 Summary: product centered with 3-4 verified points: ${summaryPoints}.`,
+    "1": {
+      basic: basicImageRequirements("scene", "1"),
+      details: productDetailText(facts, [mainScene, visibleTextureDetails(facts)], 7),
+      style: overallStyleText(facts, "1", `Premium scene-based hero in ${mainScene}; refined theme-matched background, natural depth; no added overlay text; keep authentic product markings.`),
+    },
+    "2": {
+      basic: basicImageRequirements("scene", "2"),
+      details: productDetailText(facts, [sceneList], 6),
+      style: overallStyleText(facts, "2", `3-4 elegant panels for ${sceneList}; each panel shows a different realistic use moment.`),
+    },
+    "3": {
+      basic: basicImageRequirements("scene", "3"),
+      details: productDetailText(facts, [physicalDetails, visibleTextureDetails(facts)], 7),
+      style: overallStyleText(facts, "3", "Front, side, back/top, and one macro detail view on a premium light studio background; product remains the focus."),
+    },
+    "4": {
+      basic: basicImageRequirements("scene", "4"),
+      details: productDetailText(facts, [compactSpecificPromptItems([facts.fit, physicalDetails], "core use and product detail", 3)], 7),
+      style: overallStyleText(facts, "4", "Product centered with 2-3 concise added callout labels; keep explanation visual and easy to scan; preserve authentic product markings."),
+    },
+    "5": {
+      basic: basicImageRequirements("scene", "5"),
+      details: productDetailText(facts, [`Selling point: ${feature1}`, visibleTextureDetails(facts)], 7),
+      style: overallStyleText(facts, "5", "Focused premium proof scene using product close-up or in-use evidence; one short added headline maximum."),
+    },
+    "6": {
+      basic: basicImageRequirements("scene", "6"),
+      details: productDetailText(facts, [`Selling point: ${feature2}`], 6),
+      style: overallStyleText(facts, "6", "Distinct premium proof scene; composition must differ from Image 5; one short added headline maximum."),
+    },
+    "7": {
+      basic: basicImageRequirements("scene", "7"),
+      details: productDetailText(facts, [`Summary points: ${summaryPoints}`], 8),
+      style: overallStyleText(facts, "7", "Premium scene-based overview with product centered and 3-4 verified added points; no added specification table; preserve authentic product markings."),
+    },
   };
+  const selected = modules[typeId] || modules["1"];
 
-  return [
-    modules[typeId] || modules["1"],
-    productPromptLine(facts),
-    verifiedPromptLine(facts),
-  ].join("\n");
+  return buildPromptSections({
+    facts,
+    templateId: "scene",
+    typeId,
+    basic: selected.basic,
+    details: selected.details,
+    style: compactPromptItems([themeBackground, sceneQualityRule(), selected.style], "", 8),
+    negative: sceneNegativePrompt(),
+  });
 }
 
 function sceneTemplatePrompt(typeId, sku, data) {
   const facts = promptFacts(sku, data);
-  return [
-    sceneModulePrompt(typeId, facts),
-    `${sceneGlobalRules()} ${referenceRuleText()}`,
-    `Negative: ${sceneNegativePrompt()}`,
-  ].join("\n");
+  return sceneModulePrompt(typeId, facts);
+}
+
+function featureModulePrompt(typeId, facts) {
+  const sceneUse = compactPromptItems([facts.scene, facts.fit], "realistic use scene", 3);
+  const optionText = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
+  const modules = {
+    "1": {
+      basic: basicImageRequirements("feature", "1"),
+      details: productDetailText(facts, [optionText, facts.color], 6),
+      style: overallStyleText(facts, "1", "Pure white Amazon main image; product only; no props, no added title, no added labels; preserve authentic product markings."),
+    },
+    "2": {
+      basic: basicImageRequirements("feature", "2"),
+      details: productDetailText(facts, [sceneUse], 6),
+      style: overallStyleText(facts, "2", "Single realistic lifestyle scene; product-first composition; one short added headline only if needed."),
+    },
+    "3": {
+      basic: basicImageRequirements("feature", "3"),
+      details: productDetailText(facts, [sceneUse], 6),
+      style: overallStyleText(facts, "3", "4-6 panel multi-scene collage; clean grid; short added labels only; preserve authentic product markings."),
+    },
+    "4": {
+      basic: basicImageRequirements("feature", "4"),
+      details: productDetailText(facts, [detailTextureText(facts), facts.color], 7),
+      style: overallStyleText(facts, "4", "Catalog product display with multiple views plus one detail close-up; minimal added overlay text; preserve authentic product markings."),
+    },
+    "5": {
+      basic: basicImageRequirements("feature", "5"),
+      details: productDetailText(facts, [`Verified options: ${compactVariantText(facts)}`], 7),
+      style: overallStyleText(facts, "5", "Product option selection grid; show only available verified variants; no unavailable colors or sizes."),
+    },
+    "6": {
+      basic: basicImageRequirements("feature", "6"),
+      details: productDetailText(facts, [`Selling point: ${facts.feature1}`], 6),
+      style: overallStyleText(facts, "6", "Single selling-point proof image; product close-up or realistic use evidence; one short added headline maximum."),
+    },
+    "7": {
+      basic: basicImageRequirements("feature", "7"),
+      details: productDetailText(facts, [`Selling point: ${facts.feature2}`], 6),
+      style: overallStyleText(facts, "7", "Second selling-point proof image; composition must differ from Image 6; no unsupported claims."),
+    },
+    "8": {
+      basic: basicImageRequirements("feature", "8"),
+      details: productDetailText(facts, [`Summary points: ${compactPromptItems([facts.feature1, facts.feature2, facts.fit], "verified benefits", 4)}`], 8),
+      style: overallStyleText(facts, "8", "Summary image with product centered and 3-4 verified added callouts; no added specification table; preserve authentic product markings."),
+    },
+  };
+  const selected = modules[typeId] || modules["1"];
+  return buildPromptSections({
+    facts,
+    templateId: "feature",
+    typeId,
+    basic: selected.basic,
+    details: selected.details,
+    style: selected.style,
+    negative: negativePrompt(),
+  });
+}
+
+function featureTemplatePrompt(typeId, sku, data) {
+  const facts = promptFacts(sku, data);
+  return featureModulePrompt(typeId, facts);
 }
 
 function promptFor(templateId, typeId, sku, data) {
   const facts = promptFacts(sku, data);
-  const visualReference = referenceRuleText();
 
   if (templateId === "spec") {
     return specTemplatePrompt(typeId, sku, data);
@@ -2409,69 +3689,13 @@ function promptFor(templateId, typeId, sku, data) {
     return sceneTemplatePrompt(typeId, sku, data);
   }
 
-  const specPrompts = {
-    "1": promptLine(
-      "premium Amazon hero photo, product large, clean light background",
-      `${facts.productName}; option ${facts.titleSpec}; color ${facts.color}`,
-      "No text.",
-    ),
-    "2": promptLine(
-      "realistic lifestyle use scene, product clear and accurate",
-      `${facts.productName}; scene ${facts.scene}; use ${facts.fit}`,
-      "Short text only if needed.",
-    ),
-    "3A": promptLine(
-      "3-4 panel lifestyle collage, tidy grid, consistent lighting",
-      `${facts.productName}; scenes ${facts.scene}; use ${facts.fit}`,
-      "Short scene labels only if needed.",
-    ),
-    "3B": promptLine(
-      "simple 3-4 step usage infographic",
-      `${facts.productName}; use ${facts.fit}`,
-      "Number markers allowed; short captions only.",
-    ),
-    "4": sizeReferenceRule(facts),
-    "5": promptLine(
-      "multi-spec option infographic, clean grid, realistic product options, small option tags",
-      `${facts.productName}; variants ${facts.variants}`,
-      "Do not add unavailable variants.",
-    ),
-    "6": promptLine(
-      "single feature proof image, bright clean background, product close-up or use proof",
-      `${facts.productName}; one message ${facts.feature1}`,
-      "One short headline maximum.",
-    ),
-    "7": promptLine(
-      "macro close-up detail, sharp texture, visible edges, optional small magnifier inset",
-      `${facts.productName}; material ${facts.material}`,
-      "Very short labels only if needed.",
-    ),
-    "8": promptLine(
-      "summary infographic, central product, airy layout, up to 4 short callouts",
-      `${facts.productName}; confirmed specs ${facts.specs}`,
-      "No dense text wall.",
-    ),
-  };
-
-  const featurePrompts = {
-    "1": promptLine("pure white Amazon main image, centered product only", `${facts.productName}; color ${facts.color}`, "No text, props, logos, or packaging."),
-    "2": promptLine("single realistic lifestyle scene, product-first composition", `${facts.productName}; scene ${facts.scene}; use ${facts.fit}`, "One short headline only if needed."),
-    "3": promptLine("4-6 panel multi-scene collage, clean grid", `${facts.productName}; scenes ${facts.scene}; use ${facts.fit}`, "Short labels only."),
-    "4": promptLine("catalog product display: multiple views plus detail", `${facts.productName}; material ${facts.material}; color ${facts.color}`, "Minimal text."),
-    "5": promptLine("product option selection grid", `options ${compactVariantText(facts)}`, "No unavailable variants."),
-    "6": promptLine("single selling-point proof image", `${facts.productName}; message ${facts.feature1}`, "One short headline maximum."),
-    "7": promptLine("second selling-point proof image", `${facts.productName}; message ${facts.feature2}`, "No unsupported claims."),
-    "8": promptLine("summary image, central product, 3-4 callouts", `${facts.productName}; ${compactPromptItems([facts.feature1, facts.feature2, facts.material, facts.structure, facts.fit])}`, "No specification table."),
-  };
-
-  const prompt = ({ spec: specPrompts, feature: featurePrompts }[templateId] || specPrompts)[typeId];
-  return `${prompt}\n${visualReference}\nNegative: ${negativePrompt()}`;
+  return featureTemplatePrompt(typeId, sku, data);
 }
 
 function renderFacts() {
   const sku = selectedSku();
   const template = selectedTemplate();
-  byId("currentTitle").textContent = hasExtractedProducts() ? `${sku.label} · ${template.name}` : `待解析 · ${template.name}`;
+  byId("currentTitle").textContent = hasExtractedProducts() ? `${skuDisplayLabel(sku)} · ${template.name}` : `待解析 · ${template.name}`;
   byId("badges").innerHTML = [
     "只写已确认规格",
     "不借鉴参数",
@@ -2494,6 +3718,7 @@ function renderProductPromptGrid() {
   }
   const data = currentPromptData(sku);
   const facts = promptFacts(sku, data);
+  const displayLabel = skuDisplayLabel(sku, data);
   promptStore = template.imageTypes.map((type) => ({
     id: type.id,
     prompt: promptFor(template.id, type.id, sku, data),
@@ -2505,7 +3730,7 @@ function renderProductPromptGrid() {
       <article class="prompt-card">
         <div class="prompt-card-head">
           <div>
-            <span>${escapeHtml(sku.label || sku.id)}</span>
+            <span>${escapeHtml(displayLabel)}</span>
             <h3>${type.name}</h3>
           </div>
           <button type="button" class="copy-prompt" data-prompt-index="${index}">Copy</button>
