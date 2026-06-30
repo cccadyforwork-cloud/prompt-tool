@@ -1,5 +1,6 @@
 const sourceNotes = {
   purchase: "采购单主口径：确认已采购的产品款式；不把下单数量当作产品参数。",
+  amazonTemplate: "Amazon 模板口径：Child SKU 定采购款式数量；变体字段定款式属性。",
   alibaba: "1688 主资料口径：只补产品标题、材质、结构、适配和卖点；不新增采购单外的款式。",
   amazon: "竞品参考口径：只用于图组逻辑与卖点筛选，不补写未确认参数。",
 };
@@ -222,6 +223,7 @@ const emptyExtractedProduct = {
 };
 let sourcePayload = {
   purchase: "",
+  amazonTemplate: "",
   supplier: "",
   competitor: "",
 };
@@ -693,6 +695,7 @@ function sourceSummaryRows(sku, template) {
   if (!hasExtractedProducts()) {
     return [
       ["采购单", sourcePayload.purchase ? compactSourceStatus(sourcePayload.purchase) : "待输入", sourceNotes.purchase],
+      ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
       ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
       ["竞品参考", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
       ["当前输出", `待解析，${template.imageTypes.length} 张图模板`, "解析资料后生成当前产品图组。"],
@@ -700,6 +703,7 @@ function sourceSummaryRows(sku, template) {
   }
   return [
     ["采购单", sourcePayload.purchase ? compactSourceStatus(sourcePayload.purchase) : "待输入", sourceNotes.purchase],
+    ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
     ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
     ["竞品参考", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
     ["当前输出", `${products.length} 个产品 / 款式，${template.imageTypes.length} 张图`, dimensionStatus],
@@ -2135,6 +2139,15 @@ function readFileAsText(file) {
     reader.onerror = () => reject(reader.error);
     reader.readAsText(file);
   });
+}
+
+async function readWorkbook(file) {
+  if (!file) return null;
+  if (!window.XLSX) {
+    throw new Error("Excel 解析库未加载，请联网后刷新页面，或先只用 PDF/HTML 资料测试。");
+  }
+  const buffer = await file.arrayBuffer();
+  return window.XLSX.read(buffer, { type: "array", cellDates: false });
 }
 
 async function readTextFiles(files, onProgress) {
@@ -4362,6 +4375,315 @@ function normalizedColorVariantItems(items, purchaseText, combinedText) {
     .filter((item) => isKnownColorValue(item.color || item.colorEnglish));
 }
 
+function normalizeAmazonHeader(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function amazonCellText(value) {
+  if (value == null) return "";
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+function amazonColumnLookup(rows) {
+  const labels = rows[3] || [];
+  const attrs = rows[4] || [];
+  const byLabel = new Map();
+  const byAttr = new Map();
+  labels.forEach((label, index) => {
+    const key = normalizeAmazonHeader(label);
+    if (key && !byLabel.has(key)) byLabel.set(key, index);
+  });
+  attrs.forEach((attr, index) => {
+    const key = String(attr || "").trim();
+    if (key && !byAttr.has(key)) byAttr.set(key, index);
+  });
+
+  const find = (...candidates) => {
+    for (const candidate of candidates) {
+      const labelKey = normalizeAmazonHeader(candidate);
+      if (byLabel.has(labelKey)) return byLabel.get(labelKey);
+      const attrMatch = Array.from(byAttr.keys()).find((attr) => attr === candidate || attr.includes(candidate));
+      if (attrMatch) return byAttr.get(attrMatch);
+    }
+    return -1;
+  };
+
+  return { find };
+}
+
+function amazonRowValue(row, columns, ...candidates) {
+  const index = columns.find(...candidates);
+  return index >= 0 ? amazonCellText(row[index]) : "";
+}
+
+function parseAmazonSkuFilter(value) {
+  const source = String(value || "").trim();
+  if (!source) return null;
+  const rowNumbers = new Set();
+  const skuValues = new Set();
+  source
+    .split(/[\s,，;；]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .forEach((item) => {
+      const range = item.match(/^([1-9]\d*)\s*[-~]\s*([1-9]\d*)$/);
+      if (range) {
+        const start = Number(range[1]);
+        const end = Number(range[2]);
+        const min = Math.min(start, end);
+        const max = Math.max(start, end);
+        for (let rowNumber = min; rowNumber <= max; rowNumber += 1) rowNumbers.add(rowNumber);
+        return;
+      }
+      if (/^[1-9]\d*$/.test(item)) {
+        rowNumbers.add(Number(item));
+        return;
+      }
+      skuValues.add(item.toLowerCase());
+    });
+  return {
+    raw: source,
+    rowNumbers,
+    skuValues,
+    hasFilter: rowNumbers.size > 0 || skuValues.size > 0,
+  };
+}
+
+function amazonRowMatchesFilter(rowInfo, columns, filter) {
+  if (!filter?.hasFilter) return true;
+  const sku = amazonRowValue(rowInfo.row, columns, "SKU", "contribution_sku").toLowerCase();
+  return filter.rowNumbers.has(rowInfo.excelRowNumber) || filter.skuValues.has(sku);
+}
+
+function amazonBulletPoints(row, columns) {
+  const points = [];
+  for (let index = 1; index <= 5; index += 1) {
+    const attrValue = amazonRowValue(row, columns, `bullet_point[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#${index}.value`);
+    if (attrValue && !points.includes(attrValue)) points.push(attrValue);
+  }
+  if (!points.length) {
+    const fallback = amazonRowValue(row, columns, "Bullet Point", "bullet_point");
+    if (fallback) points.push(fallback);
+  }
+  return points;
+}
+
+function amazonVariantAttributes(row, columns, theme) {
+  const themeParts = String(theme || "")
+    .split("/")
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+  const attrs = {};
+  if (!themeParts.length || themeParts.includes("COLOR")) {
+    attrs.color = amazonRowValue(row, columns, "Color", "color[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
+    attrs.colorMap = amazonRowValue(row, columns, "Color Map", "color[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.standardized_values#1");
+  }
+  if (!themeParts.length || themeParts.includes("SIZE")) {
+    attrs.size = amazonRowValue(row, columns, "Size", "size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value")
+      || amazonRowValue(row, columns, "Footwear Size", "footwear_size[marketplace_id=ATVPDKIKX0DER]#1.size");
+  }
+  if (themeParts.includes("NUMBER_OF_ITEMS")) {
+    attrs.numberOfItems = amazonRowValue(row, columns, "Number Of Items", "number_of_items");
+  }
+  if (themeParts.includes("TEAM_NAME")) {
+    attrs.teamName = amazonRowValue(row, columns, "Team Name", "team_name");
+  }
+  return attrs;
+}
+
+function compactAmazonTitle(value) {
+  const clean = cleanFieldDisplayValue(value);
+  if (!clean) return "";
+  const firstClause = clean.split(/\s*,\s*/)[0] || clean;
+  return compactEnglishWords(firstClause, 8) || clean;
+}
+
+function englishAmazonValue(value) {
+  const clean = cleanFieldDisplayValue(value);
+  if (!clean || /[\u4e00-\u9fff]/.test(clean)) return "";
+  return clean;
+}
+
+function isThongFlipFlopText(value) {
+  return /thong|flip\s*-?\s*flops?|toe\s*post|y[-\s]?strap|y\s*shaped|人字拖|夹脚/i.test(String(value || ""));
+}
+
+function thongFlipFlopStructureLockText() {
+  return "Thong flip-flop anatomy lock: exactly one Y-shaped thong strap that splits from one central toe post between the toes into two side anchors; open heel; no heel strap, no back strap, no ankle strap, no second parallel strap, no wide slide band, no two-band sandal upper.";
+}
+
+function amazonSharedFacts(row, columns, browsePath = "") {
+  const bullets = amazonBulletPoints(row, columns);
+  const title = amazonRowValue(row, columns, "Item Name", "item_name");
+  const description = amazonRowValue(row, columns, "Product Description", "product_description");
+  const style = amazonRowValue(row, columns, "Style", "style");
+  const material = amazonRowValue(row, columns, "Material", "material")
+    || amazonRowValue(row, columns, "Sole Material", "sole_material")
+    || amazonRowValue(row, columns, "Outer Material", "outer")
+    || amazonRowValue(row, columns, "Compliance - Upper Material", "compliance_upper_material");
+  const height = amazonRowValue(row, columns, "Height Map", "height_map");
+  const heelType = amazonRowValue(row, columns, "Heel Type", "heel[marketplace_id");
+  const targetGender = amazonRowValue(row, columns, "Target Gender", "target_gender");
+  const ageRange = amazonRowValue(row, columns, "Age Range Description", "age_range_description");
+  const productType = amazonRowValue(row, columns, "Product Type", "product_type");
+  const category = amazonRowValue(row, columns, "Item Type Keyword", "item_type_keyword") || browsePath;
+  const productText = `${title} ${description} ${bullets.join(" ")}`;
+  const isThong = isThongFlipFlopText(productText);
+  const englishCategory = englishAmazonValue(category) || "slippers";
+  const readableProductType = productType ? productType.toLowerCase().replace(/_/g, " ") : "slippers";
+  const scenes = uniquePromptItems([
+    extractFirstMatch([title, description, bullets.join(" ")].join(" "), [/(beach|hotel|spa|shower|poolside|bathroom|travel|gym showers?)/i]),
+    /beach/i.test(`${title} ${description}`) ? "beach" : "",
+    /hotel/i.test(`${title} ${description}`) ? "hotel" : "",
+    /spa/i.test(`${title} ${description}`) ? "spa" : "",
+    /shower/i.test(`${title} ${description}`) ? "shower" : "",
+    /travel/i.test(`${title} ${description}`) ? "travel" : "",
+  ]).join(", ");
+
+  return {
+    title,
+    shortTitle: compactAmazonTitle(title),
+    description,
+    bullets,
+    productType,
+    readableProductType,
+    category,
+    englishCategory,
+    material,
+    structure: compactPromptItems([
+      isThong ? "thong flip-flop construction with one Y-shaped strap and one central toe post, open heel with no back strap" : "",
+      !isThong && /backstrap/i.test(productText) ? "backstrap closure" : "",
+      height && `${height} profile`,
+      heelType && `${heelType} heel`,
+    ], "", 5),
+    scene: scenes || "beach, hotel, spa, shower, travel, bathroom",
+    feature1: bullets[0] || style || "",
+    feature2: bullets[1] || bullets[2] || "",
+    detailParameter: compactPromptItems([
+      style,
+      targetGender,
+      ageRange,
+      englishCategory,
+    ], "", 6),
+  };
+}
+
+function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
+  if (!rows.length) return [];
+  const columns = amazonColumnLookup(rows);
+  const filter = parseAmazonSkuFilter(skuFilter);
+  const dataRowInfos = rows
+    .slice(6)
+    .map((row, index) => ({ row, excelRowNumber: index + 7 }))
+    .filter((rowInfo) => amazonRowValue(rowInfo.row, columns, "SKU", "contribution_sku"));
+  if (!dataRowInfos.length) return [];
+
+  const rowsBySku = new Map();
+  dataRowInfos.forEach((rowInfo) => {
+    rowsBySku.set(amazonRowValue(rowInfo.row, columns, "SKU", "contribution_sku"), rowInfo.row);
+  });
+  const filteredRowInfos = filter?.hasFilter
+    ? dataRowInfos.filter((rowInfo) => amazonRowMatchesFilter(rowInfo, columns, filter))
+    : dataRowInfos;
+  const childRowInfos = filteredRowInfos.filter((rowInfo) => /child/i.test(amazonRowValue(rowInfo.row, columns, "Parentage Level", "parentage_level")));
+  const sourceRowInfos = childRowInfos.length ? childRowInfos : filteredRowInfos;
+  if (!sourceRowInfos.length) {
+    throw new Error(`Amazon 模板中没有匹配“${filter.raw}”的子 SKU，请检查行号范围或 SKU。`);
+  }
+  const parentRow = dataRowInfos.find((rowInfo) => /parent/i.test(amazonRowValue(rowInfo.row, columns, "Parentage Level", "parentage_level")))?.row || dataRowInfos[0].row;
+  const shared = amazonSharedFacts(parentRow, columns, browsePath);
+  const variantLabels = [];
+
+  const products = sourceRowInfos.map((rowInfo, index) => {
+    const row = rowInfo.row;
+    const sku = amazonRowValue(row, columns, "SKU", "contribution_sku");
+    const parentSku = amazonRowValue(row, columns, "Parent SKU", "parent_sku");
+    const theme = amazonRowValue(row, columns, "Variation Theme Name", "variation_theme") || amazonRowValue(parentRow, columns, "Variation Theme Name", "variation_theme");
+    const attrs = amazonVariantAttributes(row, columns, theme);
+    const optionParts = [
+      attrs.color,
+      attrs.size && !/^(?:one size|free size)$/i.test(attrs.size) ? attrs.size : "",
+      attrs.numberOfItems,
+      attrs.teamName,
+    ].filter(Boolean);
+    const optionLabel = optionParts.join(" / ") || sku;
+    variantLabels.push(optionLabel);
+    const productName = displayVariantText([shared.shortTitle || "slipper", attrs.color, attrs.size].filter(Boolean).join(" - "));
+    const sizeCode = displayVariantText(optionParts.join(" / "));
+    return {
+      id: `EXTRACTED-AMAZON-${index + 1}-${sku.replace(/[^A-Z0-9]+/gi, "-")}`,
+      label: `${sku} | ${optionLabel}`,
+      displayLabel: `${sku} | ${optionLabel}`,
+      productName,
+      baseProductName: shared.shortTitle || "foldable flip flops",
+      shape: productName,
+      model: sku,
+      parentSku,
+      amazonRowNumber: rowInfo.excelRowNumber,
+      color: attrs.color || attrs.colorMap || "",
+      displayColor: attrs.color || attrs.colorMap || "",
+      colorEnglish: attrs.color || attrs.colorMap || "",
+      size: attrs.size || "",
+      variantStyle: "",
+      sizeCode,
+      outputSizeCode: sizeCode,
+      pack: "",
+      material: shared.material,
+      structure: shared.structure,
+      scene: shared.scene,
+      feature1: shared.feature1,
+      feature2: shared.feature2,
+      surfaceFinish: "",
+      fit: compactPromptItems([shared.scene, shared.englishCategory, shared.readableProductType].filter(Boolean), "", 4),
+      detailParameter: shared.detailParameter,
+      groupKey: parentSku || amazonRowValue(parentRow, columns, "SKU", "contribution_sku") || "amazon-template",
+      group: {
+        promptName: shared.shortTitle || shared.title || "Amazon template product",
+        promptSpecs: [shared.readableProductType, shared.englishCategory, theme, shared.material, shared.structure].filter(Boolean),
+        dimensions: [],
+        evidenceNote: `Amazon 模板：按 Child SKU 提取 ${sourceRowInfos.length} 个采购款式；变体主题 ${theme || "未填写"}。${filter?.hasFilter ? `筛选：${filter.raw}。` : ""}`,
+      },
+      dims: {
+        cupRange: "",
+        source: `Amazon 模板：Child SKU = 款式数量；${theme || "变体"} = 款式属性。`,
+      },
+      singleSpec: `[CURRENT_PRODUCT_OPTION: ${optionLabel}]`,
+      specList: `[SPEC_LIST: ${[shared.shortTitle, optionLabel, shared.material, shared.structure, shared.scene].filter(Boolean).join(" / ")}]`,
+      variantList: "",
+      dimensionList: "",
+    };
+  });
+
+  const variantList = `[VARIANT_LIST: ${uniquePromptItems(variantLabels).join(" | ")}]`;
+  return products.map((product) => ({ ...product, variantList }));
+}
+
+async function extractAmazonTemplateProducts(file, skuFilter = "") {
+  if (!file) return { products: [], sourceText: "" };
+  const workbook = await readWorkbook(file);
+  const sheetName = workbook.SheetNames.includes("Template") ? "Template" : workbook.SheetNames[0];
+  const templateRows = window.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+  const browseRows = workbook.SheetNames.includes("Browse Data")
+    ? window.XLSX.utils.sheet_to_json(workbook.Sheets["Browse Data"], { header: 1, defval: "" })
+    : [];
+  const browsePath = browseRows.slice(1).map((row) => row.filter(Boolean).join(" > ")).filter(Boolean)[0] || "";
+  const products = amazonRowsToProducts(templateRows, browsePath, skuFilter);
+  const parentSkus = uniquePromptItems(products.map((product) => product.parentSku).filter(Boolean));
+  const sourceText = products.length
+    ? [
+      `Amazon template file: ${file.name}`,
+      `AMAZON_TEMPLATE_RULE: Child SKU count = ${products.length}; variant theme fields define style attributes.`,
+      skuFilter ? `AMAZON_TEMPLATE_FILTER: ${skuFilter}` : "",
+      parentSkus.length ? `PARENT_SKU: ${parentSkus.join(", ")}` : "",
+      `VARIANTS: ${products.map((product) => product.label).join(" | ")}`,
+    ].filter(Boolean).join("\n")
+    : "";
+  return { products, sourceText };
+}
+
 function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   const primaryText = productIdentitySourceText(purchaseText, supplierText);
   const attributeText = [primaryText, supplierText].filter(Boolean).join(" ");
@@ -4559,6 +4881,8 @@ async function extractSources() {
   hasUserSourceAttempt = true;
   const purchaseFile = byId("purchaseFile").files[0];
   const purchaseImageFile = byId("purchaseImageFile").files[0];
+  const amazonTemplateFile = byId("amazonTemplateFile").files[0];
+  const amazonSkuFilter = byId("amazonSkuFilter")?.value || "";
   const supplierFiles = Array.from(byId("supplierFile").files || []);
   const competitorFiles = Array.from(byId("competitorFile").files || []);
   const extractButton = byId("extractSources");
@@ -4575,6 +4899,7 @@ async function extractSources() {
       purchasePdfText,
       purchaseImageOcr.text && `Purchase order image OCR text: ${purchaseImageOcr.text}`,
     ].filter(Boolean).join("\n");
+    const amazonTemplate = await extractAmazonTemplateProducts(amazonTemplateFile, amazonSkuFilter);
     const supplierHtml = await readTextFiles(supplierFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
@@ -4586,14 +4911,17 @@ async function extractSources() {
     });
     sourcePayload = {
       purchase: purchaseText,
+      amazonTemplate: amazonTemplate.sourceText,
       supplier: supplierSource.text,
       competitor: competitorHtml ? cleanHtmlText(competitorHtml) : "",
     };
     fieldOverrides = {};
     fieldOverridesBySku = {};
-    extractedProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
+    extractedProducts = amazonTemplate.products.length
+      ? amazonTemplate.products
+      : inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
     if (!extractedProducts.length) {
-      throw new Error("没有从当前资料中提取到产品 / 款式，请确认采购单和 1688 HTML 是否已选择。");
+      throw new Error("没有从当前资料中提取到产品 / 款式，请确认采购单、Amazon 模板或 1688 HTML 是否已选择。");
     }
     renderProductSelect(extractedProducts[0]?.id);
     renderFields(true);
@@ -4610,16 +4938,25 @@ async function extractSources() {
     const purchaseImageAvailability = purchaseImageFile && !purchaseImageOcr.available
       ? "OCR 引擎未加载成功，已跳过采购单图片识别。"
       : "";
+    const amazonTemplateStatus = amazonTemplateFile
+      ? `Amazon 模板：${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}。`
+      : "";
     const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；竞品 HTML：${competitorFiles.length} 个。`;
-    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
+    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${amazonTemplateStatus}PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
   } finally {
     extractButton.disabled = false;
     extractButton.removeAttribute("aria-busy");
   }
 }
 
-function negativePrompt() {
-  return "No Chinese characters, Chinese labels, Chinese packaging text, Chinese watermarks, Chinese OCR/source text, invented specs, wrong product, unsupported claims, unrelated overlay info, added logos, added watermark, dense added text, blur; preserve only authentic non-Chinese product markings, printed letters, woven labels, and packaging text.";
+function negativePrompt(facts = null) {
+  const profile = facts ? categoryProfile(facts) : {};
+  return compactPromptItems([
+    "No Chinese/source text, invented specs, wrong product/category, generic substitute, unsupported claims, extra logos/watermarks, dense text, blur",
+    profile.negative,
+    facts ? footwearStructureNegativeText(facts) : "",
+    "Preserve only authentic non-Chinese product markings or packaging text",
+  ], "", 6);
 }
 
 function isPlaceholderName(value) {
@@ -4816,11 +5153,144 @@ function promptContextText(facts) {
     facts.scene,
     facts.feature1,
     facts.feature2,
+    facts.feature3,
+    facts.variants,
+    facts.detailParameter,
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
+function categoryProfile(facts) {
+  const combined = promptContextText(facts);
+  const isSock = /sock|socks|toe socks|grip socks|pilates|yoga|barre|瑜伽|普拉提|袜/.test(combined);
+  const isFootwear = !isSock && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|thong|footwear|shoe|shoes|eva|non[-\s]?slip sole|quick[-\s]?dry|beach|hotel|spa|shower|bathroom|poolside|拖鞋|凉拖|人字拖|沙滩鞋|鞋/.test(combined);
+  const profiles = [
+    {
+      id: "coffee-filter",
+      match: /filter|滤纸|paper|pulp|wood pulp|dripper|pour-over|pour over/.test(combined),
+      apparel: false,
+      background: "Category background: bright coffee brewing counter or light studio setup with dripper/cup hints; do not copy competitor product scenes.",
+      scene: "Scene category: bright coffee brewing counter or light studio setup with dripper/cup hints.",
+      negative: "Do not turn the product into coffee beans, cups, mugs, drippers, machines, metal baskets, cloth filters, or unrelated kitchen paper.",
+    },
+    {
+      id: "coffee-metal-accessory",
+      match: /basket|portafilter|espresso|stainless|steel|metal|304/.test(combined),
+      apparel: false,
+      background: "Category background: clean marble coffee bar with espresso-machine and cup props; do not copy competitor product scenes.",
+      scene: "Scene category: clean marble coffee bar with espresso-machine and cup props.",
+      negative: "Do not turn the product into paper filters, coffee beans, mugs, full espresso machines, or unrelated kitchen tools.",
+    },
+    {
+      id: "kitchen",
+      match: /kitchen|cup|mug|bottle|jar|container/.test(combined),
+      apparel: false,
+      background: "Category background: bright kitchen or studio countertop, subtle matching props, realistic light.",
+      scene: "Scene category: bright kitchen or studio countertop with subtle matching props.",
+      negative: "Do not replace the product with unrelated kitchenware, food, appliances, bottles, jars, mugs, or generic containers.",
+    },
+    {
+      id: "footwear",
+      match: isFootwear,
+      apparel: true,
+      background: "Category background: premium beach, hotel spa, bathroom shower, poolside, or travel footwear setting with clean surfaces and realistic water-safe context.",
+      scene: "Scene category: premium beach, hotel spa, bathroom shower, poolside, and travel footwear lifestyle scenes with clean wet/dry surfaces, natural foot-scale context, and upscale resort lighting.",
+      identity: "Footwear structure lock: preserve the exact visible slipper structure from the source image; for thong flip-flops keep one Y-shaped thong strap, one central toe post, two side anchors, and an open heel with no back/ankle strap; preserve sole outline, sole thickness, fold/hinge shape if present, edge profile, material texture, and selected color.",
+      negative: "No changed strap layout, missing toe-post/opening, added heel strap, added back strap, added ankle strap, added second parallel strap, wide slide band, two-band sandal upper, changed sole outline, changed sole thickness, changed fold/hinge structure, invented decoration, wrong material texture, wrong color, or extra brand logo.",
+      multiScene: (sceneList) => [
+        `Footwear scene choices for ${sceneList}: beach walk, hotel spa, shower/bathroom floor, poolside deck, gym shower, or travel packing.`,
+        "Show the flip-flops being worn, carried, packed, or placed naturally in each environment while keeping realistic foot scale and true color.",
+        "Footwear benefits should be implied through scene action and environment cues only, such as quick drying after shower, non-slip wet-floor use, lightweight travel packing, beach/spa convenience, and relaxed casual wear.",
+      ],
+      proof: {
+        compact: "show foldable flip-flops packed flat in a travel bag, hotel amenity pouch, beach tote, or bathroom shelf without changing the shoe shape",
+        lightweight: "show easy hand carry, suitcase packing, or relaxed walking with the lightweight EVA sandals while preserving realistic scale",
+        grip: "show textured non-slip sole contacting a wet bathroom tile, pool deck, spa floor, or shower surface with realistic traction detail",
+        rain: "show quick-drying sandals after shower, poolside, or beach use with water droplets on EVA material; do not imply waterproof certification",
+        material: "show EVA material texture and flexible sole edge in a clean footwear close-up",
+      },
+      inset: {
+        grip: "textured non-slip sole on wet tile close-up",
+        compact: "foldable flip-flops packed flat in travel bag or hotel pouch",
+        lightweight: "one-hand carry or suitcase packing proof with realistic scale",
+        rain: "quick-drying EVA surface with water droplets after shower or pool use",
+        material: "EVA material texture and flexible sole edge close-up",
+        "cross-strap": "backstrap or thong strap structure close-up",
+      },
+    },
+    {
+      id: "yoga-socks",
+      match: isSock,
+      apparel: true,
+      background: "Category background: premium yoga/pilates lifestyle setting, bright studio floor or calm home workout space.",
+      scene: "Scene category: premium yoga or pilates lifestyle setting with soft natural light.",
+      identity: "Sock identity lock: keep the exact sock type, toe/strap/opening structure, fabric texture, grip placement, and selected color; show worn fit only when it helps prove the product.",
+      negative: "No bare feet without socks, slippers, shoes, sandals, stockings, leggings, gloves, wrong toe structure, missing grip pattern, wrong color, invented decoration, or extra brand logo.",
+      proof: {
+        grip: "show real anti-slip grip under floor/mat/surface pressure",
+        "cross-strap": "show worn/angled view that reveals the structure",
+        "five-toe": "show worn/angled view that reveals the structure",
+        elastic: "show snug stretch in use without distortion",
+        cotton: "show relaxed comfort with fabric texture visible",
+        soft: "show relaxed comfort with fabric texture visible",
+      },
+      inset: {
+        grip: "anti-slip sole close-up",
+        "cross-strap": "structure/detail close-up",
+        "five-toe": "structure/detail close-up",
+        cotton: "fabric comfort close-up",
+        soft: "fabric comfort close-up",
+        elastic: "fabric comfort close-up",
+      },
+    },
+    {
+      id: "umbrella",
+      match: /umbrella|伞|rain|sun shade|commuting|travel/.test(combined),
+      apparel: false,
+      scene: "Scene category: realistic daily commute, travel, rainy sidewalk, and sunny outdoor shade environments with natural scale cues.",
+      negative: "Do not replace the product with parasols of a different structure, tents, raincoats, bags, canopies, unrelated outdoor gear, wrong handle, wrong canopy shape, or invented logos.",
+      proof: {
+        compact: "show folded umbrella beside a hand, pocket, or small bag with a clear size comparison",
+        lightweight: "show easy one-hand carry or bag storage without exaggerating scale",
+        uv: "show sun-shade use with canopy coverage and no unsupported numeric UV claims",
+        rain: "show raindrops beading on the canopy in a realistic rainy scene",
+        windproof: "show reinforced ribs or stable canopy structure in a mild wind context",
+      },
+      inset: {
+        compact: "folded umbrella beside hand, phone, pocket, or small bag",
+        lightweight: "one-hand carry or handbag storage proof",
+        uv: "sun-shade canopy coverage proof",
+        rain: "water-beading canopy close-up",
+        windproof: "reinforced rib frame close-up",
+      },
+    },
+  ];
+  return profiles.find((profile) => profile.match) || {
+    id: "generic",
+    apparel: false,
+    background: "Category background: realistic light category-matched surface and props, uncluttered Amazon listing style.",
+    scene: "Scene category: realistic light category-matched surface, props, and color mood.",
+    negative: "Do not replace the product with a nearby prop, background object, model accessory, or generic category guess.",
+  };
+}
+
 function isApparelCategory(facts) {
-  return /sock|socks|toe|grip|apparel|clothing|garment|wear|activewear|sportswear|fashion|legging|shirt|dress|pants|shorts|bra|glove|hat|cap|shoe|shoes|服装|衣|裤|裙|袜|鞋|帽|瑜伽|普拉提/.test(promptContextText(facts));
+  return categoryProfile(facts).apparel
+    || /apparel|clothing|garment|wear|activewear|sportswear|fashion|legging|shirt|dress|pants|shorts|bra|glove|hat|cap|服装|衣|裤|裙|帽/.test(promptContextText(facts));
+}
+
+function isFootwearCategory(facts) {
+  return categoryProfile(facts).id === "footwear";
+}
+
+function isThongFlipFlopFacts(facts) {
+  return isThongFlipFlopText(promptContextText(facts));
+}
+
+function footwearSceneCategoryText() {
+  return categoryProfile({
+    productName: "slippers",
+    scene: "beach hotel spa shower poolside",
+  }).scene;
 }
 
 function mainImageRule() {
@@ -4846,21 +5316,7 @@ function sharedVisualRules(facts, typeId = "") {
 }
 
 function categoryStyleRule(facts) {
-  const combined = promptContextText(facts);
-
-  if (/filter|滤纸|paper|pulp|wood pulp|dripper|pour-over|pour over/.test(combined)) {
-    return "Category background: bright coffee brewing counter or light studio setup with dripper/cup hints; do not copy competitor product scenes.";
-  }
-  if (/basket|portafilter|espresso|stainless|steel|metal|304/.test(combined)) {
-    return "Category background: clean marble coffee bar with espresso-machine and cup props; do not copy competitor product scenes.";
-  }
-  if (/kitchen|cup|mug|bottle|jar|container/.test(combined)) {
-    return "Category background: bright kitchen or studio countertop, subtle matching props, realistic light.";
-  }
-  if (/sock|socks|toe|grip|pilates|yoga|barre|瑜伽|普拉提|袜/.test(combined)) {
-    return "Category background: premium yoga/pilates lifestyle setting, bright studio floor or calm home workout space.";
-  }
-  return "Category background: realistic light category-matched surface and props, uncluttered Amazon listing style.";
+  return categoryProfile(facts).background || "Category background: realistic light category-matched surface and props, uncluttered Amazon listing style.";
 }
 
 function basicImageRequirements(templateId, typeId, extra = "") {
@@ -4957,16 +5413,35 @@ function productDetailText(facts, extraItems = [], limit = 8) {
 }
 
 function referenceColorLockText() {
-  return "Reference color lock: match the product color in the source image exactly; no hue, saturation, brightness, warmth, lighting, prop, or background tint shift.";
+  return "Reference color lock: match source product color exactly; no hue, brightness, warmth, or background tint shift.";
 }
 
 function productIdentityLockText(facts) {
   return compactPromptItems([
-    "Product identity lock: match the source product exactly; no generic substitute or invented shape/details.",
+    "Product identity lock: match the source product; no substitute, redesigned shape, or invented detail.",
+    categoryProfile(facts).identity,
+    facts.productName && `Exact product type/name: ${facts.productName}`,
     facts.selectedSpec && `Exact option/spec: ${shortOptionText(facts) || facts.selectedSpec}`,
+    facts.color && `Exact color: ${facts.color}`,
+    facts.material && `Exact material: ${facts.material}`,
+    facts.structure && `Exact visible structure: ${facts.structure}`,
     facts.pack && `Pack count if shown: ${facts.pack}`,
     "Preserve authentic visible product/packaging markings.",
-  ], "", 4);
+  ], "", 8);
+}
+
+function productIdentityBasicRule(facts) {
+  if (!facts) return "";
+  const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
+  return compactPromptItems([
+    "Generate the exact selected product only; no category substitution.",
+    facts.productName && `Product type/name: ${facts.productName}`,
+    option && `Selected option: ${option}`,
+    facts.color && `True color: ${facts.color}`,
+    facts.material && `Material: ${facts.material}`,
+    facts.structure && `Visible structure: ${facts.structure}`,
+    categoryProfile(facts).identity,
+  ], "", 7);
 }
 
 function sceneProductDetailText(facts, extraItems = [], limit = 8) {
@@ -5001,6 +5476,7 @@ function overallStyleText(facts, typeId, extra = "", options = {}) {
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
   const basicText = compactPromptItems([
     basic || basicImageRequirements(templateId, typeId),
+    productIdentityBasicRule(facts),
     noChineseTextRule(),
     imageMeasurementUnitRule(),
     amazonImageFileSizeRule(),
@@ -5011,7 +5487,7 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     promptSection("Overall Style", style || overallStyleText(facts, typeId)),
   ];
   if (includeNegative) {
-    sections.push(promptSection("Negative Prompt", negative || negativePrompt()));
+    sections.push(promptSection("Negative Prompt", negative || negativePrompt(facts)));
   }
   return sections.join("\n");
 }
@@ -5208,7 +5684,7 @@ function preferredSecondarySellingPoint(points, usedPoints = []) {
 }
 
 function sellingPointGroupText(points) {
-  return uniqueSellingPoints(Array.isArray(points) ? points : [points], 4).join(" + ");
+  return limitedSellingPoints(points, 2).join(" + ");
 }
 
 function sellingPointGroupFromText(value) {
@@ -5218,44 +5694,109 @@ function sellingPointGroupFromText(value) {
     .filter(Boolean);
 }
 
+function limitedSellingPoints(points, limit = 2, exclusions = []) {
+  const sourcePoints = Array.isArray(points) ? points : [points];
+  const excluded = uniqueSellingPoints(Array.isArray(exclusions) ? exclusions : [exclusions], 8);
+  const excludedKeys = new Set(excluded.map((point) => sellingPointKey(point)).filter(Boolean));
+  return uniqueSellingPoints(sourcePoints, limit + excluded.length + 6)
+    .filter((point) => {
+      const key = sellingPointKey(point);
+      if (key && excludedKeys.has(key)) return false;
+      return !excluded.some((usedPoint) => promptItemsOverlap(usedPoint, point));
+    })
+    .slice(0, limit);
+}
+
 function sellingPointGroups(facts, groupIndex = 0, groupSize = 2) {
-  if (groupIndex === 0 && facts.feature1) return sellingPointGroupFromText(facts.feature1);
-  if (groupIndex === 1 && facts.feature2) return sellingPointGroupFromText(facts.feature2);
-  const points = sellingPointCandidates(facts, 6);
-  const size = points.length >= 3 ? groupSize : 1;
-  const start = groupIndex * size;
-  const group = points.slice(start, start + size);
-  if (group.length) return group;
-  return points.slice(groupIndex, groupIndex + 1);
+  const size = Math.min(groupSize, 2);
+  const previousGroups = [];
+  for (let index = 0; index < groupIndex; index += 1) {
+    previousGroups.push(...sellingPointGroups(facts, index, size));
+  }
+
+  let source = [];
+  if (groupIndex === 0 && facts.feature1) {
+    source = sellingPointGroupFromText(facts.feature1);
+  } else if (groupIndex === 1 && facts.feature2) {
+    source = sellingPointGroupFromText(facts.feature2);
+  } else {
+    const points = sellingPointCandidates(facts, 8);
+    source = points.slice(groupIndex * size, groupIndex * size + size + 2);
+  }
+
+  const group = limitedSellingPoints(source, size, previousGroups);
+  if (group.length >= size) return group;
+  return [
+    ...group,
+    ...limitedSellingPoints(sellingPointCandidates(facts, 10), size - group.length, [...previousGroups, ...group]),
+  ].slice(0, size);
+}
+
+function conciseSellingPointLabel(point, fallback = "Verified Product Benefit") {
+  const labelByKey = {
+    compact: "Easy Travel Packing",
+    lightweight: "Lightweight Easy Carry",
+    uv: "Sun Shade Protection",
+    rain: "Quick Dry Surface",
+    windproof: "Stable Wind Structure",
+    grip: "Non Slip Grip",
+    "cross-strap": "Secure Strap Design",
+    "five-toe": "Five Toe Fit",
+    coverage: "Comfort Coverage Fit",
+    seam: "Smooth Seam Comfort",
+    sweat: "Moisture Wicking Comfort",
+    friction: "Friction Free Comfort",
+    knit: "Textured Knit Detail",
+    cotton: "Soft Cotton Comfort",
+    elastic: "Flexible Elastic Fit",
+    soft: "Soft Comfort Feel",
+    hygiene: "Fresh Wear Comfort",
+    filtration: "Smooth Coffee Flow",
+    material: "Natural Material Texture",
+  };
+  const key = sellingPointKey(point);
+  if (labelByKey[key]) return labelByKey[key];
+  const words = String(point || "")
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/[^a-z0-9\s-]/gi, " ")
+    .replace(/[-_/]+/g, " ")
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => /^[a-z0-9]+$/i.test(word))
+    .slice(0, 5);
+  if (words.length >= 2) {
+    return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ");
+  }
+  return fallback;
+}
+
+function sellingPointLabels(points, fallback = "Verified Product Benefit") {
+  const labels = limitedSellingPoints(points, 2)
+    .map((point) => conciseSellingPointLabel(point, fallback))
+    .filter(Boolean);
+  return uniquePromptItems(labels).slice(0, 2);
 }
 
 function sellingPointLine(points, fallback = "verified product benefit") {
-  const cleanPoints = uniqueSellingPoints(Array.isArray(points) ? points : [points], 4);
-  return `Selling point${cleanPoints.length > 1 ? "s" : ""}: ${cleanPoints.join(" + ") || fallback}`;
+  const labels = sellingPointLabels(points, conciseSellingPointLabel(fallback));
+  return `Selling point label${labels.length > 1 ? "s" : ""} (max 2, unique, 3-5 English words each): ${labels.join(" + ") || conciseSellingPointLabel(fallback)}`;
 }
 
 function sellingPointDisplayText(points, fallback = "verified product benefit") {
-  return uniqueSellingPoints(Array.isArray(points) ? points : [points], 4).join(" + ") || fallback;
+  return sellingPointLabels(points, conciseSellingPointLabel(fallback)).join(" + ") || conciseSellingPointLabel(fallback);
 }
 
 function sellingPointOnImageRule(points, fallback = "verified product benefit") {
   const labelText = sellingPointDisplayText(points, fallback);
-  return `On-image selling-point labels required: display readable text/callout labels for "${labelText}" with matching simple icons, arrows, or detail markers; the scene/action must visually prove these exact selling point(s).`;
+  return `On-image title/labels: large high-contrast title "${labelText}"; max 2 readable 3-5 word English labels; no extra claims; use simple icons/arrows only to prove them.`;
 }
 
 function sellingPointSceneGuide(points, facts = {}) {
-  const cleanPoints = uniqueSellingPoints(Array.isArray(points) ? points : [points], 4);
+  const cleanPoints = limitedSellingPoints(points, 2);
+  const profile = categoryProfile(facts);
   const guides = cleanPoints.map((point) => {
     const key = sellingPointKey(point);
-    if (key === "compact") return "show folded umbrella beside a hand, pocket, or small bag with a clear size comparison";
-    if (key === "lightweight") return "show easy one-hand carry or bag storage without exaggerating scale";
-    if (key === "uv") return "show sun-shade use with canopy coverage and no unsupported numeric UV claims";
-    if (key === "rain") return "show raindrops beading on the canopy in a realistic rainy scene";
-    if (key === "windproof") return "show reinforced ribs or stable canopy structure in a mild wind context";
-    if (key === "grip") return "show real anti-slip grip under floor/mat/surface pressure";
-    if (key === "cotton" || key === "soft") return "show relaxed comfort with fabric texture visible";
-    if (key === "cross-strap" || key === "five-toe") return "show worn/angled view that reveals the structure";
-    if (key === "elastic") return "show snug stretch in use without distortion";
+    if (profile.proof?.[key]) return profile.proof[key];
     if (key === "filtration") return "show real filtration flow in the use setup";
     if (key === "material") return "show material texture in a realistic category scene";
     return `show realistic use evidence for ${point}`;
@@ -5264,6 +5805,17 @@ function sellingPointSceneGuide(points, facts = {}) {
     ...guides,
     facts.scene && `Keep scene relevant to ${facts.scene}`,
   ], "", 4);
+}
+
+function sellingPointImageTemplateRule(points, facts = {}, imageName = "this selling-point image") {
+  const labelText = sellingPointDisplayText(points);
+  const sceneGuide = sellingPointSceneGuide(points, facts);
+  return [
+    `${imageName}: max 2 unique selling points; title "${labelText}" must be large, high-contrast, immediately visible.`,
+    "Labels must be 3-5 English words; no extra slogans, badges, claim blocks, or repeated benefits.",
+    `Pair scene to selling points: ${sceneGuide}; props/action/environment must prove them.`,
+    "Second selling-point image must not repeat the previous one.",
+  ].join(" ");
 }
 
 function comparablePromptItem(value) {
@@ -5421,7 +5973,7 @@ function specModulePrompt(typeId, facts) {
     basic: selected.basic,
     details: selected.details,
     style: selected.style,
-    negative: negativePrompt(),
+    negative: negativePrompt(facts),
   });
 }
 
@@ -5458,24 +6010,7 @@ function sceneTextureLine(facts) {
 }
 
 function sceneCategoryStyleRule(facts) {
-  const combined = promptContextText(facts);
-
-  if (/filter|滤纸|paper|pulp|wood pulp|dripper|pour-over|pour over/.test(combined)) {
-    return "Scene category: bright coffee brewing counter or light studio setup with dripper/cup hints.";
-  }
-  if (/basket|portafilter|espresso|stainless|steel|metal|304/.test(combined)) {
-    return "Scene category: clean marble coffee bar with espresso-machine and cup props.";
-  }
-  if (/kitchen|cup|mug|bottle|jar|container/.test(combined)) {
-    return "Scene category: bright kitchen or studio countertop with subtle matching props.";
-  }
-  if (/sock|socks|toe|grip|pilates|yoga|barre|瑜伽|普拉提|袜/.test(combined)) {
-    return "Scene category: premium yoga or pilates lifestyle setting with soft natural light.";
-  }
-  if (/umbrella|伞|rain|sun shade|commuting|travel/.test(combined)) {
-    return "Scene category: realistic daily commute, travel, rainy sidewalk, and sunny outdoor shade environments with natural scale cues.";
-  }
-  return "Scene category: realistic light category-matched surface, props, and color mood.";
+  return categoryProfile(facts).scene || "Scene category: realistic light category-matched surface, props, and color mood.";
 }
 
 function sceneOverallStyleText(facts, typeId, extra = "") {
@@ -5490,15 +6025,93 @@ function sceneOverallStyleText(facts, typeId, extra = "") {
 }
 
 function multiSceneLifestyleStyleText(facts, sceneList) {
+  const profile = categoryProfile(facts);
+  const globalSceneLines = [
+    `Exactly 4 distinct complete real-life use scenes for ${sceneList}; clean 2x2/four-panel collage.`,
+    "Each panel needs medium/wide environment, props/context, and natural use action or placement.",
+    "No product-only close-up, studio shot, macro detail, option grid, or cropped cutout.",
+    "Product visible in every panel, but each panel reads as a full lifestyle scene.",
+  ];
+  const categoryLines = profile.multiScene?.(sceneList) || [
+    "Product benefits should be implied through scene action and environment cues only, such as daily use, storage, handling, compatible context, or easy carry.",
+  ];
   return [
     sceneCategoryStyleRule(facts),
-    "Lifestyle usage scenes only; this is not a selling-point infographic and not a product display grid.",
-    `Create 3-4 large real-life use scenes for ${sceneList}; each panel shows full environment, medium/wide framing, props, room/context, and natural use action.`,
-    "The product is a natural part of each scene, clearly visible but not isolated as a product display; do not crop into product-only close-ups, do not enlarge the product as the main subject.",
-    "Product benefits should be implied through scene action and environment cues only, such as compact carry, rain use, sun shade, travel storage, or easy daily use.",
+    "Four complete lifestyle scenes only; not an infographic or product grid.",
+    ...globalSceneLines,
+    ...categoryLines,
     "No added selling-point text, no callout labels, no badges, no arrows, no feature icons, no product-spec explanation, no inset close-up panels.",
     humanSceneRule(facts),
   ].filter(Boolean).join(" / ");
+}
+
+function sceneMultiSceneDetails(facts, sceneList) {
+  if (!isFootwearCategory(facts)) return sceneContextProductDetailText(facts, [sceneList], 5);
+  return sceneContextProductDetailText(facts, [
+    footwearStructureReferenceText(facts),
+    `Use scenes: ${sceneList}`,
+  ], 8);
+}
+
+function sceneMultiSceneStyleText(facts, sceneList) {
+  const base = multiSceneLifestyleStyleText(facts, sceneList);
+  if (!isFootwearCategory(facts)) return base;
+  return [
+    base,
+    "Every panel preserves source slipper structure; scenes must not change strap layout, sole, toe-post/opening, or fold/hinge.",
+    isThongFlipFlopFacts(facts) ? `Across all panels, ${thongFlipFlopStructureLockText()}` : "",
+  ].filter(Boolean).join(" / ");
+}
+
+function sceneMultiAngleDetails(facts, physicalDetails) {
+  if (!isFootwearCategory(facts)) return sceneProductDetailText(facts, [physicalDetails, visibleTextureDetails(facts)], 7);
+  return sceneProductDetailText(facts, [
+    footwearStructureReferenceText(facts),
+    physicalDetails,
+    visibleTextureDetails(facts),
+  ], 10);
+}
+
+function sceneMultiAngleStyleText(facts) {
+  const base = "Product-only multi-angle display: front, side, back/top, and one detail view on clean light studio background; no text/annotations.";
+  if (!isFootwearCategory(facts)) return base;
+  return [
+    base,
+    "All angles show the same exact product and reveal strap layout, toe-post/opening, sole outline/thickness, edge profile, and fold/hinge if present.",
+    isThongFlipFlopFacts(facts) ? `For every angle, ${thongFlipFlopStructureLockText()}` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function sceneExplanationDetails(facts, physicalDetails) {
+  const infoText = [
+    "Main title required: Product Information.",
+    "Use 2-3 short English info labels for verified material, structure, texture, size/range, or visible detail only.",
+    "Premium text hierarchy: large title, aligned label rows, crisp typography, spacing, no dense paragraphs.",
+  ];
+  if (!isFootwearCategory(facts)) return sceneProductDetailText(facts, [...infoText, physicalDetails, visibleTextureDetails(facts)], 9);
+  return sceneProductDetailText(facts, [
+    ...infoText,
+    footwearStructureReferenceText(facts),
+    physicalDetails,
+    visibleTextureDetails(facts),
+    "Callouts may label only verified visible structure/material details without changing the product shape.",
+  ], 10);
+}
+
+function sceneExplanationStyleText(facts) {
+  const base = [
+    "Premium product information infographic with large high-contrast title \"Product Information\" or \"Product Details\".",
+    "Product centered; 2-3 verified callouts for material, structure, texture, size/range, or visible details.",
+    "Polished typography, aligned label blocks, subtle dividers/icons, generous white space, soft shadows, restrained premium accents.",
+    "No dense paragraphs, long claims, cluttered tables, or unsupported specs.",
+    "No human model, hands, body parts, wearing model, lifestyle action, or use-scene composition.",
+  ].join(" ");
+  if (!isFootwearCategory(facts)) return base;
+  return [
+    base,
+    "Callouts point to source-accurate structure, not a redesigned version.",
+    isThongFlipFlopFacts(facts) ? thongFlipFlopStructureLockText() : "",
+  ].filter(Boolean).join(" ");
 }
 
 function productFirstOptionalHumanRule() {
@@ -5511,6 +6124,69 @@ function premiumStudioRenderRule() {
 
 function premiumLifestyleHeroRule(sceneText) {
   return `Premium lifestyle hero photography: show the product actively being used in ${sceneText}; cinematic natural light, realistic depth of field, upscale props and environment, clear product silhouette, emotional but uncluttered composition, editorial-quality color grading.`;
+}
+
+function sceneHeroBasicRequirements(facts) {
+  if (!isFootwearCategory(facts)) return basicImageRequirements("scene", "1");
+  return compactPromptItems([
+    "1:1 Amazon lifestyle hero image",
+    "4K clarity",
+    "sharp realistic detail",
+    "no added overlay text",
+    "attractive beach/resort/spa/travel lifestyle scene",
+    "medium environmental framing; not shoe-only close-up",
+    "product clear, with scene atmosphere/props filling frame",
+    "structure-first reference lock; do not reshape product",
+    "preserve authentic non-Chinese product/packaging markings only",
+  ], "", 10);
+}
+
+function footwearStructureReferenceText(facts) {
+  const isThong = isThongFlipFlopFacts(facts);
+  return compactPromptItems([
+    "Footwear reference lock: copy source geometry before adding scene/model/foot; reference overrides generic footwear assumptions.",
+    "Keep strap layout/count/width, toe-post/opening, sole outline/thickness, edge profile, and fold/hinge if present.",
+    isThong && thongFlipFlopStructureLockText(),
+    facts.structure && `Source structure field: ${facts.structure}`,
+    facts.color && `Source color field: ${facts.color}`,
+    facts.material && `Source material field: ${facts.material}`,
+  ], "", 7);
+}
+
+function footwearStructureNegativeText(facts) {
+  if (!isFootwearCategory(facts)) return "";
+  return compactPromptItems([
+    "No changed footwear structure, strap layout/count, toe-post/opening, sole outline/thickness, or fold/hinge",
+    "no added heel/back/ankle strap or second parallel strap",
+    isThongFlipFlopFacts(facts) && "no slide sandals, no wide-band shower slides, no two-strap sandals, no open slides, no missing Y-shaped thong strap, no missing central toe post, no closed heel",
+    "no invented decoration, wrong material texture, wrong color, or extra brand logo",
+  ], "", 9);
+}
+
+function sceneHeroProductDetails(facts, mainScene) {
+  if (!isFootwearCategory(facts)) {
+    return sceneProductDetailText(facts, [mainScene, visibleTextureDetails(facts)], 7);
+  }
+  return sceneProductDetailText(facts, [
+    footwearStructureReferenceText(facts),
+    `Hero lifestyle context: ${mainScene}`,
+    "Scene appeal: visible sand/water/towel/beach bag/resort deck/spa/travel prop; natural light, depth, negative space.",
+    visibleTextureDetails(facts),
+  ], 10);
+}
+
+function sceneHeroStyleText(facts, mainScene) {
+  if (isFootwearCategory(facts)) {
+    return sceneOverallStyleText(facts, "1", [
+      `Lifestyle hero: place or wear exact selected flip-flops/slippers naturally in ${mainScene}.`,
+      "Medium environmental framing with beach/resort/spa/travel story, props, depth; not only shoes/feet.",
+      "Product clear and desirable, roughly 35-55% of frame; leave environment, light, texture, negative space.",
+      "Model feet/lower legs optional and secondary; product-on-sand/resort-prop composition allowed.",
+      isThongFlipFlopFacts(facts) ? thongFlipFlopStructureLockText() : "Preserve true color, exact strap shape, sole thickness, toe-post/opening position, sole outline, and fold/hinge structure visible in the source image.",
+      "If the scene angle would hide or distort key structure, adjust camera/placement instead of changing the slipper.",
+    ].join(" "));
+  }
+  return sceneOverallStyleText(facts, "1", `Scene-based hero in ${mainScene}; refined theme-matched background and natural depth.`);
 }
 
 function featureSceneStoryRule(facts, sceneText, points) {
@@ -5531,7 +6207,7 @@ function optionShowcaseRule() {
 }
 
 function sceneSellingPointItems(facts, points, fallback) {
-  const sellingPoints = uniqueSellingPoints(Array.isArray(points) ? points : [points], 3);
+  const sellingPoints = limitedSellingPoints(points, 2);
   const sellingPointText = sellingPoints.join(" + ") || fallback;
   const support = compactSpecificPromptItems([
     facts.structure && !promptItemsOverlap(sellingPointText, facts.structure) ? facts.structure : "",
@@ -5542,18 +6218,12 @@ function sceneSellingPointItems(facts, points, fallback) {
 }
 
 function summaryInsetGuide(facts, points) {
+  const profile = categoryProfile(facts);
   const guideItems = uniqueSellingPoints(points, 4).map((point) => {
     const key = sellingPointKey(point);
-    if (key === "grip") return "anti-slip sole close-up";
-    if (key === "cross-strap" || key === "five-toe") return "structure/detail close-up";
-    if (key === "cotton" || key === "soft" || key === "elastic") return "fabric comfort close-up";
+    if (profile.inset?.[key]) return profile.inset[key];
     if (key === "filtration") return "working-performance close-up";
     if (key === "material") return "material texture close-up";
-    if (key === "compact") return "folded umbrella beside hand, phone, pocket, or small bag";
-    if (key === "lightweight") return "one-hand carry or handbag storage proof";
-    if (key === "uv") return "sun-shade canopy coverage proof";
-    if (key === "rain") return "water-beading canopy close-up";
-    if (key === "windproof") return "reinforced rib frame close-up";
     return `${point} visual proof close-up`;
   });
   return compactPromptItems([
@@ -5582,34 +6252,34 @@ function sceneModulePrompt(typeId, facts) {
   const summaryInsetText = summaryInsetGuide(facts, sellingPointSet);
   const modules = {
     "1": {
-      basic: basicImageRequirements("scene", "1"),
-      details: sceneProductDetailText(facts, [mainScene, visibleTextureDetails(facts)], 7),
-      style: sceneOverallStyleText(facts, "1", `Scene-based hero in ${mainScene}; refined theme-matched background and natural depth.`),
+      basic: sceneHeroBasicRequirements(facts),
+      details: sceneHeroProductDetails(facts, mainScene),
+      style: sceneHeroStyleText(facts, mainScene),
     },
     "2": {
       basic: "1:1 Amazon listing image, 4K clarity, sharp realistic detail, multi-panel complete-use-scene collage, environment-first composition.",
-      details: sceneContextProductDetailText(facts, [sceneList], 5),
-      style: multiSceneLifestyleStyleText(facts, sceneList),
+      details: sceneMultiSceneDetails(facts, sceneList),
+      style: sceneMultiSceneStyleText(facts, sceneList),
     },
     "3": {
       basic: "1:1 Amazon multi-angle product image, 4K clarity, sharp realistic detail, product-only layout, no added text, labels, callouts, badges, captions, or arrows.",
-      details: sceneProductDetailText(facts, [physicalDetails, visibleTextureDetails(facts)], 7),
-      style: "Product-only multi-angle display; show front, side, back/top, and one detail view on a clean light studio background; no text explanation or added graphic annotations; keep all views focused on the product itself.",
+      details: sceneMultiAngleDetails(facts, physicalDetails),
+      style: sceneMultiAngleStyleText(facts),
     },
     "4": {
       basic: "1:1 Amazon product explanation image, 4K clarity, sharp realistic detail, product-only layout, clean light studio background.",
-      details: sceneProductDetailText(facts, [physicalDetails, visibleTextureDetails(facts)], 7),
-      style: "Product-only explanation image; show the product itself centered with 2-3 concise verified callout labels for material, structure, texture, or visible details; no human model, hands, body parts, wearing model, lifestyle action, or use-scene composition.",
+      details: sceneExplanationDetails(facts, physicalDetails),
+      style: sceneExplanationStyleText(facts),
     },
     "5": {
       basic: basicImageRequirements("scene", "5"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup1, "the primary verified benefit"), 7),
-      style: sceneOverallStyleText(facts, "5", `${productFirstOptionalHumanRule()} Build the scene around the listed selling point(s): ${sellingPointSceneGuide(sellingPointGroup1, facts)}; include a short headline plus concise selling-point labels/callouts on image.`),
+      style: sceneOverallStyleText(facts, "5", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")} Build the scene around the listed selling point(s): ${sellingPointSceneGuide(sellingPointGroup1, facts)}; include concise selling-point labels/callouts on image.`),
     },
     "6": {
       basic: basicImageRequirements("scene", "6"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup2, "the secondary verified benefit"), 6),
-      style: sceneOverallStyleText(facts, "6", `${productFirstOptionalHumanRule()} Build a distinct scene around the listed selling point(s): ${sellingPointSceneGuide(sellingPointGroup2, facts)}; composition must differ from Image 5; include a short headline plus concise selling-point labels/callouts on image.`),
+      style: sceneOverallStyleText(facts, "6", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Build a distinct scene around the listed selling point(s): ${sellingPointSceneGuide(sellingPointGroup2, facts)}; composition and selling points must differ from Image 5; include concise selling-point labels/callouts on image.`),
     },
     "7": {
       basic: basicImageRequirements("scene", "7"),
@@ -5629,7 +6299,7 @@ function sceneModulePrompt(typeId, facts) {
     basic: selected.basic,
     details: selected.details,
     style: selected.style,
-    includeNegative: false,
+    negative: negativePrompt(facts),
   });
 }
 
@@ -5718,7 +6388,7 @@ function featureModulePrompt(typeId, facts) {
     "6": {
       basic: basicImageRequirements("feature", "6"),
       details: productDetailText(facts, [sellingPointLine(sellingPointGroup1), sellingPointOnImageRule(sellingPointGroup1)], 6),
-      style: overallStyleText(facts, "6", `Core function demonstration based on Selling Point 1. Build the visual proof around: ${sellingPointSceneGuide(sellingPointGroup1, facts)}. Product remains clear and accurate; include one short headline plus 2-3 concise icon/callout labels tied to the filled product fields.`),
+      style: overallStyleText(facts, "6", `Core function demonstration based on Selling Point 1. ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Feature template Image 6")} Build the visual proof around: ${sellingPointSceneGuide(sellingPointGroup1, facts)}. Product remains clear and accurate; include concise icon/callout labels tied to the filled product fields.`),
     },
     "7": {
       basic: basicImageRequirements("feature", "7"),
@@ -5727,7 +6397,7 @@ function featureModulePrompt(typeId, facts) {
         sellingPointLine(sellingPointGroup2, "verified secondary benefit"),
         sellingPointOnImageRule(sellingPointGroup2, "verified secondary benefit"),
       ], 8),
-      style: overallStyleText(facts, "7", `Detail and material feature display: show macro close-ups, texture/detail insets, or visible structure proof for the filled detail fields. Build a distinct composition from Image 6 around: ${sellingPointSceneGuide(sellingPointGroup2, facts)}; include short verified labels only; no unsupported claims.`, { includeHumanRule: false }),
+      style: overallStyleText(facts, "7", `Detail and material feature display: show macro close-ups, texture/detail insets, or visible structure proof for the filled detail fields. ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Feature template Image 7")} Build a distinct composition from Image 6 around: ${sellingPointSceneGuide(sellingPointGroup2, facts)}; include short verified labels only; no unsupported claims.`, { includeHumanRule: false }),
     },
     "8": {
       basic: basicImageRequirements("scene", "7"),
@@ -5746,7 +6416,7 @@ function featureModulePrompt(typeId, facts) {
     basic: selected.basic,
     details: selected.details,
     style: selected.style,
-    negative: negativePrompt(),
+    negative: negativePrompt(facts),
   });
 }
 
@@ -5942,10 +6612,13 @@ function init() {
       byId("extractStatus").textContent = `解析失败：${error.message || "请检查文件格式"}`;
     });
   });
-  ["purchaseFile", "purchaseImageFile", "supplierFile", "competitorFile"].forEach((id) => {
-    byId(id).addEventListener("change", () => {
-      byId("extractStatus").textContent = "文件已选择，点击解析资料并提取产品信息。";
-    });
+  ["purchaseFile", "purchaseImageFile", "amazonTemplateFile", "amazonSkuFilter", "supplierFile", "competitorFile"].forEach((id) => {
+    const input = byId(id);
+    const updateStatus = () => {
+      byId("extractStatus").textContent = "文件或筛选条件已更新，点击解析资料并提取产品信息。";
+    };
+    input.addEventListener("change", updateStatus);
+    if (input.type === "text") input.addEventListener("input", updateStatus);
   });
   byId("resetFields").addEventListener("click", () => {
     renderFields(true);
