@@ -4512,7 +4512,11 @@ function isThongFlipFlopText(value) {
 }
 
 function thongFlipFlopStructureLockText() {
-  return "Thong flip-flop anatomy lock: exactly one Y-shaped thong strap that splits from one central toe post between the toes into two side anchors; open heel; no heel strap, no back strap, no ankle strap, no second parallel strap, no wide slide band, no two-band sandal upper.";
+  return "Thong flip-flop anatomy lock: exactly one Y-shaped thong strap splitting from one central toe post into two side anchors; visible front toe-post slit/open hole and negative space around the post; footbed texture visible between/inside the Y straps; open heel; no sealed triangular vamp, no closed/filled front, no heel/back/ankle strap, no second parallel strap, no wide slide band.";
+}
+
+function thongFlipFlopShortLockText() {
+  return "Keep thong anatomy: Y strap, central toe post, visible front slit/open hole, exposed footbed, open heel.";
 }
 
 function amazonSharedFacts(row, columns, browsePath = "") {
@@ -4554,7 +4558,7 @@ function amazonSharedFacts(row, columns, browsePath = "") {
     englishCategory,
     material,
     structure: compactPromptItems([
-      isThong ? "thong flip-flop construction with one Y-shaped strap and one central toe post, open heel with no back strap" : "",
+      isThong ? "thong flip-flop construction with one Y-shaped strap, central toe post, visible front slit/open hole, exposed footbed texture, open heel with no back strap" : "",
       !isThong && /backstrap/i.test(productText) ? "backstrap closure" : "",
       height && `${height} profile`,
       heelType && `${heelType} heel`,
@@ -5194,8 +5198,8 @@ function categoryProfile(facts) {
       apparel: true,
       background: "Category background: premium beach, hotel spa, bathroom shower, poolside, or travel footwear setting with clean surfaces and realistic water-safe context.",
       scene: "Scene category: premium beach, hotel spa, bathroom shower, poolside, and travel footwear lifestyle scenes with clean wet/dry surfaces, natural foot-scale context, and upscale resort lighting.",
-      identity: "Footwear structure lock: preserve the exact visible slipper structure from the source image; for thong flip-flops keep one Y-shaped thong strap, one central toe post, two side anchors, and an open heel with no back/ankle strap; preserve sole outline, sole thickness, fold/hinge shape if present, edge profile, material texture, and selected color.",
-      negative: "No changed strap layout, missing toe-post/opening, added heel strap, added back strap, added ankle strap, added second parallel strap, wide slide band, two-band sandal upper, changed sole outline, changed sole thickness, changed fold/hinge structure, invented decoration, wrong material texture, wrong color, or extra brand logo.",
+      identity: "Footwear structure lock: preserve source slipper structure; for thong flip-flops keep Y strap, central toe post, visible front slit/open hole, exposed footbed texture between straps, side anchors, and open heel; preserve sole outline/thickness, edge profile, material texture, and selected color.",
+      negative: "No changed strap layout, missing toe-post/opening, sealed triangular vamp, closed/filled front, covered footbed, added heel/back/ankle strap, second parallel strap, wide slide band, two-band sandal upper, changed sole outline/thickness, invented decoration, wrong material texture/color, or extra logo.",
       multiScene: (sceneList) => [
         `Footwear scene choices for ${sceneList}: beach walk, hotel spa, shower/bathroom floor, poolside deck, gym shower, or travel packing.`,
         "Show the flip-flops being worn, carried, packed, or placed naturally in each environment while keeping realistic foot scale and true color.",
@@ -5951,7 +5955,7 @@ function specModulePrompt(typeId, facts) {
     "6": {
       basic: basicImageRequirements("spec", "6"),
       details: productDetailText(facts, [sellingPointLine(sellingPointGroup1), sellingPointOnImageRule(sellingPointGroup1)], 6),
-      style: overallStyleText(facts, "6", `Build the scene around the listed selling point(s): ${sellingPointSceneGuide(sellingPointGroup1, facts)}; clear selling-point text/callouts must appear on image.`),
+      style: overallStyleText(facts, "6", `Selling-point proof scene: ${sellingPointSceneGuide(sellingPointGroup1, facts)}; clear text/callouts required.`),
     },
     "7": {
       basic: basicImageRequirements("spec", "7"),
@@ -6059,7 +6063,7 @@ function sceneMultiSceneStyleText(facts, sceneList) {
   return [
     base,
     "Every panel preserves source slipper structure; scenes must not change strap layout, sole, toe-post/opening, or fold/hinge.",
-    isThongFlipFlopFacts(facts) ? `Across all panels, ${thongFlipFlopStructureLockText()}` : "",
+    isThongFlipFlopFacts(facts) ? `Across all panels, ${thongFlipFlopShortLockText()}` : "",
   ].filter(Boolean).join(" / ");
 }
 
@@ -6078,7 +6082,7 @@ function sceneMultiAngleStyleText(facts) {
   return [
     base,
     "All angles show the same exact product and reveal strap layout, toe-post/opening, sole outline/thickness, edge profile, and fold/hinge if present.",
-    isThongFlipFlopFacts(facts) ? `For every angle, ${thongFlipFlopStructureLockText()}` : "",
+    isThongFlipFlopFacts(facts) ? `For every angle, ${thongFlipFlopShortLockText()}` : "",
   ].filter(Boolean).join(" ");
 }
 
@@ -6110,7 +6114,7 @@ function sceneExplanationStyleText(facts) {
   return [
     base,
     "Callouts point to source-accurate structure, not a redesigned version.",
-    isThongFlipFlopFacts(facts) ? thongFlipFlopStructureLockText() : "",
+    isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "",
   ].filter(Boolean).join(" ");
 }
 
@@ -6136,9 +6140,8 @@ function sceneHeroBasicRequirements(facts) {
     "attractive beach/resort/spa/travel lifestyle scene",
     "medium environmental framing; not shoe-only close-up",
     "product clear, with scene atmosphere/props filling frame",
-    "structure-first reference lock; do not reshape product",
     "preserve authentic non-Chinese product/packaging markings only",
-  ], "", 10);
+  ], "", 8);
 }
 
 function footwearStructureReferenceText(facts) {
@@ -6158,7 +6161,7 @@ function footwearStructureNegativeText(facts) {
   return compactPromptItems([
     "No changed footwear structure, strap layout/count, toe-post/opening, sole outline/thickness, or fold/hinge",
     "no added heel/back/ankle strap or second parallel strap",
-    isThongFlipFlopFacts(facts) && "no slide sandals, no wide-band shower slides, no two-strap sandals, no open slides, no missing Y-shaped thong strap, no missing central toe post, no closed heel",
+    isThongFlipFlopFacts(facts) && "no slide sandals, wide-band shower slides, two-strap sandals, sealed triangular vamp, closed/filled front, covered footbed, missing front slit/open hole, missing Y strap, missing central toe post, or closed heel",
     "no invented decoration, wrong material texture, wrong color, or extra brand logo",
   ], "", 9);
 }
@@ -6182,7 +6185,7 @@ function sceneHeroStyleText(facts, mainScene) {
       "Medium environmental framing with beach/resort/spa/travel story, props, depth; not only shoes/feet.",
       "Product clear and desirable, roughly 35-55% of frame; leave environment, light, texture, negative space.",
       "Model feet/lower legs optional and secondary; product-on-sand/resort-prop composition allowed.",
-      isThongFlipFlopFacts(facts) ? thongFlipFlopStructureLockText() : "Preserve true color, exact strap shape, sole thickness, toe-post/opening position, sole outline, and fold/hinge structure visible in the source image.",
+      isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "Preserve true color, strap shape, sole thickness/outline, toe-post/opening, and fold/hinge if visible.",
       "If the scene angle would hide or distort key structure, adjust camera/placement instead of changing the slipper.",
     ].join(" "));
   }
@@ -6274,12 +6277,12 @@ function sceneModulePrompt(typeId, facts) {
     "5": {
       basic: basicImageRequirements("scene", "5"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup1, "the primary verified benefit"), 7),
-      style: sceneOverallStyleText(facts, "5", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")} Build the scene around the listed selling point(s): ${sellingPointSceneGuide(sellingPointGroup1, facts)}; include concise selling-point labels/callouts on image.`),
+      style: sceneOverallStyleText(facts, "5", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")} Include concise labels/callouts on image.`),
     },
     "6": {
       basic: basicImageRequirements("scene", "6"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup2, "the secondary verified benefit"), 6),
-      style: sceneOverallStyleText(facts, "6", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Build a distinct scene around the listed selling point(s): ${sellingPointSceneGuide(sellingPointGroup2, facts)}; composition and selling points must differ from Image 5; include concise selling-point labels/callouts on image.`),
+      style: sceneOverallStyleText(facts, "6", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Composition and selling points must differ from Image 5; include concise labels/callouts.`),
     },
     "7": {
       basic: basicImageRequirements("scene", "7"),
@@ -6388,7 +6391,7 @@ function featureModulePrompt(typeId, facts) {
     "6": {
       basic: basicImageRequirements("feature", "6"),
       details: productDetailText(facts, [sellingPointLine(sellingPointGroup1), sellingPointOnImageRule(sellingPointGroup1)], 6),
-      style: overallStyleText(facts, "6", `Core function demonstration based on Selling Point 1. ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Feature template Image 6")} Build the visual proof around: ${sellingPointSceneGuide(sellingPointGroup1, facts)}. Product remains clear and accurate; include concise icon/callout labels tied to the filled product fields.`),
+      style: overallStyleText(facts, "6", `Core function demo. ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Feature template Image 6")} Product remains clear and accurate.`),
     },
     "7": {
       basic: basicImageRequirements("feature", "7"),
@@ -6397,7 +6400,7 @@ function featureModulePrompt(typeId, facts) {
         sellingPointLine(sellingPointGroup2, "verified secondary benefit"),
         sellingPointOnImageRule(sellingPointGroup2, "verified secondary benefit"),
       ], 8),
-      style: overallStyleText(facts, "7", `Detail and material feature display: show macro close-ups, texture/detail insets, or visible structure proof for the filled detail fields. ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Feature template Image 7")} Build a distinct composition from Image 6 around: ${sellingPointSceneGuide(sellingPointGroup2, facts)}; include short verified labels only; no unsupported claims.`, { includeHumanRule: false }),
+      style: overallStyleText(facts, "7", `Detail/material feature display with macro close-ups or structure proof. ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Feature template Image 7")} Distinct from Image 6; no unsupported claims.`, { includeHumanRule: false }),
     },
     "8": {
       basic: basicImageRequirements("scene", "7"),
