@@ -174,9 +174,10 @@ const templates = [
   {
     id: "scene",
     name: "场景展示模板",
-    description: "围绕主场景、多场景、多角度展示、产品说明、两个卖点和收口生成 7 张图。",
+    description: "围绕 A/B 主场景、多场景、多角度展示、产品说明、两个卖点和收口生成 8 张图。",
     imageTypes: [
-      { id: "1", name: "1. 主图 / 主场景图", promptName: "1. Main Scene Image" },
+      { id: "1A", name: "1A. 主图 / 产品主体场景图", promptName: "1A. Product-First Main Scene Image" },
+      { id: "1B", name: "1B. 主图 / 人物使用场景图", promptName: "1B. Human-Use Main Scene Image" },
       { id: "2", name: "2. 多场景 / 多用途图", promptName: "2. Multi-Scene Usage Image" },
       { id: "3", name: "3. 多角度图", promptName: "3. Multi-Angle Product Image" },
       { id: "4", name: "4. 产品说明图", promptName: "4. Product Explanation Image" },
@@ -2712,14 +2713,23 @@ function inferProductName(text) {
 }
 
 function inferUseScene(text) {
+  if (isResistanceBandText(text)) {
+    return "stretching, physical therapy, strength training, and home workout use";
+  }
   if (/伞|umbrella/i.test(text)) {
     return "daily commuting, travel, campus, office commute, rainy sidewalk, and sunny outdoor shade use";
   }
   if (/V60|dripper|pour over|手冲|挂耳|滤杯/i.test(text)) {
     return "pour-over coffee brewing / drip coffee maker setup";
   }
-  if (isYogaSockText(text) || /瑜伽|普拉提|pilates|yoga|barre|dance|workout|hospital|barefoot/i.test(text)) {
+  if (isYogaSockText(text)) {
     return "yoga / pilates / barre / home workout";
+  }
+  if (isSockFamilyText(text) && /dance|workout|hospital|barefoot|训练|健身/i.test(text)) {
+    return "fitness, dance, home workout, or indoor recovery use";
+  }
+  if (/(?:瑜伽球|普拉提小球|yoga\s+ball|pilates\s+ball|yoga\s+mat|pilates\s+ring)/i.test(text)) {
+    return "yoga, pilates, and home fitness use";
   }
   if (/kitchen|home & kitchen|厨房/i.test(text)) {
     return "home kitchen use";
@@ -2889,8 +2899,8 @@ function resistanceBandSellingPointCandidates(text, material) {
   if (/拉伸|阻力|拉力|弹力|stretch|resistance/i.test(source)) {
     candidates.push("stretching and resistance training use");
   }
-  if (/瑜伽|训练|健身|workout|exercise|yoga|pilates/i.test(source)) {
-    candidates.push("yoga and fitness workout use");
+  if (/训练|健身|workout|exercise|home\s+gym|strength|therapy|康复|理疗/i.test(source)) {
+    candidates.push("fitness and home training use");
   }
   return uniqueSellingPoints(candidates, 6);
 }
@@ -4110,7 +4120,7 @@ function enrichStructuredItemsWithSupplierSkus(items, rows, supplierText) {
       sizeCode: [style, displayColorName(option.color || item.color), size].filter(Boolean).join(" / "),
       dims: option.dims || item.dims,
       supplierOption: option,
-      fit: item.fit || "yoga, pilates, stretching, physical therapy, strength training, home workout",
+      fit: item.fit || "stretching, physical therapy, strength training, home workout",
     };
   });
 }
@@ -4276,7 +4286,33 @@ function purchaseSupplierSkuRequests(purchaseText) {
     if (!color) continue;
     requests.push({ color, style, size, sourceIndex: match.index || requests.length });
   }
-  return dedupePurchaseSupplierSkuRequests(requests);
+  if (requests.length) return dedupePurchaseSupplierSkuRequests(requests);
+  return dedupePurchaseSupplierSkuRequests(purchaseSupplierSkuRequestsFromColorMentions(source));
+}
+
+function purchaseSupplierSkuRequestsFromColorMentions(source) {
+  const requests = [];
+  const seenRanges = [];
+  productColorCandidates().forEach((candidate) => {
+    const pattern = new RegExp(looseSequencePattern(candidate), "gi");
+    for (const match of String(source || "").matchAll(pattern)) {
+      const index = match.index || 0;
+      if (seenRanges.some(([start, end]) => index >= start && index <= end)) continue;
+      const start = Math.max(0, index - 60);
+      const end = Math.min(String(source || "").length, index + 180);
+      const context = String(source || "").slice(start, end);
+      const color = supplierSkuColor(candidate);
+      if (!color) continue;
+      requests.push({
+        color,
+        style: supplierSkuStyle(context),
+        size: supplierSkuSize(context),
+        sourceIndex: index,
+      });
+      seenRanges.push([index, index + match[0].length]);
+    }
+  });
+  return requests.sort((left, right) => left.sourceIndex - right.sourceIndex);
 }
 
 function dedupePurchaseSupplierSkuRequests(requests) {
@@ -4336,7 +4372,7 @@ function extractSupplierSkuPurchaseItems(purchaseText, combinedText) {
       productUnitCount: "",
       dims: option.dims || {},
       supplierOption: option,
-      fit: "yoga, pilates, stretching, physical therapy, strength training, home workout",
+      fit: "stretching, physical therapy, strength training, home workout",
     };
   }).filter(Boolean);
 }
@@ -5251,11 +5287,11 @@ async function extractSources() {
 function negativePrompt(facts = null) {
   const profile = facts ? categoryProfile(facts) : {};
   return compactPromptItems([
-    "No Chinese/source text, invented specs, wrong product/category, generic substitute, unsupported claims, extra logos/watermarks, dense text, long labels, paragraph copy, bullet blocks, text stacking, blur",
-    "No Asian model/person/hand/foot ethnicity copied from competitor/reference images; use European/American people only if people appear",
+    "No wrong product, invented specs, unsupported claims, extra logos, Chinese/source text, dense copy, long labels, bullets, text stacking, blur",
+    "No Asian reference ethnicity; people only European/American if shown",
     profile.negative,
     facts ? footwearStructureNegativeText(facts) : "",
-    "Preserve only authentic non-Chinese product markings or packaging text",
+    "Keep authentic non-Chinese product markings only",
   ], "", 7);
 }
 
@@ -5461,12 +5497,42 @@ function promptContextText(facts) {
 
 function categoryProfile(facts) {
   const combined = promptContextText(facts);
-  const isSock = /sock|socks|toe socks|grip socks|pilates|yoga|barre|瑜伽|普拉提|袜/.test(combined);
-  const isFootwear = !isSock && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|thong|footwear|shoe|shoes|eva|non[-\s]?slip sole|quick[-\s]?dry|beach|hotel|spa|shower|bathroom|poolside|拖鞋|凉拖|人字拖|沙滩鞋|鞋/.test(combined);
+  const isResistanceBand = /resistance\s+band|exercise\s+band|workout\s+band|拉力带|拉力片|弹力带|阻力带/.test(combined);
+  const isSock = !isResistanceBand && /sock|socks|toe socks|grip socks|瑜伽袜|普拉提袜|五指袜|五趾袜|分趾袜|船袜|短袜|隐形袜|浅口袜|袜子|袜/.test(combined);
+  const isFootwear = !isSock && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|footwear|shoe|shoes|clog|slides?|拖鞋|凉拖|人字拖|沙滩鞋|鞋/.test(combined);
+  const isUmbrella = /umbrella|parasol|rain\s*umbrella|sun\s*umbrella|folding\s*umbrella|伞|雨伞|遮阳伞|晴雨伞/.test(combined);
+  const isCoffeeFilter = /coffee\s+filters?|filter\s+paper|pour[-\s]?over\s+filter|drip\s+coffee\s+filter|滤纸|咖啡滤纸|木浆纸|原木浆|dripper|pour-over|pour over/.test(combined);
+  const isCoffeeMetalAccessory = /portafilter|filter\s+basket|espresso\s+basket|dosing\s+funnel|espresso|咖啡粉碗|接粉环|粉碗/.test(combined);
+  const isKitchenware = /kitchenware|kitchen\s+tool|cup|mug|bottle|jar|container|厨房用品|杯子|马克杯|水杯|瓶|罐|收纳盒|保鲜盒/.test(combined);
   const profiles = [
     {
+      id: "resistance-band",
+      match: isResistanceBand,
+      apparel: false,
+      background: "Category background: clean fitness, physical therapy, stretching, strength training, or home workout setting with realistic training props.",
+      scene: "Scene category: clean fitness, physical therapy, stretching, strength training, and home workout scenes.",
+      identity: "Resistance band identity lock: preserve flat band sheet shape, selected color, TPE material feel, thickness, width, and length; do not turn into loop bands, tube bands, handles, ropes, fabric bands, socks, straps, or apparel.",
+      negative: "No socks, shoes, clothing, loop bands, tube bands, handles, ropes, fabric straps, wrong color, wrong thickness, invented texture, or extra logo.",
+      proof: {
+        "break-resistant": "show controlled stretch tension without tearing, with visible band continuity and safe distance",
+        "deformation-resistant": "show even stretch and flat band recovery without warping",
+        "stretch-range": "show extended stretch length with simple ruler/arrow guide",
+        "full-body": "show multiple workout poses or body-area icons while band stays accurate",
+        durable: "show close-up of intact edge and material under tension",
+        elastic: "show smooth elastic stretch in a workout scene",
+      },
+      inset: {
+        "break-resistant": "tension stretch close-up with intact edge",
+        "deformation-resistant": "even flat stretch close-up",
+        "stretch-range": "extended length arrow guide",
+        "full-body": "full-body exercise pose icons",
+        durable: "TPE edge/material close-up",
+        elastic: "elastic stretch close-up",
+      },
+    },
+    {
       id: "coffee-filter",
-      match: /filter|滤纸|paper|pulp|wood pulp|dripper|pour-over|pour over/.test(combined),
+      match: isCoffeeFilter,
       apparel: false,
       background: "Category background: bright coffee brewing counter or light studio setup with dripper/cup hints; do not copy competitor product scenes.",
       scene: "Scene category: bright coffee brewing counter or light studio setup with dripper/cup hints.",
@@ -5474,7 +5540,7 @@ function categoryProfile(facts) {
     },
     {
       id: "coffee-metal-accessory",
-      match: /basket|portafilter|espresso|stainless|steel|metal|304/.test(combined),
+      match: isCoffeeMetalAccessory,
       apparel: false,
       background: "Category background: clean marble coffee bar with espresso-machine and cup props; do not copy competitor product scenes.",
       scene: "Scene category: clean marble coffee bar with espresso-machine and cup props.",
@@ -5482,7 +5548,7 @@ function categoryProfile(facts) {
     },
     {
       id: "kitchen",
-      match: /kitchen|cup|mug|bottle|jar|container/.test(combined),
+      match: isKitchenware,
       apparel: false,
       background: "Category background: bright kitchen or studio countertop, subtle matching props, realistic light.",
       scene: "Scene category: bright kitchen or studio countertop with subtle matching props.",
@@ -5544,7 +5610,7 @@ function categoryProfile(facts) {
     },
     {
       id: "umbrella",
-      match: /umbrella|伞|rain|sun shade|commuting|travel/.test(combined),
+      match: isUmbrella,
       apparel: false,
       scene: "Scene category: realistic daily commute, travel, rainy sidewalk, and sunny outdoor shade environments with natural scale cues.",
       negative: "Do not replace the product with parasols of a different structure, tents, raincoats, bags, canopies, unrelated outdoor gear, wrong handle, wrong canopy shape, or invented logos.",
@@ -5597,20 +5663,24 @@ function mainImageRule() {
   return "Main image: no overlay text; preserve authentic non-Chinese product/packaging markings only; product occupies about 85% of the frame.";
 }
 
+function isMainImageType(typeId) {
+  return typeId === "1" || typeId === "1A" || typeId === "1B";
+}
+
 function shortTextRule() {
-  return "Global on-image text rule: English only; each added title/label/callout must be 3-5 words max; max 2 labels per selling-point image and max 3 labels on parameter/summary images; no paragraphs, bullet blocks, slogans, badges, repeated claims, or text stacking; preserve authentic non-Chinese product/packaging markings only.";
+  return "Text: English only; labels 3-5 words; max 2 labels on selling-point images, max 3 on parameter/summary images; no paragraphs, bullets, slogans, badges, repeated claims, or text stacking; keep authentic non-Chinese markings only.";
 }
 
 function humanSceneRule(facts) {
   return isApparelCategory(facts)
-    ? "Model rule: models/hands/feet optional; if shown, use natural European/American lifestyle model only, product-first fit/use context; do not copy Asian ethnicity from competitor/reference images."
-    : "People rule: people/hands optional; if shown, use natural European/American people only and product-first use context; do not copy Asian ethnicity from competitor/reference images.";
+    ? "People: optional European/American lifestyle model only; product-first fit/use; do not copy Asian reference ethnicity."
+    : "People: optional European/American only; product-first use; do not copy Asian reference ethnicity.";
 }
 
 function sharedVisualRules(facts, typeId = "") {
   return [
     "4K clarity and sharp realistic detail.",
-    typeId === "1" ? mainImageRule() : shortTextRule(),
+    isMainImageType(typeId) ? mainImageRule() : shortTextRule(),
     humanSceneRule(facts),
   ].filter(Boolean).join(" ");
 }
@@ -5621,7 +5691,7 @@ function categoryStyleRule(facts) {
 
 function basicImageRequirements(templateId, typeId, extra = "") {
   const parts = ["1:1 Amazon listing image", "4K clarity", "sharp realistic detail"];
-  if (typeId === "1") {
+  if (isMainImageType(typeId)) {
     parts.push("no added overlay text", "preserve authentic non-Chinese product/packaging markings only", "product occupies about 85% of the frame");
     if (templateId === "feature") {
       parts.push("pure white background");
@@ -5632,16 +5702,16 @@ function basicImageRequirements(templateId, typeId, extra = "") {
     parts.push("verified added overlay text only when useful", "all added text must be English only", "preserve authentic non-Chinese product/packaging markings only");
   }
   if (extra) parts.push(extra);
-  if (typeId !== "1") parts.push(shortTextRule(), visualProofFirstRule());
+  if (!isMainImageType(typeId)) parts.push(shortTextRule(), visualProofFirstRule());
   return compactPromptItems(parts, "", 8);
 }
 
 function noChineseTextRule() {
-  return "Text language lock: no Chinese characters anywhere in the image, including labels, captions, callouts, badges, packaging text, watermarks, UI-like text, OCR/source text, or background props; if readable text is needed, use English only.";
+  return "No Chinese text anywhere; readable text must be English only.";
 }
 
 function visualProofFirstRule() {
-  return "Visual proof first: do not rely on text to explain features; use actual product behavior, close-up detail windows, simple icons, arrows, measurement guides, and scene action. Text is only a short locator label, never the main content.";
+  return "Visual proof first: show product behavior, close-ups, icons, arrows, measurements, or scene action; text is only a short locator.";
 }
 
 function imageMeasurementUnitRule() {
@@ -5718,12 +5788,12 @@ function productDetailText(facts, extraItems = [], limit = 8) {
 }
 
 function referenceColorLockText() {
-  return "Reference color lock: match source product color exactly; no hue, brightness, warmth, or background tint shift.";
+  return "Match source color exactly; no hue/brightness shift.";
 }
 
 function productIdentityLockText(facts) {
   return compactPromptItems([
-    "Product identity lock: match the source product; no substitute, redesigned shape, or invented detail.",
+    "Identity lock: exact source product; no substitute, redesign, or invented detail.",
     categoryProfile(facts).identity,
     facts.productName && `Exact product type/name: ${facts.productName}`,
     facts.selectedSpec && `Exact option/spec: ${shortOptionText(facts) || facts.selectedSpec}`,
@@ -5731,7 +5801,7 @@ function productIdentityLockText(facts) {
     facts.material && `Exact material: ${facts.material}`,
     facts.structure && `Exact visible structure: ${facts.structure}`,
     facts.pack && `Pack count if shown: ${facts.pack}`,
-    "Preserve authentic visible product/packaging markings.",
+    "Keep authentic markings.",
   ], "", 8);
 }
 
@@ -5739,12 +5809,12 @@ function productIdentityBasicRule(facts) {
   if (!facts) return "";
   const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
   return compactPromptItems([
-    "Generate the exact selected product only; no category substitution.",
-    facts.productName && `Product type/name: ${facts.productName}`,
-    option && `Selected option: ${option}`,
-    facts.color && `True color: ${facts.color}`,
+    "Exact selected product only; no category substitution.",
+    facts.productName && `Product: ${facts.productName}`,
+    option && `Option: ${option}`,
+    facts.color && `Color: ${facts.color}`,
     facts.material && `Material: ${facts.material}`,
-    facts.structure && `Visible structure: ${facts.structure}`,
+    facts.structure && `Structure: ${facts.structure}`,
     categoryProfile(facts).identity,
   ], "", 7);
 }
@@ -5772,30 +5842,37 @@ function overallStyleText(facts, typeId, extra = "", options = {}) {
   return compactPromptItems([
     categoryStyleRule(facts),
     includeHumanRule ? humanSceneRule(facts) : "",
-    typeId === "1" ? "" : shortTextRule(),
+    isMainImageType(typeId) ? "" : shortTextRule(),
     referenceRuleText(),
     extra,
   ], "", 6);
 }
 
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
-  const basicText = compactPromptItems([
-    basic || basicImageRequirements(templateId, typeId),
+  const priorityText = compactPromptItems([
     productIdentityBasicRule(facts),
+    basic || basicImageRequirements(templateId, typeId),
+  ], "", 8);
+  const visualText = compactPromptItems([
+    details || productDetailText(facts),
+    style || overallStyleText(facts, typeId),
+  ], "", 10);
+  const textRules = compactPromptItems([
     noChineseTextRule(),
-    typeId === "1" ? "" : shortTextRule(),
-    typeId === "1" ? "" : visualProofFirstRule(),
+    isMainImageType(typeId) ? "" : shortTextRule(),
+    isMainImageType(typeId) ? "" : visualProofFirstRule(),
     humanSceneRule(facts),
     imageMeasurementUnitRule(),
     amazonImageFileSizeRule(),
-  ], "", 12);
+    referenceRuleText(),
+  ], "", 8);
   const sections = [
-    promptSection("Basic Image Requirements", basicText),
-    promptSection("Product Details", details || productDetailText(facts)),
-    promptSection("Overall Style", style || overallStyleText(facts, typeId)),
+    promptSection("PRIORITY", priorityText),
+    promptSection("VISUAL", visualText),
+    promptSection("TEXT", textRules),
   ];
   if (includeNegative) {
-    sections.push(promptSection("Negative Prompt", negative || negativePrompt(facts)));
+    sections.push(promptSection("AVOID", negative || negativePrompt(facts)));
   }
   return sections.join("\n");
 }
@@ -6181,7 +6258,7 @@ function visibleTextureDetails(facts) {
 
 function referenceRuleText() {
   return sourcePayload.competitor
-    ? "Reference: use competitor composition only; do not copy competitor claims, overlay text, or brand; preserve authentic markings from the source product itself."
+    ? "Reference: composition only; copy no claims, text, brand, or people."
     : "Reference: clean Amazon listing style.";
 }
 
@@ -6321,7 +6398,7 @@ function sceneOverallStyleText(facts, typeId, extra = "") {
   return compactPromptItems([
     sceneCategoryStyleRule(facts),
     sceneQualityRule(),
-    typeId === "1" ? "" : "Use only short verified labels when useful.",
+    isMainImageType(typeId) ? "" : "Use only short verified labels when useful.",
     humanSceneRule(facts),
     sourcePayload.competitor ? referenceRuleText() : "",
     extra,
@@ -6430,13 +6507,27 @@ function premiumLifestyleHeroRule(sceneText) {
   return `Premium lifestyle hero photography: show the product actively being used in ${sceneText}; cinematic natural light, realistic depth of field, upscale props and environment, clear product silhouette, emotional but uncluttered composition, editorial-quality color grading.`;
 }
 
-function sceneHeroBasicRequirements(facts) {
-  if (!isFootwearCategory(facts)) return basicImageRequirements("scene", "1");
+function sceneHeroBasicRequirements(facts, heroVariant = "product") {
+  const variantRule = heroVariant === "human"
+    ? "person using product is the primary story, but product remains clear and accurate"
+    : "product itself is the primary hero subject, with matching scene support";
+  if (!isFootwearCategory(facts)) {
+    return compactPromptItems([
+      "1:1 Amazon lifestyle hero image",
+      "4K clarity",
+      "sharp realistic detail",
+      "no added overlay text",
+      "preserve authentic non-Chinese product/packaging markings only",
+      variantRule,
+      "premium scene-based hero background matched to the product theme",
+    ], "", 7);
+  }
   return compactPromptItems([
     "1:1 Amazon lifestyle hero image",
     "4K clarity",
     "sharp realistic detail",
     "no added overlay text",
+    variantRule,
     "attractive beach/resort/spa/travel lifestyle scene",
     "medium environmental framing; not shoe-only close-up",
     "product clear, with scene atmosphere/props filling frame",
@@ -6466,30 +6557,47 @@ function footwearStructureNegativeText(facts) {
   ], "", 9);
 }
 
-function sceneHeroProductDetails(facts, mainScene) {
+function sceneHeroProductDetails(facts, mainScene, heroVariant = "product") {
+  const variantDetail = heroVariant === "human"
+    ? "Main template B: show a natural person actively using or wearing the product in the matched scene; human action/posture is the main story while the product stays readable."
+    : "Main template A: product itself is the dominant subject; use the matched scene as context, props, depth, and atmosphere around the product.";
   if (!isFootwearCategory(facts)) {
-    return sceneProductDetailText(facts, [mainScene, visibleTextureDetails(facts)], 7);
+    return sceneProductDetailText(facts, [variantDetail, mainScene, visibleTextureDetails(facts)], 8);
   }
   return sceneProductDetailText(facts, [
     footwearStructureReferenceText(facts),
+    variantDetail,
     `Hero lifestyle context: ${mainScene}`,
     "Scene appeal: visible sand/water/towel/beach bag/resort deck/spa/travel prop; natural light, depth, negative space.",
     visibleTextureDetails(facts),
   ], 10);
 }
 
-function sceneHeroStyleText(facts, mainScene) {
+function sceneHeroStyleText(facts, mainScene, heroVariant = "product") {
+  const productFirstRule = [
+    `Main template A: product-first hero in ${mainScene}.`,
+    "Product is the largest visual subject and the first thing noticed; scene, props, natural light, foreground/background, and negative space support the product.",
+    "Show product clearly with premium lifestyle atmosphere; avoid turning it into a plain product-only close-up or isolated studio shot.",
+  ].join(" ");
+  const humanUseRule = [
+    `Main template B: human-use hero in ${mainScene}.`,
+    "A natural person actively uses, wears, holds, or interacts with the product; posture/action is the main lifestyle story.",
+    "Product remains visible, source-accurate, and desirable; scene context, props, light, and environment explain the use state.",
+  ].join(" ");
   if (isFootwearCategory(facts)) {
     return sceneOverallStyleText(facts, "1", [
-      `Lifestyle hero: place or wear exact selected flip-flops/slippers naturally in ${mainScene}.`,
+      heroVariant === "human"
+        ? `Main template B: show a natural person wearing or stepping with the exact selected flip-flops/slippers in ${mainScene}; foot/lower-leg use state is the main lifestyle story.`
+        : `Main template A: place the exact selected flip-flops/slippers as the dominant product hero in ${mainScene}; model feet/lower legs optional and secondary.`,
       "Medium environmental framing with beach/resort/spa/travel story, props, depth; not only shoes/feet.",
-      "Product clear and desirable, roughly 35-55% of frame; leave environment, light, texture, negative space.",
-      "Model feet/lower legs optional and secondary; product-on-sand/resort-prop composition allowed.",
+      heroVariant === "human"
+        ? "Person-use state leads the image, but footwear structure must stay clear; leave environment, light, texture, and negative space."
+        : "Product clear and desirable, roughly 35-55% of frame; leave environment, light, texture, negative space.",
       isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "Preserve true color, strap shape, sole thickness/outline, toe-post/opening, and fold/hinge if visible.",
       "If the scene angle would hide or distort key structure, adjust camera/placement instead of changing the slipper.",
     ].join(" "));
   }
-  return sceneOverallStyleText(facts, "1", `Scene-based hero in ${mainScene}; refined theme-matched background and natural depth.`);
+  return sceneOverallStyleText(facts, "1", heroVariant === "human" ? humanUseRule : productFirstRule);
 }
 
 function featureSceneStoryRule(facts, sceneText, points) {
@@ -6554,10 +6662,15 @@ function sceneModulePrompt(typeId, facts) {
   ], "main scene / multi-use / key selling points", 4);
   const summaryInsetText = summaryInsetGuide(facts, sellingPointSet);
   const modules = {
-    "1": {
-      basic: sceneHeroBasicRequirements(facts),
-      details: sceneHeroProductDetails(facts, mainScene),
-      style: sceneHeroStyleText(facts, mainScene),
+    "1A": {
+      basic: sceneHeroBasicRequirements(facts, "product"),
+      details: sceneHeroProductDetails(facts, mainScene, "product"),
+      style: sceneHeroStyleText(facts, mainScene, "product"),
+    },
+    "1B": {
+      basic: sceneHeroBasicRequirements(facts, "human"),
+      details: sceneHeroProductDetails(facts, mainScene, "human"),
+      style: sceneHeroStyleText(facts, mainScene, "human"),
     },
     "2": {
       basic: "1:1 Amazon listing image, 4K clarity, sharp realistic detail, multi-panel complete-use-scene collage, environment-first composition.",
@@ -6593,7 +6706,7 @@ function sceneModulePrompt(typeId, facts) {
       style: sceneOverallStyleText(facts, "7", `${productFirstOptionalHumanRule()} Strong summary poster: one large central lifestyle use photo plus 3-4 real product-detail inset windows around it. Each inset must show actual close-up visual proof, not only a line, icon, or text callout; optional labels must be 3-5 words. Add one concise 2-4 word top headline only; no bullets, dense table, text-only diagram, or text stacking.`),
     },
   };
-  const selected = modules[typeId] || modules["1"];
+  const selected = modules[typeId] || modules["1A"];
 
   return buildPromptSections({
     facts,
