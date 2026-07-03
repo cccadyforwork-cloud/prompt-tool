@@ -231,6 +231,7 @@ let fieldSnapshot = "";
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+const GENERIC_SUPPLIER_SKU_MODEL = "SUPPLIER-SKU";
 
 function byId(id) {
   return document.getElementById(id);
@@ -291,7 +292,7 @@ function dimensionFieldsFromDimensionList(dimensionList, context = "") {
     sideLength: dimensionValueByLabels(source, isUmbrella ? ["Open Diameter", "Side Length", "Width"] : ["Side Length", "Width", "Open Diameter"]),
     bottomWidth: dimensionValueByLabels(source, isUmbrella ? ["Open Height", "Bottom Width", "Height"] : ["Bottom Width", "Height", "Open Height"]),
     weight: dimensionValueByLabels(source, ["Weight", "Weight / Capacity"]),
-  };
+  }
 }
 
 function valueMap(sku) {
@@ -814,14 +815,14 @@ function normalizeImageUrl(value) {
 
 function imageInfoKeywordScore(text) {
   const source = String(text || "");
-  const keywordMatches = source.match(/产品参数|产品信息|产品详情|详细资料|品名|克重|尺码|尺寸|长|宽|高|直径|半径|收纳|折叠|展开|面料|材质|材料|工艺|特殊工艺|厚薄|弹力|针数|柔软|规格|型号|重量|容量|PRODUCT\s*NAME|GRAM\s*WEIGHT|SIZE|MATERIAL|TECHNOLOGY|DETAIL|PARAMETER|diameter|folded|compact|portable|umbrella/gi);
+  const keywordMatches = source.match(/产品参数|产品信息|产品详情|详细资料|品名|克重|尺码|尺寸|长|宽|高|直径|半径|收纳|折叠|展开|面料|材质|材料|工艺|特殊工艺|厚薄|弹力|拉力|阻力|抗拉|防断|不断裂|不惧断裂|不变形|耐用|全身|针数|柔软|规格|型号|重量|容量|PRODUCT\s*NAME|GRAM\s*WEIGHT|SIZE|MATERIAL|TECHNOLOGY|DETAIL|PARAMETER|diameter|folded|compact|portable|umbrella|stretch|resistance|fracture|tear|durable/gi);
   const largeDetailMatches = source.match(/详情|描述|detail|desc|offer-detail|product-description|商品介绍|产品介绍/gi);
   return (keywordMatches ? keywordMatches.length * 8 : 0) + (largeDetailMatches ? largeDetailMatches.length * 5 : 0);
 }
 
 function productDetailLabelScore(text) {
   const source = String(text || "");
-  const labels = source.match(/品\s*名|PRODUCT\s*NAME|克\s*重|GRAM\s*WEIGHT|尺\s*码|SIZE|尺\s*寸|规\s*格|重\s*量|直\s*径|收\s*纳|折\s*叠|展\s*开|伞\s*面|面\s*料|MATERIAL|工\s*艺|TECHNOLOGY|特\s*殊\s*工\s*艺|厚\s*薄|弹\s*力|针\s*数|柔\s*软|产品参数|产品信息|详细资料|规格参数|diameter|folded|compact|portable/gi);
+  const labels = source.match(/品\s*名|PRODUCT\s*NAME|克\s*重|GRAM\s*WEIGHT|尺\s*码|SIZE|尺\s*寸|规\s*格|重\s*量|直\s*径|收\s*纳|折\s*叠|展\s*开|伞\s*面|面\s*料|MATERIAL|工\s*艺|TECHNOLOGY|特\s*殊\s*工\s*艺|厚\s*薄|弹\s*力|拉\s*力|阻\s*力|抗\s*拉|防\s*断|不\s*断\s*裂|不\s*变\s*形|耐\s*用|针\s*数|柔\s*软|产品参数|产品信息|详细资料|规格参数|diameter|folded|compact|portable|stretch|resistance|durable/gi);
   return labels ? labels.length : 0;
 }
 
@@ -834,12 +835,21 @@ function isCommerceOrRecommendationText(text) {
 }
 
 function productFeatureTextScore(text) {
-  const matches = String(text || "").match(/防滑|硅胶|点胶|抓地|弹力|高弹|柔软|透气|棉|聚酯|氨纶|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|防晒|遮阳|防雨|防风|伞骨|晴雨|材质|面料|工艺|厚薄|针数|袜|鞋|服装|衣服|裤|裙|箱包|背包|手提包|杯|滤纸|伞|cotton|spandex|polyester|silicone|grip|anti.?slip|non.?slip|size|material|weight|texture|umbrella|compact|portable|uv|windproof|waterproof/gi);
+  const matches = String(text || "").match(/防滑|硅胶|点胶|抓地|弹力|拉力|阻力|训练|拉伸|抗拉|防断|断裂|不断裂|不惧断裂|不变形|变形|耐用|全身|需求|高弹|柔软|透气|棉|聚酯|氨纶|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|防晒|遮阳|防雨|防风|伞骨|晴雨|材质|面料|工艺|厚薄|针数|袜|鞋|服装|衣服|裤|裙|箱包|背包|手提包|杯|滤纸|伞|cotton|spandex|polyester|silicone|tpe|resistance|exercise\s+band|workout\s+band|stretch|fracture|tear|durable|grip|anti.?slip|non.?slip|size|material|weight|texture|umbrella|compact|portable|uv|windproof|waterproof/gi);
   return matches ? matches.length : 0;
 }
 
 function isProductInfoImageText(text) {
   return imageInfoKeywordScore(text) > 0 || productFeatureTextScore(text) > 0;
+}
+
+function ocrCompactText(text) {
+  return String(text || "").replace(/\s+/g, "");
+}
+
+function isProductSellingPointText(text) {
+  const source = [String(text || ""), ocrCompactText(text)].join("\n");
+  return /9\s*M|9米|不惧断裂|不断裂|防断|抗拉|不变形|均匀拉伸|耐用|安全|全身|便携|轻便|轻巧|小巧|收纳|防滑|止滑|抓地|防水|防雨|防晒|遮阳|防风|加固|柔软|透气|吸汗|抗菌|防臭|高弹|弹力|拉伸|阻力|拉力|容量|承重|省力|稳固|牢固|易清洁|可水洗|多场景|多用途|满足不同需求|fracture|break|tear|deformation|durable|safe|portable|lightweight|compact|non.?slip|anti.?slip|waterproof|windproof|uv|breathable|soft|elastic|stretch|resistance|reinforced|multi.?use|easy.?clean/i.test(source);
 }
 
 function urlImageSizeHint(url) {
@@ -1076,20 +1086,30 @@ function loadOcrEngine() {
 function cleanOcrText(text) {
   return String(text || "")
     .replace(/[|_~]+/g, " ")
-    .replace(/\s+/g, " ")
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
     .trim();
 }
 
-function isUsefulOcrText(text) {
+function hasReadableOcrContent(text, minChars = 12) {
+  const clean = cleanOcrText(text);
+  const meaningfulChars = (clean.match(/[A-Za-z0-9\u4e00-\u9fff]/g) || []).length;
+  return meaningfulChars >= minChars && meaningfulChars / Math.max(clean.length, 1) >= 0.25;
+}
+
+function isUsefulOcrText(text, meta = {}) {
   const clean = cleanOcrText(text);
   if (clean.length < 8) return false;
+  if (Object.keys(extractProductDetailAttributes(clean)).length) return true;
+  if (isProductSellingPointText(clean)) return true;
+  if (isDetailSource(meta) && hasReadableOcrContent(clean, 10)) return true;
   if (isFactoryOrServiceImageText(clean) && productDetailLabelScore(clean) < 2) return false;
   if (isCommerceOrRecommendationText(clean) && productDetailLabelScore(clean) < 2) return false;
-  if (Object.keys(extractProductDetailAttributes(clean)).length) return true;
   if (imageInfoKeywordScore(clean) > 0) return true;
   if (!isProductInfoImageText(clean)) return false;
-  const meaningfulChars = (clean.match(/[A-Za-z0-9\u4e00-\u9fff]/g) || []).length;
-  return meaningfulChars >= 12 && meaningfulChars / clean.length >= 0.35;
+  return hasReadableOcrContent(clean, 12);
 }
 
 function hasEnoughProductDetail(text) {
@@ -1659,9 +1679,80 @@ function splitModelColor(value) {
   };
 }
 
+function skuModelFromText(value) {
+  return extractFirstMatch(value, [/\b([A-Z]{1,4}\d{2,5})\b/i]);
+}
+
+function supplierSkuColor(value) {
+  const compact = compactChineseText(value);
+  const found = productColorCandidates().find((candidate) => compact.includes(candidate));
+  return found || extractEnglishColorName(value);
+}
+
+function supplierSkuSize(value) {
+  const source = normalizePurchaseText(value);
+  const dimension = extractFirstMatch(source, [
+    /([1-9]\d{2,4}\s*[*x×]\s*[1-9]\d{1,3}\s*[*x×]\s*[0-9.]+\s*mm)/i,
+    /([1-9]\d{2,4}\s*[*x×]\s*[1-9]\d{1,3}\s*[*x×]\s*[0-9.]+\s*毫米)/i,
+    /([1-9]\d{2,4}\s*[*x×]\s*[1-9]\d{1,3}\s*cm)/i,
+  ]);
+  return dimension ? dimension.replace(/\s+/g, "") : "";
+}
+
+function dimensionsFromSkuSize(size) {
+  const match = cleanFieldDisplayValue(size).match(/([0-9.]+)\s*[*x×]\s*([0-9.]+)\s*[*x×]\s*([0-9.]+)\s*(mm|毫米|cm|厘米|公分)?/i);
+  if (!match) return {};
+  const unit = /cm|厘米|公分/i.test(match[4] || "") ? "cm" : "mm";
+  return {
+    topWidth: `${match[1]} ${unit}`,
+    sideLength: `${match[2]} ${unit}`,
+    bottomWidth: `${match[3]} ${unit}`,
+    source: "1688 SKU option size",
+  };
+}
+
+function supplierSkuStyle(value) {
+  const compact = compactChineseText(value);
+  const styles = [];
+  if (/加长/.test(compact)) styles.push("加长款");
+  if (/加厚/.test(compact)) styles.push("加厚款");
+  if (!styles.length && /常规/.test(compact)) styles.push("常规款");
+  return styles.join("");
+}
+
+function parseSupplierSkuText(value) {
+  const text = normalizePurchaseText(value);
+  const model = skuModelFromText(text);
+  const parsedModelColor = model ? splitModelColor(text) : {};
+  const color = parsedModelColor.color || supplierSkuColor(text);
+  const size = supplierSkuSize(text);
+  const style = supplierSkuStyle(text);
+  if (!model && !color && !size && !style) return {};
+  const sizeDims = dimensionsFromSkuSize(size);
+  return {
+    model: (parsedModelColor.model || model || GENERIC_SUPPLIER_SKU_MODEL).toUpperCase(),
+    color,
+    colorEnglish: colorName(color),
+    size,
+    variantStyle: style,
+    rawSpec: text,
+    dims: sizeDims,
+  };
+}
+
+function supplierOptionIdentity(option) {
+  return [
+    option.model,
+    canonicalColorKey(option.color || ""),
+    cleanFieldDisplayValue(option.variantStyle || "").toLowerCase(),
+    cleanFieldDisplayValue(option.size || "").toLowerCase(),
+    cleanFieldDisplayValue(option.rawSpec || "").toLowerCase(),
+  ].filter(Boolean).join("-");
+}
+
 function addSupplierSkuOption(options, seen, option) {
   if (!option.model) return;
-  const key = `${option.model}-${option.color || ""}-${option.size || ""}`;
+  const key = supplierOptionIdentity(option);
   if (seen.has(key)) return;
   seen.add(key);
   options.push(option);
@@ -1851,7 +1942,7 @@ function extractSupplierSkuOptions(text) {
 
   const structuredPattern = /SKU_OPTION:\s*([\s\S]*?)(?=\s+SKU_OPTION\s*:|\s+PRODUCT_(?:TITLE|ATTRIBUTE)\s*:|\n|$)/gi;
   for (const match of decoded.matchAll(structuredPattern)) {
-    const optionText = match[1].replace(/\s+(?=(?:model|color|colorEnglish|size|length|width|height|weight)=)/gi, "; ");
+    const optionText = match[1].replace(/\s+(?=(?:model|color|colorEnglish|variantStyle|size|rawSpec|length|width|height|weight)=)/gi, "; ");
     const parts = Object.fromEntries(optionText
       .split(";")
       .map((part) => part.trim())
@@ -1865,6 +1956,8 @@ function extractSupplierSkuOptions(text) {
       color: parts.color,
       colorEnglish: parts.colorEnglish || colorName(parts.color),
       size: parts.size,
+      variantStyle: parts.variantStyle || "",
+      rawSpec: parts.rawSpec || "",
       dims: {
         topWidth: parts.length || "",
         sideLength: parts.width || "",
@@ -1877,29 +1970,29 @@ function extractSupplierSkuOptions(text) {
 
   for (const match of decoded.matchAll(/"specAttrs"\s*:\s*"([^"]+)"/gi)) {
     const [skuRaw, sizeRaw] = match[1].split(">");
-    const parsed = splitModelColor(skuRaw);
+    const parsed = parseSupplierSkuText(skuRaw);
     addSupplierSkuOption(options, seen, {
       ...parsed,
-      size: sizeRaw || "",
+      size: sizeRaw || parsed.size || "",
     });
   }
 
-  const packInfoPattern = /\{[^{}]*"sku2"\s*:\s*"([^"]*)"[^{}]*"sku1"\s*:\s*"([^"]*)"[^{}]*"length"\s*:\s*([0-9.]+)[^{}]*"width"\s*:\s*([0-9.]+)[^{}]*"weight"\s*:\s*([0-9.]+)[^{}]*"height"\s*:\s*([0-9.]+)/gi;
+  const packInfoPattern = /\{[^{}]*(?:"sku2"\s*:\s*"([^"]*)"[^{}]*)?"sku1"\s*:\s*"([^"]*)"[^{}]*"length"\s*:\s*([0-9.]+)[^{}]*"width"\s*:\s*([0-9.]+)[^{}]*"weight"\s*:\s*([0-9.]+)[^{}]*"height"\s*:\s*([0-9.]+)/gi;
   for (const match of decoded.matchAll(packInfoPattern)) {
-    const parsed = splitModelColor(match[2]);
+    const parsed = parseSupplierSkuText(match[2]);
     const length = Number(match[3]);
     const width = Number(match[4]);
     const weight = Number(match[5]);
     const height = Number(match[6]);
     addSupplierSkuOption(options, seen, {
       ...parsed,
-      size: match[1] || "",
+      size: match[1] || parsed.size || "",
       dims: {
-        topWidth: length ? `${length} cm` : "",
-        sideLength: width ? `${width} cm` : "",
-        bottomWidth: height ? `${height} cm` : "",
+        topWidth: parsed.dims?.topWidth || (length ? `${length} cm` : ""),
+        sideLength: parsed.dims?.sideLength || (width ? `${width} cm` : ""),
+        bottomWidth: parsed.dims?.bottomWidth || (height ? `${height} cm` : ""),
         weight: weight ? `${weight} g` : "",
-        source: "1688 SKU package information",
+        source: parsed.dims?.source || "1688 SKU package information",
       },
     });
   }
@@ -1916,7 +2009,9 @@ function extractSupplierStructuredText(html) {
     `model=${option.model}`,
     option.color && `color=${option.color}`,
     option.colorEnglish && `colorEnglish=${option.colorEnglish}`,
+    option.variantStyle && `variantStyle=${option.variantStyle}`,
     option.size && `size=${option.size}`,
+    option.rawSpec && `rawSpec=${option.rawSpec}`,
     option.dims?.topWidth && `length=${option.dims.topWidth}`,
     option.dims?.sideLength && `width=${option.dims.sideLength}`,
     option.dims?.bottomWidth && `height=${option.dims.bottomWidth}`,
@@ -2016,6 +2111,7 @@ async function ocrImageUrls(imageUrls, onProgress) {
   const texts = [];
   let failedCount = 0;
   let attemptedCount = 0;
+  let sellingPointCount = 0;
   for (let index = 0; index < imageUrls.length; index += 1) {
     const candidate = typeof imageUrls[index] === "string" ? { url: imageUrls[index], source: "html" } : imageUrls[index];
     const url = imageCandidateUrl(candidate);
@@ -2036,8 +2132,9 @@ async function ocrImageUrls(imageUrls, onProgress) {
         "OCR timed out",
       );
       const text = cleanOcrText(result?.data?.text || "");
-      if (isUsefulOcrText(text)) {
+      if (isUsefulOcrText(text, candidate)) {
         texts.push(text);
+        if (isProductSellingPointText(text)) sellingPointCount += 1;
         if (candidate.source !== "detail" && hasEnoughProductDetail(texts.join("\n"))) break;
       }
     } catch {
@@ -2050,6 +2147,7 @@ async function ocrImageUrls(imageUrls, onProgress) {
     scannedCount: attemptedCount - failedCount,
     failedCount,
     acceptedCount: texts.length,
+    sellingPointCount,
     available: true,
   };
 }
@@ -2120,6 +2218,7 @@ async function extractSupplierSourceText(html, onProgress) {
     scannedCount: ocr.scannedCount,
     failedCount: ocr.failedCount,
     acceptedCount: ocr.acceptedCount,
+    sellingPointCount: ocr.sellingPointCount,
     ocrAvailable: ocr.available,
   };
 }
@@ -2630,6 +2729,19 @@ function umbrellaStructureText(text) {
   return compactPromptItems(parts, "compact folding umbrella construction", 4);
 }
 
+function genericStructureText(text) {
+  const source = String(text || "");
+  const parts = [];
+  if (/拉力带|拉力片|弹力带|阻力带|resistance\s+band|exercise\s+band/i.test(source)) {
+    parts.push("flat resistance band sheet");
+  }
+  if (/片状|sheet|flat/i.test(source)) parts.push("flat sheet form");
+  if (/带状|strap|band/i.test(source)) parts.push("strap-like band form");
+  if (/加固|reinforced/i.test(source)) parts.push("reinforced construction");
+  if (/一体|integrated|one[-\s]?piece/i.test(source)) parts.push("one-piece construction");
+  return compactPromptItems(parts, "", 4);
+}
+
 function umbrellaDetailText(text, dimensionList = "") {
   if (!/伞|umbrella/i.test(text)) return "";
   const details = [
@@ -2723,38 +2835,79 @@ function umbrellaSellingPointCandidates(text, attrs = {}) {
     .map((candidate) => candidate.value);
 }
 
+function genericDetailSellingPointCandidates(text) {
+  const source = [String(text || ""), ocrCompactText(text)].join("\n");
+  const candidates = [];
+  const add = (pattern, value) => {
+    if (pattern.test(source)) candidates.push(value);
+  };
+  add(/9\s*M|9米|9\s*米/i, "9 m stretch range");
+  add(/不惧断裂|不断裂|防断|抗拉防断|抗拉|fracture|break|tear/i, "break-resistant performance");
+  add(/均匀拉伸|不变形|deformation/i, "even stretch without deformation");
+  add(/拉伸\s*3\s*倍|3\s*倍|three\s*times/i, "stretches to about 3x length");
+  add(/练遍全身|全身|full\s*body/i, "full-body workout coverage");
+  add(/安全更耐用|耐用|durable/i, "durable everyday use");
+  add(/便携|轻便|轻巧|小巧|收纳|portable|lightweight|compact/i, "portable compact design");
+  add(/防滑|止滑|抓地|anti.?slip|non.?slip|grip/i, "anti-slip grip");
+  add(/防水|防雨|waterproof|water.?resistant/i, "water-resistant protection");
+  add(/防晒|遮阳|紫外线|UV|UPF/i, "sun and UV protection");
+  add(/防风|抗风|加固|reinforced|windproof/i, "reinforced stable construction");
+  add(/柔软|soft/i, "soft hand feel");
+  add(/透气|breathable/i, "breathable comfort");
+  add(/吸汗|sweat|moisture/i, "sweat-absorbing comfort");
+  add(/抗菌|防臭|antibacterial|deodor/i, "antibacterial deodorizing comfort");
+  add(/高弹|弹力|elastic|stretch/i, "high elasticity");
+  add(/易清洁|可水洗|easy.?clean|washable/i, "easy-clean washable design");
+  add(/稳固|牢固|承重|省力|stable|sturdy|load.?bearing/i, "stable sturdy support");
+  add(/多场景|多用途|满足不同需求|multi.?use/i, "multi-use versatility");
+  return uniqueSellingPoints(candidates, 8);
+}
+
+function isResistanceBandText(text) {
+  return /拉力带|拉力片|弹力带|阻力带|resistance\s+band|exercise\s+band|workout\s+band/i.test(String(text || ""));
+}
+
+function resistanceBandSellingPointCandidates(text, material) {
+  const source = [text, material].filter(Boolean).join(" ");
+  const candidates = [];
+  if (/TPE|tpe|热塑性弹性体/i.test(source)) {
+    candidates.push("TPE thermoplastic elastomer material");
+  }
+  if (/拉伸|阻力|拉力|弹力|stretch|resistance/i.test(source)) {
+    candidates.push("stretching and resistance training use");
+  }
+  if (/瑜伽|训练|健身|workout|exercise|yoga|pilates/i.test(source)) {
+    candidates.push("yoga and fitness workout use");
+  }
+  return uniqueSellingPoints(candidates, 6);
+}
+
+function categorySpecificSellingPointCandidates(text, material, attrs = {}) {
+  return uniqueSellingPoints([
+    ...(isSockFamilyText(text) ? sockSellingPointCandidates(text, material, attrs) : []),
+    ...(/伞|umbrella/i.test(text) ? umbrellaSellingPointCandidates(text, attrs) : []),
+    ...(isResistanceBandText(text) ? resistanceBandSellingPointCandidates(text, material) : []),
+  ], 10);
+}
+
 function inferSellingPoints(text, material, limit = 2) {
   const attrs = supplierAttributeMap(text);
-  if (isSockFamilyText(text)) {
-    const sockPoints = sockSellingPointCandidates(text, material, attrs);
-    const fallbackFeature2 = sockPoints[0] && sockPoints[0] !== "anti-slip grip sole"
-      ? "anti-slip grip sole"
-      : "breathable cotton comfort";
-    const points = uniqueSellingPoints([...sockPoints, fallbackFeature2], limit);
-    return {
-      feature1: points[0] || "stable grip for yoga and pilates",
-      feature2: points[1] || fallbackFeature2,
-      points,
-    };
-  }
-  if (/伞|umbrella/i.test(text)) {
-    const umbrellaPoints = uniqueSellingPoints(umbrellaSellingPointCandidates(text, attrs), limit);
-    return {
-      feature1: umbrellaPoints[0] || "compact portable folded size",
-      feature2: umbrellaPoints[1] || "sun and rain protection canopy",
-      points: umbrellaPoints,
-    };
-  }
+  const genericDetailPoints = genericDetailSellingPointCandidates(text);
+  const categoryPoints = categorySpecificSellingPointCandidates(text, material, attrs);
   const feature1 = /wood pulp|原木浆|unbleached|未漂白|natural/i.test(text)
     ? "natural unbleached material"
     : cleanFieldDisplayValue(material) || "primary product benefit";
-  const feature2 = /filter|过滤|smooth|均匀|flow|brewing|萃取/i.test(text)
-    ? "smooth filtration performance"
-    : "reliable everyday brewing";
-  const points = uniqueSellingPoints([feature1, feature2, material], 2);
+  const feature2 = /filter|过滤|smooth|均匀|flow|brewing|萃取/i.test(text) ? "smooth filtration performance" : "";
+  const points = uniqueSellingPoints([
+    ...genericDetailPoints,
+    ...categoryPoints,
+    feature1,
+    feature2,
+    material,
+  ], limit);
   return {
     feature1: points[0] || feature1,
-    feature2: points[1] || feature2,
+    feature2: points[1] || feature2 || "verified product benefit",
     points,
   };
 }
@@ -2872,6 +3025,10 @@ function dimensionValueByLabels(dimensionsText, labels) {
   return "";
 }
 
+function thirdDimensionLabel(context) {
+  return /thickness|厚|0\.[0-9]+\s*mm|片状|sheet|band|strap|拉力带|弹力带|阻力带/i.test(String(context || "")) ? "Thickness" : "Height";
+}
+
 function supplierSkuMap(text) {
   const map = new Map();
   extractSupplierSkuOptions(text).forEach((option) => {
@@ -2935,6 +3092,7 @@ function productAttributeSourceText(...parts) {
     .filter((line) => {
       if (!line) return false;
       if (/^\s*PRODUCT_ATTRIBUTE\s*:/i.test(line)) return true;
+      if (isProductSellingPointText(line)) return true;
       if (productDetailLabelScore(line) >= 2) return true;
       if (isFactoryOrServiceImageText(line) && productDetailLabelScore(line) < 2) return false;
       if (isCommerceOrRecommendationText(line) && productDetailLabelScore(line) < 2 && productFeatureTextScore(line) < 3) return false;
@@ -3895,7 +4053,53 @@ function genericItemFromPurchaseRow(row) {
     fit: isSockFamilyText(`${row.name} ${row.spec}`)
       ? "yoga, pilates, barre, dance, home workout"
       : "",
+    };
+  }
+
+function supplierRequestFromPurchaseRow(row) {
+  const context = [row.spec, row.code, row.name].filter(Boolean).join(" ");
+  const color = extractPurchaseRowColor(row) || supplierSkuColor(context);
+  if (!color) return null;
+  return {
+    color,
+    style: supplierSkuStyle(context),
+    size: supplierSkuSize(context) || extractPurchaseRowSize(row),
   };
+}
+
+function enrichStructuredItemsWithSupplierSkus(items, rows, supplierText) {
+  if (!items.length || !/拉力带|拉力片|弹力带|阻力带|resistance\s+band|exercise\s+band/i.test(supplierText || "")) return items;
+  const supplierOptions = extractSupplierSkuOptions(supplierText).filter((option) => option.model === GENERIC_SUPPLIER_SKU_MODEL);
+  if (!supplierOptions.length) return items;
+  return items.map((item) => {
+    const row = (rows || []).find((candidate) => candidate.rowKey === item.purchaseRowKey || candidate.rowKey === item.rowKey);
+    const request = supplierRequestFromPurchaseRow(row || item);
+    const option = supplierOptions.find((candidate) => supplierOptionMatchesPurchaseRequest(candidate, request))
+      || supplierOptions.find((candidate) => candidate.color && isSameColorName(candidate.color, item.color || request?.color));
+    if (!option) return item;
+    const style = option.variantStyle || request?.style || item.variantStyle || "";
+    const size = option.size || request?.size || item.size || "";
+    return {
+      ...item,
+      model: option.model,
+      color: option.color || item.color,
+      displayColor: displayColorName(option.color || item.color),
+      colorEnglish: colorName(option.color || item.color),
+      size,
+      variantStyle: style,
+      spec: ["弹力带", style, displayColorName(option.color || item.color), size].filter(Boolean).join(" - "),
+      outputProductName: item.outputProductName || "resistance band",
+      outputSpec: outputVariantNameFromParts("resistance band", {
+        color: option.color || item.color,
+        size,
+        style: translateSupplierSkuStyle(style),
+      }),
+      sizeCode: [style, displayColorName(option.color || item.color), size].filter(Boolean).join(" / "),
+      dims: option.dims || item.dims,
+      supplierOption: option,
+      fit: item.fit || "yoga, pilates, stretching, physical therapy, strength training, home workout",
+    };
+  });
 }
 
 function outputVariantNameFromParts(baseName, { color = "", size = "", style = "" } = {}) {
@@ -3939,7 +4143,7 @@ function assignMissingRoundFilterColors(items, rows) {
   });
 }
 
-function extractStructuredPurchaseItems(purchaseText) {
+function extractStructuredPurchaseItems(purchaseText, supplierText = "") {
   const rows = parseStructuredPurchaseRows(purchaseText);
   if (!rows.length) return [];
   const items = rows
@@ -3949,7 +4153,11 @@ function extractStructuredPurchaseItems(purchaseText) {
       return isLikelyStructuredPurchaseRow(row) ? genericItemFromPurchaseRow(row) : null;
     });
   assignMissingRoundFilterColors(items, rows);
-  return items.filter((item) => item && (item.spec || item.sizeCode || item.color || item.key));
+  return enrichStructuredItemsWithSupplierSkus(
+    items.filter((item) => item && (item.spec || item.sizeCode || item.color || item.key)),
+    rows,
+    supplierText,
+  );
 }
 
 function isLikelyStructuredPurchaseRow(row) {
@@ -3963,8 +4171,10 @@ function isLikelyStructuredPurchaseRow(row) {
 }
 
 function extractPurchaseItems(purchaseText, combinedText) {
-  const structuredItems = extractStructuredPurchaseItems(purchaseText);
+  const structuredItems = extractStructuredPurchaseItems(purchaseText, combinedText);
   if (structuredItems.length) return structuredItems;
+  const supplierSkuItems = extractSupplierSkuPurchaseItems(purchaseText, combinedText);
+  if (supplierSkuItems.length) return supplierSkuItems;
   const strictPurchaseRowsOnly = /Purchase order image OCR text\s*:/i.test(purchaseText || "");
 
   const normalized = normalizeSkuText(purchaseText || combinedText);
@@ -4039,6 +4249,92 @@ function productUnitCountForItem(item, supplierText) {
     item.supplierOption?.color,
   ].filter(Boolean).join(" ");
   return extractProductUnitCount(optionText);
+}
+
+function purchaseSupplierSkuRequests(purchaseText) {
+  const source = normalizePurchaseText(purchaseText || "");
+  const requests = [];
+  const pattern = /颜色\s*[:：]\s*([\u4e00-\u9fffA-Za-z ]{1,20})([\s\S]*?)(?=颜色\s*[:：]|PURCHASE_ROW\s*:|$)/gi;
+  for (const match of source.matchAll(pattern)) {
+    const color = supplierSkuColor(match[1]);
+    const context = `${match[1]} ${match[2] || ""}`;
+    const style = supplierSkuStyle(context);
+    const size = supplierSkuSize(context);
+    if (!color) continue;
+    requests.push({ color, style, size, sourceIndex: match.index || requests.length });
+  }
+  return dedupePurchaseSupplierSkuRequests(requests);
+}
+
+function dedupePurchaseSupplierSkuRequests(requests) {
+  const seen = new Set();
+  return (requests || []).filter((request) => {
+    const key = [
+      canonicalColorKey(request.color || ""),
+      cleanFieldDisplayValue(request.style || "").toLowerCase(),
+      cleanFieldDisplayValue(request.size || "").toLowerCase(),
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function supplierOptionMatchesPurchaseRequest(option, request) {
+  if (!option?.color || !request?.color || !isSameColorName(option.color, request.color)) return false;
+  const optionStyle = cleanFieldDisplayValue(option.variantStyle || option.rawSpec || "");
+  const optionSize = cleanFieldDisplayValue(option.size || option.rawSpec || "").replace(/\s+/g, "");
+  if (request.style && !compactChineseText(optionStyle).includes(compactChineseText(request.style))) return false;
+  if (request.size && !optionSize.includes(cleanFieldDisplayValue(request.size).replace(/\s+/g, ""))) return false;
+  return true;
+}
+
+function extractSupplierSkuPurchaseItems(purchaseText, combinedText) {
+  const requests = purchaseSupplierSkuRequests(purchaseText);
+  if (!requests.length || !/拉力带|拉力片|弹力带|阻力带|resistance\s+band|exercise\s+band/i.test(combinedText || "")) return [];
+  const supplierOptions = extractSupplierSkuOptions(combinedText).filter((option) => option.model === GENERIC_SUPPLIER_SKU_MODEL);
+  if (!supplierOptions.length) return [];
+  return requests.map((request, index) => {
+    const option = supplierOptions.find((candidate) => supplierOptionMatchesPurchaseRequest(candidate, request))
+      || supplierOptions.find((candidate) => candidate.color && isSameColorName(candidate.color, request.color));
+    if (!option) return null;
+    return {
+      key: supplierOptionIdentity(option) || `supplier-sku-${index + 1}`,
+      purchaseRowKey: `supplier-request-${index + 1}`,
+      rowKey: `supplier-request-${index + 1}`,
+      model: option.model,
+      productName: "弹力带",
+      outputProductName: "resistance band",
+      color: option.color,
+      displayColor: displayColorName(option.color),
+      colorEnglish: colorName(option.color),
+      size: option.size || request.size || "",
+      variantStyle: option.variantStyle || request.style || "",
+      spec: ["弹力带", option.variantStyle || request.style, displayColorName(option.color), option.size || request.size].filter(Boolean).join(" - "),
+      outputSpec: outputVariantNameFromParts("resistance band", {
+        color: option.color,
+        size: option.size || request.size || "",
+        style: translateSupplierSkuStyle(option.variantStyle || request.style || ""),
+      }),
+      sizeCode: [option.variantStyle || request.style, displayColorName(option.color), option.size || request.size].filter(Boolean).join(" / "),
+      quantity: "",
+      price: "",
+      pack: "",
+      productUnitCount: "",
+      dims: option.dims || {},
+      supplierOption: option,
+      fit: "yoga, pilates, stretching, physical therapy, strength training, home workout",
+    };
+  }).filter(Boolean);
+}
+
+function translateSupplierSkuStyle(value) {
+  const compact = compactChineseText(value);
+  const parts = [];
+  if (/常规/.test(compact)) parts.push("regular");
+  if (/加长/.test(compact)) parts.push("long");
+  if (/加厚/.test(compact)) parts.push("thick");
+  return parts.join(" ");
 }
 
 function skuRelevantPackValue(value) {
@@ -4375,6 +4671,8 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   const material = detailAttributes.Material
     || (/wood pulp|原木浆|木浆|unbleached/i.test(primaryText)
     ? "natural wood pulp paper / unbleached brown paper"
+    : /TPE|tpe|热塑性弹性体/i.test(primaryText)
+      ? "TPE thermoplastic elastomer"
     : /主面料成分["：:]*棉|棉|cotton/i.test(primaryText) || /棉|cotton/i.test(supplierAttrs.Material || "")
       ? translateAttributeValue("Material", supplierAttrs.Material) || "cotton blend fabric"
     : "");
@@ -4388,10 +4686,13 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     detailTechnology,
   ], "", 4) : "";
   const umbrellaStructure = umbrellaStructureText(attributeText);
+  const genericStructure = genericStructureText(attributeText || primaryText);
   const structure = isSockFamily
       ? sockStructure || "sock construction matched to source product"
     : umbrellaStructure
       ? umbrellaStructure
+    : genericStructure
+      ? genericStructure
     : /pressed|压边|压纹|fold|折边/i.test(primaryText) || isCoffeeFilterFamily
       ? "pressed side seam and bottom fold"
     : "";
@@ -4399,14 +4700,8 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   const sellingPoints = inferSellingPoints(attributeText, material, 6);
   const extraSellingPointText = remainingSellingPointText(sellingPoints.points || [], 2, 4);
   const extractedSellingPointSet = uniqueSellingPoints(sellingPoints.points || [], 6);
-  const primarySellingPoint = extractedSellingPointSet[0] || sellingPoints.feature1;
-  const coreProofPoint = extractedSellingPointSet.find((point) => sellingPointKey(point) === "grip") || extractedSellingPointSet[1] || sellingPoints.feature2;
-  const secondaryProofPoint = preferredSecondarySellingPoint(extractedSellingPointSet, [primarySellingPoint, coreProofPoint])
-    || extractedSellingPointSet.find((point) => ![primarySellingPoint, coreProofPoint].some((used) => promptItemsOverlap(used, point)));
-  const globalSellingPoint1 = sellingPointGroupText([primarySellingPoint, coreProofPoint]);
-  const secondGroupExtra = preferredSecondarySellingPoint(extractedSellingPointSet, [primarySellingPoint, coreProofPoint, secondaryProofPoint])
-    || extractedSellingPointSet.find((point) => ![primarySellingPoint, coreProofPoint, secondaryProofPoint].some((used) => promptItemsOverlap(used, point)));
-  const globalSellingPoint2 = sellingPointGroupText([secondaryProofPoint, secondGroupExtra]);
+  const globalSellingPoint1 = sellingPointGroupText(distributedSellingPointGroups(extractedSellingPointSet, 0, 2, 4));
+  const globalSellingPoint2 = sellingPointGroupText(distributedSellingPointGroups(extractedSellingPointSet, 1, 2, 4));
   const dimensions = isSockFamily ? [] : extractDimensions(attributeText);
   const sizeOrRange = detailAttributes.Size
     || (isCoffeeFilterFamily ? extractFirstMatch(primaryText, [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|人份))/i]) : "");
@@ -4483,7 +4778,7 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     const itemDimensions = [
       item.dims?.topWidth && `Length: ${item.dims.topWidth}`,
       item.dims?.sideLength && `Width: ${item.dims.sideLength}`,
-      item.dims?.bottomWidth && `Height: ${item.dims.bottomWidth}`,
+      item.dims?.bottomWidth && `${thirdDimensionLabel([combined, item.spec, item.sizeCode].filter(Boolean).join(" "))}: ${item.dims.bottomWidth}`,
       (detailAttributes.Weight || (!isSockFamily && item.dims?.weight)) && `Weight: ${detailAttributes.Weight || item.dims?.weight}`,
     ].filter(Boolean);
     const dimensionList = dimensions.length
@@ -4599,7 +4894,7 @@ async function extractSources() {
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
-      ? `1688 图片 OCR：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 张图片，全局筛选后优先识别 ${supplierSource.imageCount} 张疑似产品详情/参数图，实际成功 ${supplierSource.scannedCount} 张，采纳 ${supplierSource.acceptedCount || 0} 张，跳过/失败 ${supplierSource.failedCount} 张。远程图片可能因跨域、防盗链、尺寸过小或内容过滤而跳过。`
+      ? `1688 图片 OCR：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 张图片，全局筛选后优先识别 ${supplierSource.imageCount} 张疑似产品详情/参数图，实际成功 ${supplierSource.scannedCount} 张，采纳 ${supplierSource.acceptedCount || 0} 张，其中命中卖点文本 ${supplierSource.sellingPointCount || 0} 张，跳过/失败 ${supplierSource.failedCount} 张。远程图片可能因跨域、防盗链、尺寸过小或内容过滤而跳过。`
       : "未找到可识别的 1688 图片。";
     const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
       ? "OCR 引擎未加载成功，已跳过图片文字识别。"
@@ -5128,6 +5423,14 @@ function sellingPointKey(value) {
   if (!clean) return "";
   if (/(?:compact|portable|folded|pocket|travel|small|小巧|便携|收纳|折叠|迷你|随身)/i.test(value)) return "compact";
   if (/(?:lightweight|light weight|轻量|轻便|轻巧)/i.test(value)) return "lightweight";
+  if (/(?:break resistant|without breaking|fracture|tear|防断|抗拉|不断裂|不惧断裂)/i.test(value)) return "break-resistant";
+  if (/(?:deformation|不变形|均匀拉伸)/i.test(value)) return "deformation-resistant";
+  if (/(?:3x|3 x|three times|3倍)/i.test(value)) return "stretch-range";
+  if (/(?:full body|全身)/i.test(value)) return "full-body";
+  if (/(?:durable|耐用|安全)/i.test(value)) return "durable";
+  if (/(?:multi use|versatility|多用途|多场景|不同需求)/i.test(value)) return "multi-use";
+  if (/(?:easy clean|washable|易清洁|可水洗)/i.test(value)) return "easy-clean";
+  if (/(?:stable|sturdy|support|承重|稳固|牢固|省力)/i.test(value)) return "stable";
   if (/(?:uv|upf|sun|shade|防晒|遮阳|防紫外|紫外线|隔热|黑胶)/i.test(value)) return "uv";
   if (/(?:rain|waterproof|water resistant|防雨|晴雨|拒水|防水)/i.test(value)) return "rain";
   if (/(?:windproof|wind resistant|reinforced|ribs?|防风|抗风|加固|伞骨|骨架)/i.test(value)) return "windproof";
@@ -5170,9 +5473,9 @@ function sellingPointCandidates(facts, limit = 6) {
     .map((item) => item.trim())
     .filter(Boolean);
   return uniqueSellingPoints([
-    facts.feature1,
-    facts.feature2,
-    facts.feature3,
+    ...splitPointItems(facts.feature1),
+    ...splitPointItems(facts.feature2),
+    ...splitPointItems(facts.feature3),
     facts.structure,
     facts.surfaceFinish,
     ...splitPointItems(visibleDetailParameter(facts.detailParameter)),
@@ -5199,7 +5502,7 @@ function preferredSecondarySellingPoint(points, usedPoints = []) {
     && !["cotton", "material"].includes(sellingPointKey(point))
     && !isOrdinaryMaterialSellingPoint(point)
   ));
-  const preferredKeys = ["lightweight", "uv", "rain", "windproof", "seam", "sweat", "friction", "coverage", "elastic", "soft", "knit"];
+  const preferredKeys = ["break-resistant", "deformation-resistant", "durable", "multi-use", "compact", "lightweight", "grip", "rain", "uv", "windproof", "stable", "easy-clean", "seam", "sweat", "friction", "coverage", "elastic", "soft", "knit"];
   for (const key of preferredKeys) {
     const matched = available.find((point) => sellingPointKey(point) === key);
     if (matched) return matched;
@@ -5218,15 +5521,17 @@ function sellingPointGroupFromText(value) {
     .filter(Boolean);
 }
 
-function sellingPointGroups(facts, groupIndex = 0, groupSize = 2) {
-  if (groupIndex === 0 && facts.feature1) return sellingPointGroupFromText(facts.feature1);
-  if (groupIndex === 1 && facts.feature2) return sellingPointGroupFromText(facts.feature2);
-  const points = sellingPointCandidates(facts, 6);
-  const size = points.length >= 3 ? groupSize : 1;
+function distributedSellingPointGroups(points, groupIndex = 0, groupSize = 2, maxPoints = 4) {
+  const cleanPoints = uniqueSellingPoints(Array.isArray(points) ? points : [points], maxPoints);
+  const size = cleanPoints.length >= 3 ? groupSize : 1;
   const start = groupIndex * size;
-  const group = points.slice(start, start + size);
+  const group = cleanPoints.slice(start, start + size);
   if (group.length) return group;
-  return points.slice(groupIndex, groupIndex + 1);
+  return cleanPoints.slice(groupIndex, groupIndex + 1);
+}
+
+function sellingPointGroups(facts, groupIndex = 0, groupSize = 2) {
+  return distributedSellingPointGroups(sellingPointCandidates(facts, 6), groupIndex, groupSize, 4);
 }
 
 function sellingPointLine(points, fallback = "verified product benefit") {
