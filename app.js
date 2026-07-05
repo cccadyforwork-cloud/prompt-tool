@@ -2,7 +2,7 @@ const sourceNotes = {
   purchase: "采购单主口径：确认已采购的产品款式；不把下单数量当作产品参数。",
   amazonTemplate: "Amazon 模板口径：Child SKU 定采购款式数量；变体字段定款式属性。",
   alibaba: "1688 主资料口径：只补产品标题、材质、结构、适配和卖点；不新增采购单外的款式。",
-  amazon: "竞品参考口径：只用于图组逻辑与卖点筛选，不补写未确认参数。",
+  amazon: "参考链接口径：提取图组结构、构图任务与卖点分配，不补写未确认参数。",
 };
 
 const productGroups = {
@@ -184,6 +184,19 @@ const templates = [
       { id: "5", name: "5. 卖点图 5", promptName: "5. Selling Point Image 5" },
       { id: "6", name: "6. 卖点图 6", promptName: "6. Selling Point Image 6" },
       { id: "7", name: "7. 卖点总览图", promptName: "7. Feature Summary Image" },
+    ],
+  },
+  {
+    id: "reference",
+    name: "参考链接模板",
+    description: "参考链接静态图组的图片顺序、构图任务和卖点分配，代入当前产品信息生成 6 张图。",
+    imageTypes: [
+      { id: "1", name: "1. 产品形态白底主图", promptName: "1. Product Form White Background Hero" },
+      { id: "2", name: "2. 折叠 / 拆卸结构说明图", promptName: "2. Foldable or Detachable Structure Image" },
+      { id: "3", name: "3. 材质 + 防滑细节图", promptName: "3. Material and Non-Slip Detail Image" },
+      { id: "4", name: "4. 柔软轻量功能图", promptName: "4. Soft Lightweight Feature Image" },
+      { id: "5", name: "5. 旅行收纳场景图", promptName: "5. Portable Travel Storage Image" },
+      { id: "6", name: "6. 上脚生活方式场景图", promptName: "6. Wearing Lifestyle Use Image" },
     ],
   },
 ];
@@ -699,7 +712,7 @@ function sourceSummaryRows(sku, template) {
       ["采购单", sourcePayload.purchase ? compactSourceStatus(sourcePayload.purchase) : "待输入", sourceNotes.purchase],
       ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
       ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
-      ["竞品参考", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
+      ["参考链接", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
       ["当前输出", `待解析，${template.imageTypes.length} 张图模板`, "解析资料后生成当前产品图组。"],
     ];
   }
@@ -707,7 +720,7 @@ function sourceSummaryRows(sku, template) {
     ["采购单", sourcePayload.purchase ? compactSourceStatus(sourcePayload.purchase) : "待输入", sourceNotes.purchase],
     ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
     ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
-    ["竞品参考", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
+    ["参考链接", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
     ["当前输出", `${products.length} 个产品 / 款式，${template.imageTypes.length} 张图`, dimensionStatus],
   ];
 }
@@ -5276,7 +5289,7 @@ async function extractSources() {
     const amazonTemplateStatus = amazonTemplateFile
       ? `Amazon 模板：${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}。`
       : "";
-    const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；竞品 HTML：${competitorFiles.length} 个。`;
+    const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；参考链接 HTML：${competitorFiles.length} 个。`;
     byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${amazonTemplateStatus}PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
   } finally {
     extractButton.disabled = false;
@@ -6841,6 +6854,138 @@ function featureTemplatePrompt(typeId, sku, data) {
   return featureModulePrompt(typeId, facts);
 }
 
+function referenceLinkGlobalRule(facts) {
+  return compactPromptItems([
+    "Reference-link template: use the uploaded reference page only for image order, composition role, visual proof method, and selling-point distribution.",
+    "Use the current product fields for the actual product, color, material, structure, dimensions, fit, scene, and verified benefits.",
+    "Do not copy the reference brand, exact text, typography, people, image assets, product markings, or unsupported claims.",
+    isFootwearCategory(facts) ? footwearStructureReferenceText(facts) : productIdentityBasicRule(facts),
+  ], "", 6);
+}
+
+function referenceLinkModulePrompt(typeId, facts) {
+  const mainProduct = compactSpecificPromptItems([
+    facts.productName,
+    facts.color,
+    facts.material,
+    facts.structure,
+  ], "current verified product appearance", 5);
+  const structureText = compactSpecificPromptItems([
+    facts.structure,
+    facts.detailParameter,
+    facts.material,
+  ], "verified foldable or detachable structure", 4);
+  const sceneUse = compactSpecificPromptItems([
+    facts.scene,
+    facts.fit,
+  ], "travel, bathroom, beach, camp, hotel, or shower use scenes", 4);
+  const materialPoint = specificPromptValue(facts.material, "durable verified material");
+  const solePoint = compactSpecificPromptItems([
+    facts.feature1,
+    facts.feature2,
+    facts.detailParameter,
+    facts.structure,
+  ], "non-slip sole texture or verified grip feature", 3);
+  const lightweightPoint = compactSpecificPromptItems([
+    facts.feature1,
+    facts.feature2,
+    facts.feature3,
+    facts.material,
+  ], "soft lightweight flexible benefit", 3);
+  const portablePoint = compactSpecificPromptItems([
+    facts.feature1,
+    facts.feature2,
+    facts.feature3,
+    facts.fit,
+    facts.scene,
+  ], "portable foldable travel storage benefit", 4);
+  const lifestylePoint = compactSpecificPromptItems([
+    facts.fit,
+    facts.scene,
+    ...sellingPointCandidates(facts, 3),
+  ], "versatile everyday use", 4);
+  const referenceRule = referenceLinkGlobalRule(facts);
+  const modules = {
+    "1": {
+      basic: "1:1 Amazon main image, 4K clarity, sharp realistic detail, pure white or very light gray background, no added overlay text.",
+      details: productDetailText(facts, [
+        `Product form: ${mainProduct}`,
+        "Show one unfolded product as the dominant view plus one folded/flat side view as a secondary shape reference.",
+        "Make the foldable travel slipper form immediately readable; preserve exact selected color, strap layout, sole outline, toe-post/opening, folding joint, and footbed texture if present.",
+      ], 8),
+      style: overallStyleText(facts, "1", "Clean reference-link hero composition: product-only, white studio lighting, soft shadow, no props, no hands, no people, no text; secondary folded view must not compete with the main product.", { includeHumanRule: false }),
+    },
+    "2": {
+      basic: "1:1 Amazon structure explanation image, 4K clarity, sharp realistic detail, concise English overlay text allowed.",
+      details: productDetailText(facts, [
+        `Structure focus: ${structureText}`,
+        "Show a side-view product structure with curved arrows or motion guides that explain foldable/detachable use.",
+        "Add 3 small usage-step mini illustrations or inset panels below the main product, numbered 1-3.",
+        "Suggested short text: Foldable Design, Easy Storage, 3-Step Use.",
+      ], 8),
+      style: overallStyleText(facts, "2", `${referenceRule} Use a clean instructional layout similar in role to a reference link structure image, but redraw all composition with our product geometry. Keep labels short, elegant, and sparse.`),
+    },
+    "3": {
+      basic: "1:1 Amazon feature detail image, 4K clarity, sharp realistic detail, two-part material and sole proof layout.",
+      details: productDetailText(facts, [
+        `Material proof: ${materialPoint}`,
+        `Sole/grip proof: ${solePoint}`,
+        "Upper area: show accurate product material and overall footwear body.",
+        "Lower area: show large clear outsole texture or sole pattern close-up; tread must be readable and source-accurate.",
+        "Suggested short text: Durable Material, Non-Slip Sole.",
+      ], 8),
+      style: overallStyleText(facts, "3", `${referenceRule} Split composition into material proof and outsole proof; use real close-up visual evidence first, not text-first poster design. No unverified certification claims.`),
+    },
+    "4": {
+      basic: "1:1 Amazon functional feature image, 4K clarity, sharp realistic detail, clean light studio background.",
+      details: productDetailText(facts, [
+        `Feature focus: ${lightweightPoint}`,
+        "Show the product gently bent or flexed to prove soft, lightweight, flexible behavior.",
+        "Bending must look physically plausible and must preserve the real sole thickness, strap shape, folding joint, and product outline.",
+        "Suggested short text: Soft & Lightweight.",
+      ], 8),
+      style: overallStyleText(facts, "4", `${referenceRule} Create a soft, airy, premium feature image with subtle motion/flex cue; avoid impossible deformation, broken product geometry, or exaggerated foam effects.`),
+    },
+    "5": {
+      basic: "1:1 Amazon lifestyle storage image, 4K clarity, sharp realistic detail, travel packing scene.",
+      details: sceneProductDetailText(facts, [
+        `Portable storage proof: ${portablePoint}`,
+        "Show the product folded or packed inside an open suitcase, backpack, travel pouch, hotel bag, or beach tote with clothes/towel/travel props.",
+        "Product must stay prominent and immediately recognizable, not hidden by props.",
+        "Suggested short text: Portable & Foldable, Fits in Travel Bag.",
+      ], 8),
+      style: sceneOverallStyleText(facts, "5", `${referenceRule} Premium travel packing scene with realistic scale, natural light, and clean composition; visual proof of portability leads the image.`),
+    },
+    "6": {
+      basic: "1:1 Amazon lifestyle wearing image, 4K clarity, sharp realistic detail, real human-use scene.",
+      details: sceneProductDetailText(facts, [
+        `Use-scene proof: ${sceneUse}`,
+        `Lifestyle benefit: ${lifestylePoint}`,
+        "Show a natural foot/lower-leg wearing the exact selected product in a bathroom, hotel room, poolside, beach, camp, or travel setting.",
+        "Footwear structure must stay visible and accurate; keep the product color and sole shape consistent with the current SKU.",
+        "Suggested short text: Versatile Use, Travel · Shower · Beach.",
+      ], 8),
+      style: sceneOverallStyleText(facts, "6", `${referenceRule} Natural lifestyle composition with warm realistic light and authentic use posture; do not copy the reference person, floor, crop, text style, or exact pose.`),
+    },
+  };
+  const selected = modules[typeId] || modules["1"];
+
+  return buildPromptSections({
+    facts,
+    templateId: "reference",
+    typeId,
+    basic: selected.basic,
+    details: selected.details,
+    style: selected.style,
+    negative: negativePrompt(facts),
+  });
+}
+
+function referenceLinkTemplatePrompt(typeId, sku, data) {
+  const facts = promptFacts(sku, data);
+  return referenceLinkModulePrompt(typeId, facts);
+}
+
 function promptFor(templateId, typeId, sku, data) {
   const facts = promptFacts(sku, data);
 
@@ -6850,6 +6995,10 @@ function promptFor(templateId, typeId, sku, data) {
 
   if (templateId === "scene") {
     return sceneTemplatePrompt(typeId, sku, data);
+  }
+
+  if (templateId === "reference") {
+    return referenceLinkTemplatePrompt(typeId, sku, data);
   }
 
   return featureTemplatePrompt(typeId, sku, data);
@@ -6876,7 +7025,7 @@ function renderProductPromptGrid() {
   const template = selectedTemplate();
   if (!hasExtractedProducts()) {
     promptStore = [];
-    grid.innerHTML = `<p class="empty-state">请选择采购单、1688 HTML 和竞品资料后点击解析。</p>`;
+    grid.innerHTML = `<p class="empty-state">请选择采购单、1688 HTML 和参考链接资料后点击解析。</p>`;
     return;
   }
   const data = currentPromptData(sku);
