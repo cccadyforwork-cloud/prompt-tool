@@ -191,12 +191,12 @@ const templates = [
     name: "参考链接模板",
     description: "参考链接静态图组的图片顺序、构图任务和卖点分配，代入当前产品信息生成 6 张图。",
     imageTypes: [
-      { id: "1", name: "1. 产品形态白底主图", promptName: "1. Product Form White Background Hero" },
-      { id: "2", name: "2. 折叠 / 拆卸结构说明图", promptName: "2. Foldable or Detachable Structure Image" },
-      { id: "3", name: "3. 材质 + 防滑细节图", promptName: "3. Material and Non-Slip Detail Image" },
-      { id: "4", name: "4. 柔软轻量功能图", promptName: "4. Soft Lightweight Feature Image" },
-      { id: "5", name: "5. 旅行收纳场景图", promptName: "5. Portable Travel Storage Image" },
-      { id: "6", name: "6. 上脚生活方式场景图", promptName: "6. Wearing Lifestyle Use Image" },
+      { id: "1", name: "1. 参考图 1 / 主图路线", promptName: "1. Reference Blueprint Image 1" },
+      { id: "2", name: "2. 参考图 2 / 结构路线", promptName: "2. Reference Blueprint Image 2" },
+      { id: "3", name: "3. 参考图 3 / 细节路线", promptName: "3. Reference Blueprint Image 3" },
+      { id: "4", name: "4. 参考图 4 / 功能路线", promptName: "4. Reference Blueprint Image 4" },
+      { id: "5", name: "5. 参考图 5 / 场景路线", promptName: "5. Reference Blueprint Image 5" },
+      { id: "6", name: "6. 参考图 6 / 收口路线", promptName: "6. Reference Blueprint Image 6" },
     ],
   },
 ];
@@ -4764,6 +4764,36 @@ function amazonRowValue(row, columns, ...candidates) {
   return index >= 0 ? amazonCellText(row[index]) : "";
 }
 
+function workbookRows(workbook, sheetName) {
+  if (!sheetName || !workbook.Sheets[sheetName]) return [];
+  return window.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
+}
+
+function amazonTemplateRowsLookValid(rows) {
+  const labelRow = (rows[3] || []).map(amazonCellText);
+  const attributeRow = (rows[4] || []).map(amazonCellText);
+  return attributeRow.some((value) => /contribution_sku/i.test(value))
+    && (labelRow.some((value) => /^SKU$/i.test(value)) || attributeRow.some((value) => /product_type|item_name/i.test(value)));
+}
+
+function findWorkbookSheetName(workbook, preferredNames, rowPredicate) {
+  const sheetNames = workbook.SheetNames || [];
+  const exactName = preferredNames.find((name) => sheetNames.includes(name));
+  if (exactName && (!rowPredicate || rowPredicate(workbookRows(workbook, exactName)))) return exactName;
+  return sheetNames.find((name) => rowPredicate?.(workbookRows(workbook, name))) || exactName || sheetNames[0];
+}
+
+function amazonTemplateSheetName(workbook) {
+  return findWorkbookSheetName(workbook, ["Template", "模板"], amazonTemplateRowsLookValid);
+}
+
+function amazonBrowseSheetName(workbook) {
+  return findWorkbookSheetName(workbook, ["Browse Data", "浏览数据"], (rows) => {
+    const firstRows = rows.slice(0, 6).map((row) => row.map(amazonCellText).join(" ")).join(" ");
+    return /Browse\s+Node/i.test(firstRows) && /Browse\s+Path/i.test(firstRows);
+  });
+}
+
 function parseAmazonSkuFilter(value) {
   const source = String(value || "").trim();
   if (!source) return null;
@@ -4827,8 +4857,24 @@ function amazonVariantAttributes(row, columns, theme) {
     attrs.colorMap = amazonRowValue(row, columns, "Color Map", "color[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.standardized_values#1");
   }
   if (!themeParts.length || themeParts.includes("SIZE")) {
-    attrs.size = amazonRowValue(row, columns, "Size", "size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value")
-      || amazonRowValue(row, columns, "Footwear Size", "footwear_size[marketplace_id=ATVPDKIKX0DER]#1.size");
+    attrs.size = amazonRowValue(
+      row,
+      columns,
+      "Size",
+      "Size Name",
+      "尺码",
+      "尺寸",
+      "size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value",
+      "size_name[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value",
+      "size_name",
+    ) || amazonRowValue(
+      row,
+      columns,
+      "Footwear Size",
+      "鞋码",
+      "footwear_size[marketplace_id=ATVPDKIKX0DER]#1.size",
+      "footwear_size",
+    );
   }
   if (themeParts.includes("NUMBER_OF_ITEMS")) {
     attrs.numberOfItems = amazonRowValue(row, columns, "Number Of Items", "number_of_items");
@@ -4837,6 +4883,15 @@ function amazonVariantAttributes(row, columns, theme) {
     attrs.teamName = amazonRowValue(row, columns, "Team Name", "team_name");
   }
   return attrs;
+}
+
+function extractAmazonVariantSizeFromText(...values) {
+  const text = values.map(amazonCellText).filter(Boolean).join(" ");
+  return extractFirstMatch(text, [
+    /\b(US\s*Size\s*[0-9]+(?:\.[0-9]+)?(?:\s*(?:-|–|~|to)\s*[0-9]+(?:\.[0-9]+)?)?)\b/i,
+    /\b(?:Size|Sz)\s*[:#-]?\s*([0-9]+(?:\.[0-9]+)?(?:\s*(?:-|–|~|to)\s*[0-9]+(?:\.[0-9]+)?)?)\b/i,
+    /(?:^|[-_\s])([0-9]{1,2}(?:\.[0-9]+)?)(?:[-_\s]?[A-Z])?$/i,
+  ]).replace(/^US\s*Size/i, "US Size").replace(/^([0-9])/, "US Size $1");
 }
 
 function compactAmazonTitle(value) {
@@ -4952,6 +5007,10 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
     const parentSku = amazonRowValue(row, columns, "Parent SKU", "parent_sku");
     const theme = amazonRowValue(row, columns, "Variation Theme Name", "variation_theme") || amazonRowValue(parentRow, columns, "Variation Theme Name", "variation_theme");
     const attrs = amazonVariantAttributes(row, columns, theme);
+    const rowTitle = amazonRowValue(row, columns, "Item Name", "item_name");
+    if (/SIZE/i.test(theme || "") && !attrs.size) {
+      attrs.size = extractAmazonVariantSizeFromText(rowTitle, sku);
+    }
     const optionParts = [
       attrs.color,
       attrs.size && !/^(?:one size|free size)$/i.test(attrs.size) ? attrs.size : "",
@@ -5013,10 +5072,11 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
 async function extractAmazonTemplateProducts(file, skuFilter = "") {
   if (!file) return { products: [], sourceText: "" };
   const workbook = await readWorkbook(file);
-  const sheetName = workbook.SheetNames.includes("Template") ? "Template" : workbook.SheetNames[0];
-  const templateRows = window.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "" });
-  const browseRows = workbook.SheetNames.includes("Browse Data")
-    ? window.XLSX.utils.sheet_to_json(workbook.Sheets["Browse Data"], { header: 1, defval: "" })
+  const sheetName = amazonTemplateSheetName(workbook);
+  const templateRows = workbookRows(workbook, sheetName);
+  const browseName = amazonBrowseSheetName(workbook);
+  const browseRows = browseName
+    ? workbookRows(workbook, browseName)
     : [];
   const browsePath = browseRows.slice(1).map((row) => row.filter(Boolean).join(" > ")).filter(Boolean)[0] || "";
   const products = amazonRowsToProducts(templateRows, browsePath, skuFilter);
@@ -5024,6 +5084,7 @@ async function extractAmazonTemplateProducts(file, skuFilter = "") {
   const sourceText = products.length
     ? [
       `Amazon template file: ${file.name}`,
+      `AMAZON_TEMPLATE_SHEET: ${sheetName || "not found"}`,
       `AMAZON_TEMPLATE_RULE: Child SKU count = ${products.length}; variant theme fields define style attributes.`,
       skuFilter ? `AMAZON_TEMPLATE_FILTER: ${skuFilter}` : "",
       parentSkus.length ? `PARENT_SKU: ${parentSkus.join(", ")}` : "",
@@ -5257,11 +5318,17 @@ async function extractSources() {
     const supplierSource = await extractSupplierSourceText(supplierHtml, (message) => {
       byId("extractStatus").textContent = message;
     });
+    const competitorSourceText = competitorHtml
+      ? [
+        `REFERENCE_SOURCE_FILES: ${competitorFiles.map((file) => file.name).join(", ")}`,
+        cleanHtmlText(competitorHtml),
+      ].filter(Boolean).join("\n")
+      : "";
     sourcePayload = {
       purchase: purchaseText,
       amazonTemplate: amazonTemplate.sourceText,
       supplier: supplierSource.text,
-      competitor: competitorHtml ? cleanHtmlText(competitorHtml) : "",
+      competitor: competitorSourceText,
     };
     fieldOverrides = {};
     fieldOverridesBySku = {};
@@ -5822,7 +5889,7 @@ function productIdentityBasicRule(facts) {
   if (!facts) return "";
   const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
   return compactPromptItems([
-    "Exact selected product only; no category substitution.",
+    "Product identity lock comes first: exact selected current product only; no category substitution, no redesign, no invented parts.",
     facts.productName && `Product: ${facts.productName}`,
     option && `Option: ${option}`,
     facts.color && `Color: ${facts.color}`,
@@ -6273,6 +6340,264 @@ function referenceRuleText() {
   return sourcePayload.competitor
     ? "Reference: composition only; copy no claims, text, brand, or people."
     : "Reference: clean Amazon listing style.";
+}
+
+function textFingerprint(value) {
+  const source = String(value || "").slice(0, 20000);
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).slice(0, 6).toUpperCase();
+}
+
+function referenceSourceLabel(text) {
+  const listedFiles = String(text || "").match(/REFERENCE_SOURCE_FILES:\s*([^\n]+)/i)?.[1];
+  if (listedFiles) return listedFiles.trim().slice(0, 80);
+  const fileName = String(text || "").match(/Source HTML file:\s*([^\n<]+)/i)?.[1];
+  if (fileName) return fileName.trim().slice(0, 80);
+  const title = extractFirstMatch(String(text || ""), [
+    /(?:Amazon\.com\s*:\s*)?([^|]{12,120})(?:\s*\||\s*Amazon\.com|$)/i,
+  ]);
+  return title ? title.trim().slice(0, 80) : `uploaded reference ${textFingerprint(text)}`;
+}
+
+function referenceLayoutCues(text) {
+  const source = String(text || "");
+  const cues = [];
+  const add = (value) => {
+    if (value && !cues.includes(value)) cues.push(value);
+  };
+  if (/main image|hero image|white background|纯白|主图|首图/i.test(source)) add("main hero framing");
+  if (/lifestyle|scene|model|wearing|beach|pool|shower|bathroom|hotel|travel|户外|场景|真人|穿着|沙滩|浴室|泳池|酒店|旅行/i.test(source)) add("lifestyle scene slot");
+  if (/infographic|callout|label|icon|badge|diagram|参数|卖点图|说明图|图标|标注|箭头/i.test(source)) add("infographic callout layout");
+  if (/size chart|measurement|dimension|尺码|尺寸|测量|规格/i.test(source)) add("size or measurement chart");
+  if (/close.?up|detail|texture|material|sole|tread|macro|细节|特写|材质|鞋底|纹理/i.test(source)) add("detail close-up slot");
+  if (/multi.?angle|front|side|back|top view|底视|侧面|正面|背面|多角度/i.test(source)) add("multi-angle product view");
+  if (/collage|grid|panel|四宫格|拼图|组合/i.test(source)) add("multi-panel collage rhythm");
+  if (/step|how to|fold|foldable|storage|pack|收纳|折叠|步骤|使用方法/i.test(source)) add("process or storage demonstration");
+  return cues.slice(0, 5);
+}
+
+function referenceProofCues(text) {
+  const source = String(text || "");
+  const cues = [];
+  const add = (value) => {
+    if (value && !cues.includes(value)) cues.push(value);
+  };
+  if (/non.?slip|anti.?slip|grip|traction|防滑|止滑|抓地/i.test(source)) add("grip-proof slot");
+  if (/lightweight|light weight|轻便|轻量|轻巧/i.test(source)) add("lightweight proof slot");
+  if (/quick.?dry|water|shower|pool|beach|dry|防水|速干|浴室|泳池|沙滩/i.test(source)) add("wet-use or quick-dry proof slot");
+  if (/compact|portable|travel|fold|pack|storage|便携|旅行|折叠|收纳/i.test(source)) add("portable storage proof slot");
+  if (/soft|comfort|cushion|flexible|柔软|舒适|缓震|弹性/i.test(source)) add("comfort or flexibility proof slot");
+  if (/durable|wear.?resistant|thick|reinforced|耐用|耐磨|加厚|加固/i.test(source)) add("durability detail slot");
+  if (/material|eva|rubber|silicone|foam|材质|材料|橡胶|硅胶/i.test(source)) add("material texture proof slot");
+  return cues.slice(0, 5);
+}
+
+function firstPatternIndex(source, patterns) {
+  let best = -1;
+  patterns.forEach((pattern) => {
+    const match = String(source || "").match(pattern);
+    if (!match) return;
+    const index = match.index ?? -1;
+    if (index < 0) return;
+    if (best < 0 || index < best) best = index;
+  });
+  return best;
+}
+
+function referenceBlueprintCandidates(text) {
+  const source = String(text || "");
+  const definitions = [
+    {
+      key: "hero",
+      patterns: [/main image|hero image|white background|纯白|主图|首图/i],
+      role: "Product-only hero image",
+      composition: "dominant centered product, clean white or very light studio background, reference shot distance and view count",
+      proof: "prove product form, color, silhouette, material surface, and selected option without props or people",
+      text: "no added text",
+    },
+    {
+      key: "structure",
+      patterns: [/infographic|callout|label|diagram|structure|结构|说明图|标注|箭头|拆卸|折叠/i],
+      role: "Structure explanation image",
+      composition: "clean instructional layout with sparse callouts, arrows, or 2-3 inset details following the reference rhythm",
+      proof: "explain only verified visible structure from the current product data",
+      text: "short English labels allowed",
+    },
+    {
+      key: "measurement",
+      patterns: [/size chart|measurement|dimension|尺码|尺寸|测量|规格|参数/i],
+      role: "Size or parameter infographic",
+      composition: "measurement-first layout, ruler arrows or size table only when verified values exist, clean Amazon chart spacing",
+      proof: "show current product option and verified size/spec fields; omit unverified competitor numbers",
+      text: "concise English measurement labels only",
+    },
+    {
+      key: "detail",
+      patterns: [/close.?up|detail|texture|material|sole|tread|macro|细节|特写|材质|鞋底|纹理/i],
+      role: "Material and detail proof image",
+      composition: "one accurate product view plus macro close-up insets following the reference crop/spacing",
+      proof: "prove current product material, surface texture, edge, sole, stitching, or construction details",
+      text: "2-4 word labels max",
+    },
+    {
+      key: "feature",
+      patterns: [/feature|benefit|selling point|badge|icon|卖点|功能|图标/i],
+      role: "Functional benefit image",
+      composition: "single benefit-led product visual with restrained icons/callouts matching the reference hierarchy",
+      proof: "prove one verified current-product benefit through realistic visual evidence",
+      text: "short benefit label, no slogans",
+    },
+    {
+      key: "lifestyle",
+      patterns: [/lifestyle|scene|model|wearing|beach|pool|shower|bathroom|hotel|travel|户外|场景|真人|穿着|沙滩|浴室|泳池|酒店|旅行/i],
+      role: "Lifestyle use scene",
+      composition: "real use environment with reference crop, prop density, lighting mood, and product visibility",
+      proof: "show current product used in a category-matched scene without copying the reference person or exact set",
+      text: "no text or one tiny scene label",
+    },
+    {
+      key: "multi-angle",
+      patterns: [/multi.?angle|front|side|back|top view|底视|侧面|正面|背面|多角度/i],
+      role: "Multi-angle product view",
+      composition: "several clean product angles arranged with reference spacing, product-only or minimal props",
+      proof: "show current product shape from multiple views while preserving selected color and structure",
+      text: "no text",
+    },
+    {
+      key: "collage",
+      patterns: [/collage|grid|panel|四宫格|拼图|组合/i],
+      role: "Multi-panel usage collage",
+      composition: "2-4 panel grid or collage rhythm adapted from the reference",
+      proof: "each panel proves a distinct verified use scene or benefit for the current product",
+      text: "very short panel labels only if needed",
+    },
+    {
+      key: "process",
+      patterns: [/step|how to|fold|foldable|storage|pack|收纳|折叠|步骤|使用方法/i],
+      role: "Process or storage demonstration",
+      composition: "step sequence or storage scene following the reference order and spacing",
+      proof: "show only verified folding, packing, storage, or use method from current product facts",
+      text: "numbered labels allowed only for verified steps",
+    },
+  ];
+  return definitions
+    .map((definition) => ({ ...definition, index: firstPatternIndex(source, definition.patterns) }))
+    .filter((definition) => definition.index >= 0)
+    .sort((left, right) => left.index - right.index);
+}
+
+function defaultReferenceBlueprint() {
+  return [
+    {
+      key: "hero",
+      role: "Product-only hero image",
+      composition: "dominant current product on pure white or very light studio background",
+      proof: "show exact product form, selected option, color, material, and silhouette",
+      text: "no added text",
+    },
+    {
+      key: "structure",
+      role: "Structure explanation image",
+      composition: "clean callout layout with sparse arrows or detail insets",
+      proof: "explain verified visible structure only",
+      text: "short English labels allowed",
+    },
+    {
+      key: "detail",
+      role: "Material and detail proof image",
+      composition: "full product plus 1-2 macro detail close-ups",
+      proof: "prove material, edge, sole, texture, or construction details",
+      text: "2-4 word labels max",
+    },
+    {
+      key: "feature",
+      role: "Functional benefit image",
+      composition: "one clear visual proof around the strongest verified benefit",
+      proof: "prove one verified benefit without borrowing competitor claims",
+      text: "short benefit label only",
+    },
+    {
+      key: "lifestyle",
+      role: "Lifestyle use scene",
+      composition: "category-matched real use environment with product clearly visible",
+      proof: "show the current product in a plausible use scene",
+      text: "no text or one tiny scene label",
+    },
+    {
+      key: "summary",
+      role: "Summary or closing image",
+      composition: "clean Amazon final image with product hero and 2-3 non-repeated proof points",
+      proof: "summarize only current verified product benefits",
+      text: "short labels, no long copy",
+    },
+  ];
+}
+
+function referenceBlueprintSlots(text) {
+  const candidates = referenceBlueprintCandidates(text);
+  const defaults = defaultReferenceBlueprint();
+  const used = new Set();
+  const pick = (preferredKeys, fallbackIndex) => {
+    const candidate = candidates.find((item) => preferredKeys.includes(item.key) && !used.has(item.key))
+      || candidates.find((item) => !used.has(item.key))
+      || defaults[fallbackIndex];
+    if (candidate?.key) used.add(candidate.key);
+    return candidate;
+  };
+  return [
+    pick(["hero", "multi-angle"], 0),
+    pick(["structure", "process", "measurement"], 1),
+    pick(["detail", "measurement"], 2),
+    pick(["feature", "detail"], 3),
+    pick(["lifestyle", "process", "collage"], 4),
+    pick(["collage", "lifestyle", "multi-angle"], 5),
+  ].map((slot, index) => ({
+    ...defaults[index],
+    ...slot,
+    slotNumber: index + 1,
+  }));
+}
+
+function referenceBlueprintSlot(typeId = "") {
+  const index = Math.max(0, Math.min(5, Number.parseInt(typeId, 10) - 1 || 0));
+  return referenceBlueprintSlots(sourcePayload.competitor || "")[index] || defaultReferenceBlueprint()[index];
+}
+
+function referenceBlueprintText(typeId = "") {
+  const slot = referenceBlueprintSlot(typeId);
+  return compactPromptItems([
+    `Reference blueprint slot ${slot.slotNumber}: ${slot.role}`,
+    `Reference-derived composition: ${slot.composition}`,
+    `Reference-derived proof method: ${slot.proof}`,
+    `Reference text density: ${slot.text}`,
+  ], "", 4);
+}
+
+function referenceLinkInsightText(typeId = "") {
+  const source = sourcePayload.competitor || "";
+  if (!source) return "";
+  const blueprint = referenceBlueprintSlot(typeId);
+  const layout = referenceLayoutCues(source);
+  const proof = referenceProofCues(source);
+  const typeFocus = {
+    "1": "apply reference hero framing only",
+    "2": "apply reference structure/callout rhythm only",
+    "3": "apply reference detail-proof rhythm only",
+    "4": "apply reference feature-proof rhythm only",
+    "5": "apply reference lifestyle/storage scene role only",
+    "6": "apply reference human-use or environment framing only",
+  }[typeId] || "apply reference image order and composition rhythm only";
+  return compactPromptItems([
+    `Current uploaded reference: ${referenceSourceLabel(source)} (${textFingerprint(source)})`,
+    referenceBlueprintText(typeId),
+    `Reference layout cues: ${layout.length ? layout.join(", ") : "use visible image order, shot distance, and composition rhythm from current uploaded reference"}`,
+    proof.length ? `Reference proof-slot cues: ${proof.join(", ")}; rewrite using only current product verified benefits` : "",
+    `Blueprint role for this image: ${blueprint.role}; ${typeFocus}`,
+  ], "", 4);
 }
 
 function specModulePrompt(typeId, facts) {
@@ -6854,16 +7179,21 @@ function featureTemplatePrompt(typeId, sku, data) {
   return featureModulePrompt(typeId, facts);
 }
 
-function referenceLinkGlobalRule(facts) {
+function referenceLinkGlobalRule(facts, typeId = "") {
   return compactPromptItems([
-    "Reference-link template: use the uploaded reference page only for image order, composition role, visual proof method, and selling-point distribution.",
-    "Use the current product fields for the actual product, color, material, structure, dimensions, fit, scene, and verified benefits.",
+    "Current product identity is the top priority; reference layout must adapt to the current product, never the reverse.",
+    "Reference-link template: borrow only the image order, layout role, shot distance, composition rhythm, and visual proof method from the uploaded reference.",
+    referenceLinkInsightText(typeId),
+    "Current product fields always override the reference product: product type, color, material, structure, dimensions, fit, scene, and verified benefits.",
+    "If the reference product shape conflicts with the current product, keep the current product structure and adapt only the layout.",
     "Do not copy the reference brand, exact text, typography, people, image assets, product markings, or unsupported claims.",
     isFootwearCategory(facts) ? footwearStructureReferenceText(facts) : productIdentityBasicRule(facts),
-  ], "", 6);
+  ], "", 7);
 }
 
 function referenceLinkModulePrompt(typeId, facts) {
+  const blueprint = referenceBlueprintSlot(typeId);
+  const blueprintRoute = referenceBlueprintText(typeId);
   const mainProduct = compactSpecificPromptItems([
     facts.productName,
     facts.color,
@@ -6874,98 +7204,91 @@ function referenceLinkModulePrompt(typeId, facts) {
     facts.structure,
     facts.detailParameter,
     facts.material,
-  ], "verified foldable or detachable structure", 4);
+  ], "verified visible product structure", 4);
   const sceneUse = compactSpecificPromptItems([
     facts.scene,
     facts.fit,
-  ], "travel, bathroom, beach, camp, hotel, or shower use scenes", 4);
-  const materialPoint = specificPromptValue(facts.material, "durable verified material");
-  const solePoint = compactSpecificPromptItems([
-    facts.feature1,
-    facts.feature2,
+  ], "realistic category-matched use scene", 4);
+  const materialDetail = compactSpecificPromptItems([
+    facts.material,
+    facts.surfaceFinish,
     facts.detailParameter,
     facts.structure,
-  ], "non-slip sole texture or verified grip feature", 3);
-  const lightweightPoint = compactSpecificPromptItems([
-    facts.feature1,
-    facts.feature2,
-    facts.feature3,
-    facts.material,
-  ], "soft lightweight flexible benefit", 3);
-  const portablePoint = compactSpecificPromptItems([
-    facts.feature1,
-    facts.feature2,
-    facts.feature3,
+  ], "verified material or structure detail", 4);
+  const featurePoint = compactSpecificPromptItems([
+    ...sellingPointCandidates(facts, 4),
     facts.fit,
-    facts.scene,
-  ], "portable foldable travel storage benefit", 4);
-  const lifestylePoint = compactSpecificPromptItems([
-    facts.fit,
-    facts.scene,
-    ...sellingPointCandidates(facts, 3),
-  ], "versatile everyday use", 4);
-  const referenceRule = referenceLinkGlobalRule(facts);
+  ], "verified product benefit", 4);
+  const referenceInsight = referenceLinkInsightText(typeId);
+  const referenceRule = referenceLinkGlobalRule(facts, typeId);
+  const blueprintBasic = `1:1 Amazon reference-blueprint image ${typeId}, 4K clarity, sharp realistic detail, route: ${blueprint.role}.`;
   const modules = {
     "1": {
-      basic: "1:1 Amazon main image, 4K clarity, sharp realistic detail, pure white or very light gray background, no added overlay text.",
+      basic: blueprintBasic,
       details: productDetailText(facts, [
+        blueprintRoute,
         `Product form: ${mainProduct}`,
-        "Show one unfolded product as the dominant view plus one folded/flat side view as a secondary shape reference.",
-        "Make the foldable travel slipper form immediately readable; preserve exact selected color, strap layout, sole outline, toe-post/opening, folding joint, and footbed texture if present.",
-      ], 8),
-      style: overallStyleText(facts, "1", "Clean reference-link hero composition: product-only, white studio lighting, soft shadow, no props, no hands, no people, no text; secondary folded view must not compete with the main product.", { includeHumanRule: false }),
+        referenceInsight,
+        "Execute this exact reference slot with the current product; do not add extra views, scenes, claims, or callouts unless the current reference slot calls for them.",
+      ], 7),
+      style: overallStyleText(facts, "1", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Current product shape, color, material, and structure must stay exact.`, { includeHumanRule: !/hero|multi-angle|product-only/i.test(blueprint.key) }),
     },
     "2": {
-      basic: "1:1 Amazon structure explanation image, 4K clarity, sharp realistic detail, concise English overlay text allowed.",
+      basic: blueprintBasic,
       details: productDetailText(facts, [
+        blueprintRoute,
         `Structure focus: ${structureText}`,
-        "Show a side-view product structure with curved arrows or motion guides that explain foldable/detachable use.",
-        "Add 3 small usage-step mini illustrations or inset panels below the main product, numbered 1-3.",
-        "Suggested short text: Foldable Design, Easy Storage, 3-Step Use.",
-      ], 8),
-      style: overallStyleText(facts, "2", `${referenceRule} Use a clean instructional layout similar in role to a reference link structure image, but redraw all composition with our product geometry. Keep labels short, elegant, and sparse.`),
+        referenceInsight,
+        "If this slot is not a structure slot, use the structure facts only as product-accuracy constraints, not as the main composition.",
+        "Use the reference slot layout; labels/arrows/insets must explain only verified current-product facts.",
+        "Do not invent folding, detachable parts, straps, openings, holes, hinges, or steps that are not in current product data.",
+      ], 7),
+      style: overallStyleText(facts, "2", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Keep text density as: ${blueprint.text}. Product geometry stays unchanged.`),
     },
     "3": {
-      basic: "1:1 Amazon feature detail image, 4K clarity, sharp realistic detail, two-part material and sole proof layout.",
+      basic: blueprintBasic,
       details: productDetailText(facts, [
-        `Material proof: ${materialPoint}`,
-        `Sole/grip proof: ${solePoint}`,
-        "Upper area: show accurate product material and overall footwear body.",
-        "Lower area: show large clear outsole texture or sole pattern close-up; tread must be readable and source-accurate.",
-        "Suggested short text: Durable Material, Non-Slip Sole.",
-      ], 8),
-      style: overallStyleText(facts, "3", `${referenceRule} Split composition into material proof and outsole proof; use real close-up visual evidence first, not text-first poster design. No unverified certification claims.`),
+        blueprintRoute,
+        `Detail proof: ${materialDetail}`,
+        referenceInsight,
+        "If this slot is not a detail slot, use material/detail facts as supporting constraints while following the reference blueprint role.",
+        "Macro close-ups or insets must come from the current product's verified material, surface, edge, texture, or construction.",
+        "If a referenced detail is not verified for the current product, replace it with a verified current-product detail.",
+      ], 7),
+      style: overallStyleText(facts, "3", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Visual proof first; no certification badges or unverified claims.`),
     },
     "4": {
-      basic: "1:1 Amazon functional feature image, 4K clarity, sharp realistic detail, clean light studio background.",
+      basic: blueprintBasic,
       details: productDetailText(facts, [
-        `Feature focus: ${lightweightPoint}`,
-        "Show the product gently bent or flexed to prove soft, lightweight, flexible behavior.",
-        "Bending must look physically plausible and must preserve the real sole thickness, strap shape, folding joint, and product outline.",
-        "Suggested short text: Soft & Lightweight.",
-      ], 8),
-      style: overallStyleText(facts, "4", `${referenceRule} Create a soft, airy, premium feature image with subtle motion/flex cue; avoid impossible deformation, broken product geometry, or exaggerated foam effects.`),
+        blueprintRoute,
+        `Feature focus: ${featurePoint}`,
+        referenceInsight,
+        sellingPointOnImageRule(sellingPointGroups(facts, 0), "verified benefit"),
+        "Use the reference blueprint proof method; do not force bending, stretching, waterproofing, non-slip, portability, or other claims unless verified.",
+      ], 7),
+      style: overallStyleText(facts, "4", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Prove selected benefits through the blueprint proof method: ${blueprint.proof}.`),
     },
     "5": {
-      basic: "1:1 Amazon lifestyle storage image, 4K clarity, sharp realistic detail, travel packing scene.",
+      basic: blueprintBasic,
       details: sceneProductDetailText(facts, [
-        `Portable storage proof: ${portablePoint}`,
-        "Show the product folded or packed inside an open suitcase, backpack, travel pouch, hotel bag, or beach tote with clothes/towel/travel props.",
-        "Product must stay prominent and immediately recognizable, not hidden by props.",
-        "Suggested short text: Portable & Foldable, Fits in Travel Bag.",
-      ], 8),
-      style: sceneOverallStyleText(facts, "5", `${referenceRule} Premium travel packing scene with realistic scale, natural light, and clean composition; visual proof of portability leads the image.`),
+        blueprintRoute,
+        `Scene proof: ${sceneUse}`,
+        `Benefit focus: ${featurePoint}`,
+        referenceInsight,
+        "Use the reference blueprint scene role, crop, prop density, and lighting mood; adapt environment to current product category and verified use.",
+      ], 7),
+      style: sceneOverallStyleText(facts, "5", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Product stays prominent and source-accurate; no forced travel/folding/packing scene unless verified.`),
     },
     "6": {
-      basic: "1:1 Amazon lifestyle wearing image, 4K clarity, sharp realistic detail, real human-use scene.",
+      basic: blueprintBasic,
       details: sceneProductDetailText(facts, [
+        blueprintRoute,
         `Use-scene proof: ${sceneUse}`,
-        `Lifestyle benefit: ${lifestylePoint}`,
-        "Show a natural foot/lower-leg wearing the exact selected product in a bathroom, hotel room, poolside, beach, camp, or travel setting.",
-        "Footwear structure must stay visible and accurate; keep the product color and sole shape consistent with the current SKU.",
-        "Suggested short text: Versatile Use, Travel · Shower · Beach.",
-      ], 8),
-      style: sceneOverallStyleText(facts, "6", `${referenceRule} Natural lifestyle composition with warm realistic light and authentic use posture; do not copy the reference person, floor, crop, text style, or exact pose.`),
+        `Lifestyle benefit: ${featurePoint}`,
+        referenceInsight,
+        "Use the reference blueprint closing role; human/model use is optional and must not hide or alter the current product structure.",
+      ], 7),
+      style: sceneOverallStyleText(facts, "6", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Do not copy the reference person, floor, exact pose, text style, or product shape.`),
     },
   };
   const selected = modules[typeId] || modules["1"];
@@ -7079,6 +7402,22 @@ function allPromptsForSku() {
   return template.imageTypes.map((type) => `## ${type.promptName || type.name}\n\n${promptFor(template.id, type.id, sku, data)}`).join("\n\n---\n\n");
 }
 
+function clearExtractedSourceState() {
+  sourcePayload = {
+    purchase: "",
+    amazonTemplate: "",
+    supplier: "",
+    competitor: "",
+  };
+  extractedProducts = [];
+  fieldOverrides = {};
+  fieldOverridesBySku = {};
+  promptStore = [];
+  renderProductSelect();
+  renderFields(true);
+  renderAll();
+}
+
 function showCopyFeedback(button, state, label) {
   if (!button) return;
 
@@ -7180,6 +7519,7 @@ function init() {
   ["purchaseFile", "purchaseImageFile", "amazonTemplateFile", "amazonSkuFilter", "supplierFile", "competitorFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
+      clearExtractedSourceState();
       byId("extractStatus").textContent = "文件或筛选条件已更新，点击解析资料并提取产品信息。";
     };
     input.addEventListener("change", updateStatus);
