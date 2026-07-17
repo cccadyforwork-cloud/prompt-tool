@@ -35,6 +35,11 @@
           <label for="competitorFile">参考链接 HTML 文件（可多选）</label>
           <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
 
+          <label class="checkbox-row" for="bundleMode">
+            <input id="bundleMode" type="checkbox">
+            <span>将多个 1688 产品合并为一个套装输出</span>
+          </label>
+
           <button id="extractSources" type="button" class="secondary">解析资料并提取产品信息</button>
           <p id="extractStatus" class="status" role="status" aria-live="polite"></p>
         </section>
@@ -91,6 +96,6 @@
 
     <script src="./vendor/pdfjs/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="./app.js?v=20260706-reference-blueprint"></script>
+    <script src="./app.js?v=20260717-bundle-kit-source-priority"></script>
   </body>
 </html>

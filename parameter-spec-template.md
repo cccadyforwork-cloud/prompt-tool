@@ -22,6 +22,7 @@
 ```text
 【产品名称】=
 【当前SKU/主规格】=
+【套装组件】=
 【规格列表】=
 【包装数量】=
 【容量/适用杯量】=
@@ -45,6 +46,7 @@
 ```text
 Rules: 1:1 Amazon image. Match the reference product shape, material, color, and proportions. Combine concise readable text with small icons, simple illustrations, and arrows to communicate key information; avoid long paragraphs and repeated information. No invented specs, brands, logos, watermarks, or extra accessories.
 Negative: No invented specs, wrong shape, wrong material, extra accessories, logos, watermark, unreadable text, cluttered layout, blurry product, or exaggerated effects.
+Bundle rule: if 【套装组件】 is filled, treat the output as one bundled listing. Show all included components together as separate physical items; do not present them as optional variants, do not merge them into one hybrid product, and keep each component's verified parameters separate.
 ```
 
 ---
@@ -87,6 +89,8 @@ Optional bottom icons: use up to 3 small auxiliary symbols/mini illustrations fo
 
 ```text
 Image 5 Options: visual comparison. 3-5 horizontal product columns with consistent angle and scale. Each column: product image, short option label, and a small supporting icon if helpful. Only show verified options: 【规格列表】.
+
+If this is a bundled listing, replace the options grid with an included-components layout titled “What You Get” or “Complete Set”. Show every verified component from 【套装组件】 as a separate product item with a short label.
 ```
 
 ### 6. 功能 / 卖点图

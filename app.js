@@ -258,8 +258,17 @@ function selectedSku() {
   return allProducts.find((sku) => sku.id === byId("skuSelect").value) || allProducts[0];
 }
 
+function bundleModeEnabled() {
+  return Boolean(byId("bundleMode")?.checked);
+}
+
 function currentProducts() {
-  if (extractedProducts.length) return extractedProducts;
+  if (extractedProducts.length) {
+    if (extractedProducts.length > 1) {
+      return [buildBundleProduct(extractedProducts), ...extractedProducts];
+    }
+    return extractedProducts;
+  }
   return [emptyExtractedProduct];
 }
 
@@ -311,6 +320,100 @@ function dimensionFieldsFromDimensionList(dimensionList, context = "") {
   }
 }
 
+function cleanBundleComponentName(sku) {
+  return promptValue(sku.outputProductName || sku.baseProductName || sku.productName || sku.outputSpec || sku.shape || sku.label, "")
+    || "bundle component";
+}
+
+function bundleComponentLine(sku, index) {
+  const values = valueMap(sku);
+  const name = cleanBundleComponentName(sku);
+  const option = promptValue(sku.outputSpec || values.singleSpec || sku.sizeCode || sku.shape, "");
+  const pack = promptValue(values.pack || sku.pack, "");
+  const material = promptValue(values.material, "");
+  const dimensions = promptValue(values.dimensionList || sku.dimensionList, "");
+  return compactPromptItems([
+    `Component ${index + 1}: ${name}`,
+    option && `option ${option}`,
+    pack && `count ${pack}`,
+    material && `material ${material}`,
+    dimensions && `dimensions ${dimensions}`,
+  ], "", 5);
+}
+
+function sharedOrJoinedBundleValue(values, key, limit = 4) {
+  const items = uniquePromptItems(values.map((item) => promptValue(item[key], "")).filter(Boolean)).slice(0, limit);
+  if (!items.length) return "";
+  return items.length === 1 ? items[0] : items.join(" + ");
+}
+
+function bundleProductName(products) {
+  const names = uniquePromptItems(products.map(cleanBundleComponentName)).slice(0, 3);
+  return names.length ? `Bundle kit: ${names.join(" + ")}` : "Bundle kit";
+}
+
+function buildBundleProduct(products) {
+  const components = products.filter((product) => !product.isBundle);
+  const componentValues = components.map((product) => valueMap(product));
+  const componentLines = components.map(bundleComponentLine).filter(Boolean);
+  const productName = bundleProductName(components);
+  const componentList = componentLines.join(" | ");
+  const pack = `${components.length}-piece set`;
+  const material = sharedOrJoinedBundleValue(componentValues, "material");
+  const color = sharedOrJoinedBundleValue(componentValues, "color");
+  const structure = sharedOrJoinedBundleValue(componentValues, "structure");
+  const surfaceFinish = sharedOrJoinedBundleValue(componentValues, "surfaceFinish");
+  const fit = sharedOrJoinedBundleValue(componentValues, "fit");
+  const scene = sharedOrJoinedBundleValue(componentValues, "scene") || "coordinated real use scene for the complete set";
+  const featureCandidates = uniquePromptItems([
+    "complete coordinated set",
+    ...componentValues.map((item) => promptValue(item.feature1, "")),
+    ...componentValues.map((item) => promptValue(item.feature2, "")),
+  ]).slice(0, 3);
+  const dimensionList = componentLines.length ? `[BUNDLE_COMPONENTS: ${componentList}]` : "";
+  const variantList = `[BUNDLE_COMPONENTS: ${componentList || uniquePromptItems(components.map(cleanBundleComponentName)).join(" | ")}]`;
+  return {
+    id: "EXTRACTED-BUNDLE-SET",
+    isBundle: true,
+    label: `组合套装 | ${uniquePromptItems(components.map(cleanBundleComponentName)).join(" + ")}`,
+    displayLabel: productName,
+    productName,
+    baseProductName: productName,
+    shape: productName,
+    pack,
+    sizeCode: "Bundle set",
+    groupKey: "",
+    group: {
+      promptName: productName,
+      promptSpecs: [pack, ...componentLines].filter(Boolean),
+      dimensions: [],
+    },
+    dims: {
+      topWidth: "",
+      sideLength: "",
+      bottomWidth: "",
+      weight: "",
+      cupRange: "",
+      source: "Combined from extracted 1688 product pages",
+    },
+    material,
+    color,
+    structure,
+    surfaceFinish,
+    fit,
+    scene,
+    feature1: featureCandidates[0] || "complete coordinated set",
+    feature2: featureCandidates[1] || "verified component benefits",
+    feature3: featureCandidates[2] || "",
+    detailParameter: `Included components: ${componentList}`,
+    bundleComponents: componentList,
+    singleSpec: `[CURRENT_PRODUCT_OPTION: ${productName}, ${pack}]`,
+    specList: `[SPEC_LIST: ${[productName, pack, componentList, material, structure, fit].filter(Boolean).join(" / ")}]`,
+    variantList,
+    dimensionList,
+  };
+}
+
 function valueMap(sku) {
   const isExtractedSku = String(sku.id || "").startsWith("EXTRACTED-");
   const group = productGroups[sku.groupKey] || sku.group || (isExtractedSku ? {} : productGroups.v02);
@@ -345,6 +448,7 @@ function valueMap(sku) {
     feature2: cleanFieldDisplayValue(sku.feature2 || feature2Fallback),
     surfaceFinish: cleanFieldDisplayValue(sku.surfaceFinish || ""),
     detailParameter: cleanFieldDisplayValue(sku.detailParameter || ""),
+    bundleComponents: cleanFieldDisplayValue(sku.bundleComponents || ""),
     packagingCount: ensureParameterToken("PRODUCT_COUNT_OR_SET", sku.pack || ""),
     singleSpec: sku.singleSpec || `[CURRENT_PRODUCT_OPTION: ${group.promptName || "[PRODUCT_SPEC]"}, ${sku.pack || "[PRODUCT_COUNT_OR_SET]"}]`,
     specList: sku.specList || `[SPEC_LIST: ${(group.promptSpecs || ["[SPECIFICATION_LIST]"]).join(" / ")}]`,
@@ -573,6 +677,7 @@ function promptVariableValues(facts) {
     facts.feature1,
     facts.feature2,
     facts.feature3,
+    facts.bundleComponents,
     facts.variants,
     facts.specs,
     facts.dimensions,
@@ -800,7 +905,8 @@ function currentPromptData(sku) {
   data.productName = productName;
   data.packagingCount = ensureParameterToken("PRODUCT_COUNT_OR_SET", pack);
   data.singleSpec = `[CURRENT_PRODUCT_OPTION: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
-  data.dimensionList = buildDimensionListFromFields(data);
+  data.bundleComponents = base.bundleComponents || sku.bundleComponents || "";
+  data.dimensionList = buildDimensionListFromFields(data) || base.dimensionList || sku.dimensionList || "";
   data.specList = `[SPEC_LIST: ${[productSpec, optionSpec !== productSpec ? optionSpec : "", cupRange, pack, data.material, data.fit, data.dimensionList].filter(Boolean).join(" / ")}]`;
   return data;
 }
@@ -2273,6 +2379,73 @@ async function readTextFiles(files, onProgress) {
     if (text) texts.push(`Source HTML file: ${file.name}\n${text}`);
   }
   return texts.join("\n");
+}
+
+async function readNamedTextFiles(files, onProgress) {
+  const fileList = Array.from(files || []);
+  const entries = [];
+  for (let index = 0; index < fileList.length; index += 1) {
+    const file = fileList[index];
+    onProgress?.(`正在读取 HTML 文件... ${index + 1}/${fileList.length}：${file.name}`);
+    const text = await readFileAsText(file);
+    if (text) entries.push({ name: file.name, text });
+  }
+  return entries;
+}
+
+function namedHtmlEntryText(entry) {
+  return entry?.text ? `Source HTML file: ${entry.name}\n${entry.text}` : "";
+}
+
+function combinedNamedHtmlEntries(entries) {
+  return entries.map(namedHtmlEntryText).filter(Boolean).join("\n");
+}
+
+function mergeSupplierSourceResults(results) {
+  const values = results.filter(Boolean);
+  return {
+    text: values.map((item) => item.text).filter(Boolean).join("\n"),
+    imageCount: values.reduce((sum, item) => sum + (item.imageCount || 0), 0),
+    candidateCount: values.reduce((sum, item) => sum + (item.candidateCount || 0), 0),
+    scannedCount: values.reduce((sum, item) => sum + (item.scannedCount || 0), 0),
+    failedCount: values.reduce((sum, item) => sum + (item.failedCount || 0), 0),
+    acceptedCount: values.reduce((sum, item) => sum + (item.acceptedCount || 0), 0),
+    sellingPointCount: values.reduce((sum, item) => sum + (item.sellingPointCount || 0), 0),
+    ocrAvailable: values.some((item) => item.ocrAvailable),
+  };
+}
+
+async function extractSupplierSourcesByFile(entries, onProgress) {
+  const results = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    onProgress?.(`正在解析第 ${index + 1}/${entries.length} 个 1688 文件：${entry.name}`);
+    const source = await extractSupplierSourceText(namedHtmlEntryText(entry), onProgress);
+    results.push({
+      name: entry.name,
+      ...source,
+      text: [`Source HTML file: ${entry.name}`, source.text].filter(Boolean).join("\n"),
+    });
+  }
+  return {
+    fileSources: results,
+    merged: mergeSupplierSourceResults(results),
+  };
+}
+
+function productsFromSupplierFileSources(fileSources) {
+  return fileSources.map((source, index) => {
+    const products = inferProductsFromSources("", source.text, "");
+    const product = products[0];
+    if (!product) return null;
+    return {
+      ...product,
+      id: `EXTRACTED-SUPPLIER-FILE-${index + 1}`,
+      label: `${source.name} | ${product.label || product.productName || `Product ${index + 1}`}`,
+      displayLabel: product.displayLabel || product.productName || product.label || `Product ${index + 1}`,
+      sourceFile: source.name,
+    };
+  }).filter(Boolean);
 }
 
 function pdfTextLines(items) {
@@ -5309,15 +5482,25 @@ async function extractSources() {
       purchaseImageOcr.text && `Purchase order image OCR text: ${purchaseImageOcr.text}`,
     ].filter(Boolean).join("\n");
     const amazonTemplate = await extractAmazonTemplateProducts(amazonTemplateFile, amazonSkuFilter);
-    const supplierHtml = await readTextFiles(supplierFiles, (message) => {
+    const supplierEntries = await readNamedTextFiles(supplierFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
+    const supplierHtml = combinedNamedHtmlEntries(supplierEntries);
     const competitorHtml = await readTextFiles(competitorFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
-    const supplierSource = await extractSupplierSourceText(supplierHtml, (message) => {
+    const supplierFileExtraction = supplierEntries.length > 1
+      ? await extractSupplierSourcesByFile(supplierEntries, (message) => {
+        byId("extractStatus").textContent = message;
+      })
+      : null;
+    const supplierSource = supplierFileExtraction?.merged || await extractSupplierSourceText(supplierHtml, (message) => {
       byId("extractStatus").textContent = message;
     });
+    const supplierFileProducts = supplierFileExtraction?.fileSources?.length > 1
+      ? productsFromSupplierFileSources(supplierFileExtraction.fileSources)
+      : [];
+    const useSupplierBundleProducts = supplierFileProducts.length > 1;
     const competitorSourceText = competitorHtml
       ? [
         `REFERENCE_SOURCE_FILES: ${competitorFiles.map((file) => file.name).join(", ")}`,
@@ -5326,19 +5509,23 @@ async function extractSources() {
       : "";
     sourcePayload = {
       purchase: purchaseText,
-      amazonTemplate: amazonTemplate.sourceText,
+      amazonTemplate: useSupplierBundleProducts ? "" : amazonTemplate.sourceText,
       supplier: supplierSource.text,
-      competitor: competitorSourceText,
+      competitor: useSupplierBundleProducts ? "" : competitorSourceText,
     };
     fieldOverrides = {};
     fieldOverridesBySku = {};
-    extractedProducts = amazonTemplate.products.length
-      ? amazonTemplate.products
-      : inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
+    if (useSupplierBundleProducts) {
+      extractedProducts = supplierFileProducts;
+    } else if (amazonTemplate.products.length) {
+      extractedProducts = amazonTemplate.products;
+    } else {
+      extractedProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
+    }
     if (!extractedProducts.length) {
       throw new Error("没有从当前资料中提取到产品 / 款式，请确认采购单、Amazon 模板或 1688 HTML 是否已选择。");
     }
-    renderProductSelect(extractedProducts[0]?.id);
+    renderProductSelect(useSupplierBundleProducts || bundleModeEnabled() ? "EXTRACTED-BUNDLE-SET" : extractedProducts[0]?.id);
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
@@ -5354,10 +5541,13 @@ async function extractSources() {
       ? "OCR 引擎未加载成功，已跳过采购单图片识别。"
       : "";
     const amazonTemplateStatus = amazonTemplateFile
-      ? `Amazon 模板：${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}。`
+      ? `Amazon 模板：${useSupplierBundleProducts ? "组合套装模式已忽略旧模板款式" : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
       : "";
     const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；参考链接 HTML：${competitorFiles.length} 个。`;
-    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${amazonTemplateStatus}PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
+    const bundleStatus = useSupplierBundleProducts
+      ? `组合套装：已按 ${supplierFileProducts.length} 个 1688 文件生成组件，并自动选中组合套装产品；旧参考链接内容未参与本次套装提示词。`
+      : "";
+    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${bundleStatus}${amazonTemplateStatus}PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
   } finally {
     extractButton.disabled = false;
     extractButton.removeAttribute("aria-busy");
@@ -5368,6 +5558,7 @@ function negativePrompt(facts = null) {
   const profile = facts ? categoryProfile(facts) : {};
   return compactPromptItems([
     "No wrong product, invented specs, unsupported claims, extra logos, Chinese/source text, dense copy, long labels, bullets, text stacking, blur",
+    facts?.bundleComponents ? "No missing bundle component, fused hybrid product, swapped component parameters, or treating bundle components as optional variants" : "",
     "No Asian reference ethnicity; people only European/American if shown",
     profile.negative,
     facts ? footwearStructureNegativeText(facts) : "",
@@ -5444,6 +5635,7 @@ function promptFacts(sku, data) {
   const structure = promptValue(data.structure, sku.structure || "");
   const surfaceFinish = promptValue(data.surfaceFinish, "");
   const detailParameter = promptValue(data.detailParameter, "");
+  const bundleComponents = promptValue(data.bundleComponents || sku.bundleComponents, "");
   const titleSpec = stripRepeatedValue(selectedSpec, pack) || productName || selectedSpec;
   const skuOptionSource = sku.sizeCode && !promptItemsOverlap(productName, sku.sizeCode)
     ? sku.sizeCode
@@ -5479,6 +5671,7 @@ function promptFacts(sku, data) {
     feature1,
     feature2,
     feature3,
+    bundleComponents,
     variants,
     specs,
     dimensions,
@@ -5855,6 +6048,7 @@ function productDetailText(facts, extraItems = [], limit = 8) {
   return compactSpecificPromptItems([
     `Product: ${facts.productName}`,
     option && `Current option: ${option}`,
+    facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
     color && !extraIncludesColor && `Color: ${color}`,
     referenceColorLockText(),
     ...extraItems,
@@ -5874,6 +6068,8 @@ function referenceColorLockText() {
 function productIdentityLockText(facts) {
   return compactPromptItems([
     "Identity lock: exact source product; no substitute, redesign, or invented detail.",
+    facts.bundleComponents && "Bundle identity lock: show every included component as separate physical items in one set; no fused hybrid product, no missing component, no component substitution.",
+    facts.bundleComponents && `Included bundle components: ${facts.bundleComponents}`,
     categoryProfile(facts).identity,
     facts.productName && `Exact product type/name: ${facts.productName}`,
     facts.selectedSpec && `Exact option/spec: ${shortOptionText(facts) || facts.selectedSpec}`,
@@ -5890,6 +6086,8 @@ function productIdentityBasicRule(facts) {
   const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
   return compactPromptItems([
     "Product identity lock comes first: exact selected current product only; no category substitution, no redesign, no invented parts.",
+    facts.bundleComponents && "Bundle rule: this is one bundled listing; show all included components together as separate items, not alternative options.",
+    facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
     facts.productName && `Product: ${facts.productName}`,
     option && `Option: ${option}`,
     facts.color && `Color: ${facts.color}`,
@@ -6664,8 +6862,17 @@ function specModulePrompt(typeId, facts) {
     },
     "5": {
       basic: basicImageRequirements("spec", "5"),
-      details: productDetailText(facts, [`Verified options: ${compactVariantText(facts)}`], 7),
-      style: overallStyleText(facts, "5", "Product option comparison grid; show only verified options; small added option tags only; preserve authentic product markings.", { includeHumanRule: false }),
+      details: productDetailText(facts, [
+        facts.bundleComponents ? `Included bundle components: ${facts.bundleComponents}` : `Verified options: ${compactVariantText(facts)}`,
+      ], 7),
+      style: overallStyleText(
+        facts,
+        "5",
+        facts.bundleComponents
+          ? bundleComponentsShowcaseRule(facts)
+          : "Product option comparison grid; show only verified options; small added option tags only; preserve authentic product markings.",
+        { includeHumanRule: false }
+      ),
     },
     "6": {
       basic: basicImageRequirements("spec", "6"),
@@ -6955,6 +7162,11 @@ function optionShowcaseRule() {
   return "Premium option showcase: add an English title such as \"Choose Your Color\" or \"Choose Your Style\"; use a refined comparison layout with one realistic product render per option, tasteful swatches, soft studio shadows, subtle background depth, consistent scale, elegant typography, and a clear current-option highlight.";
 }
 
+function bundleComponentsShowcaseRule(facts) {
+  if (!facts.bundleComponents) return "";
+  return "Bundle included-components showcase: add an English title such as \"What You Get\" or \"Complete Set\"; show every included component as a separate source-accurate physical item in one coordinated layout, with short component labels only. Do not present components as alternative options, do not merge them into one redesigned item, and do not add unverified accessories.";
+}
+
 function sceneSellingPointItems(facts, points, fallback) {
   const sellingPoints = limitedSellingPoints(points, 2);
   const sellingPointText = sellingPoints.join(" + ") || fallback;
@@ -7134,10 +7346,17 @@ function featureModulePrompt(typeId, facts) {
         `Product: ${facts.productName}`,
         referenceColorLockText(),
         `Current selected option: ${facts.productName || optionText || facts.selectedSpec}`,
-        `Verified options: ${compactVariantText(facts)}`,
+        facts.bundleComponents ? `Included bundle components: ${facts.bundleComponents}` : `Verified options: ${compactVariantText(facts)}`,
         facts.pack && `Count / set label: ${facts.pack}`,
       ], "", 8),
-      style: overallStyleText(facts, "5", `${optionShowcaseRule()} Show only verified options and short English option tags; do not create unavailable colors, sizes, counts, bundles, or raw purchase-spec fragments.`, { includeHumanRule: false }),
+      style: overallStyleText(
+        facts,
+        "5",
+        facts.bundleComponents
+          ? bundleComponentsShowcaseRule(facts)
+          : `${optionShowcaseRule()} Show only verified options and short English option tags; do not create unavailable colors, sizes, counts, bundles, or raw purchase-spec fragments.`,
+        { includeHumanRule: false }
+      ),
     },
     "6": {
       basic: basicImageRequirements("feature", "6"),
@@ -7507,6 +7726,11 @@ function init() {
     renderAll();
   });
   byId("templateSelect").addEventListener("change", renderAll);
+  byId("bundleMode").addEventListener("change", () => {
+    renderProductSelect(bundleModeEnabled() ? "EXTRACTED-BUNDLE-SET" : extractedProducts[0]?.id);
+    renderFields(true);
+    renderAll();
+  });
   byId("extractSources").addEventListener("click", () => {
     extractSources().catch((error) => {
       extractedProducts = [];
