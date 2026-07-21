@@ -271,15 +271,8 @@ function selectedSku() {
   return allProducts.find((sku) => sku.id === byId("skuSelect").value) || allProducts[0];
 }
 
-function bundleModeEnabled() {
-  return Boolean(byId("bundleMode")?.checked);
-}
-
 function currentProducts() {
   if (extractedProducts.length) {
-    if (extractedProducts.length > 1) {
-      return [buildBundleProduct(extractedProducts), ...extractedProducts];
-    }
     return extractedProducts;
   }
   return [emptyExtractedProduct];
@@ -331,113 +324,6 @@ function dimensionFieldsFromDimensionList(dimensionList, context = "") {
     bottomWidth: dimensionValueByLabels(source, isUmbrella ? ["Open Height", "Bottom Width", "Height"] : ["Bottom Width", "Height", "Open Height"]),
     weight: dimensionValueByLabels(source, ["Weight", "Weight / Capacity"]),
   }
-}
-
-function cleanBundleComponentName(sku) {
-  const candidates = [
-    sku.rawSpec,
-    sku.supplierOption?.rawSpec,
-    sku.productName,
-    sku.outputProductName,
-    sku.baseProductName,
-    sku.outputSpec,
-    sku.shape,
-    sku.label,
-  ];
-  for (const candidate of candidates) {
-    const clean = cleanProductDisplayName(candidate, "");
-    if (clean) return clean;
-  }
-  return "bundle component";
-}
-
-function bundleComponentLine(sku, index) {
-  const values = valueMap(sku);
-  const name = cleanBundleComponentName(sku);
-  const option = displayVariantText(sku.outputSpec || sku.spec || sku.sizeCode || sku.shape || "");
-  const pack = promptValue(values.pack || sku.pack, "");
-  const material = promptValue(values.material, "");
-  const dimensions = promptValue(values.dimensionList || sku.dimensionList, "");
-  return compactPromptItems([
-    `Component ${index + 1}: ${name}`,
-    option && !promptItemsOverlap(option, name) && `option ${option}`,
-    pack && `count ${pack}`,
-    material && `material ${material}`,
-    dimensions && `dimensions ${dimensions}`,
-  ], "", 5);
-}
-
-function sharedOrJoinedBundleValue(values, key, limit = 4) {
-  const items = uniquePromptItems(values.map((item) => promptValue(item[key], "")).filter(Boolean)).slice(0, limit);
-  if (!items.length) return "";
-  return items.length === 1 ? items[0] : items.join(" + ");
-}
-
-function bundleProductName(products) {
-  const names = uniquePromptItems(products.map(cleanBundleComponentName)).slice(0, 3);
-  return names.length ? `Bundle kit: ${names.join(" + ")}` : "Bundle kit";
-}
-
-function buildBundleProduct(products) {
-  const components = products.filter((product) => !product.isBundle);
-  const componentValues = components.map((product) => valueMap(product));
-  const componentLines = components.map(bundleComponentLine).filter(Boolean);
-  const productName = bundleProductName(components);
-  const componentList = componentLines.join(" | ");
-  const pack = `${components.length}-piece set`;
-  const material = sharedOrJoinedBundleValue(componentValues, "material");
-  const color = sharedOrJoinedBundleValue(componentValues, "color");
-  const structure = sharedOrJoinedBundleValue(componentValues, "structure");
-  const surfaceFinish = sharedOrJoinedBundleValue(componentValues, "surfaceFinish");
-  const fit = sharedOrJoinedBundleValue(componentValues, "fit");
-  const scene = sharedOrJoinedBundleValue(componentValues, "scene") || "coordinated real use scene for the complete set";
-  const featureCandidates = uniquePromptItems([
-    "complete coordinated set",
-    ...componentValues.map((item) => promptValue(item.feature1, "")),
-    ...componentValues.map((item) => promptValue(item.feature2, "")),
-  ]).slice(0, 3);
-  const dimensionList = componentLines.length ? `[BUNDLE_COMPONENTS: ${componentList}]` : "";
-  const variantList = `[BUNDLE_COMPONENTS: ${componentList || uniquePromptItems(components.map(cleanBundleComponentName)).join(" | ")}]`;
-  return {
-    id: "EXTRACTED-BUNDLE-SET",
-    isBundle: true,
-    label: `组合套装 | ${uniquePromptItems(components.map(cleanBundleComponentName)).join(" + ")}`,
-    displayLabel: productName,
-    productName,
-    baseProductName: productName,
-    shape: productName,
-    pack,
-    sizeCode: "Bundle set",
-    groupKey: "",
-    group: {
-      promptName: productName,
-      promptSpecs: [pack, ...componentLines].filter(Boolean),
-      dimensions: [],
-    },
-    dims: {
-      topWidth: "",
-      sideLength: "",
-      bottomWidth: "",
-      weight: "",
-      cupRange: "",
-      source: "Combined from extracted 1688 product pages",
-    },
-    material,
-    color,
-    structure,
-    surfaceFinish,
-    fit,
-    scene,
-    feature1: featureCandidates[0] || "complete coordinated set",
-    feature2: featureCandidates[1] || "verified component benefits",
-    feature3: featureCandidates[2] || "",
-    detailParameter: `Included components: ${componentList}`,
-    bundleComponents: componentList,
-    singleSpec: `[CURRENT_PRODUCT_OPTION: ${productName}, ${pack}]`,
-    specList: `[SPEC_LIST: ${[productName, pack, componentList, material, structure, fit].filter(Boolean).join(" / ")}]`,
-    variantList,
-    dimensionList,
-  };
 }
 
 function valueMap(sku) {
@@ -1030,7 +916,7 @@ function isCommerceOrRecommendationText(text) {
 }
 
 function productFeatureTextScore(text) {
-  const matches = String(text || "").match(/防滑|硅胶|点胶|抓地|弹力|拉力|阻力|训练|拉伸|抗拉|防断|断裂|不断裂|不惧断裂|不变形|变形|耐用|全身|需求|高弹|柔软|透气|棉|聚酯|氨纶|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|防晒|遮阳|防雨|防风|伞骨|晴雨|材质|面料|工艺|厚薄|针数|袜|鞋|服装|衣服|裤|裙|箱包|背包|手提包|杯|滤纸|伞|cotton|spandex|polyester|silicone|tpe|resistance|exercise\s+band|workout\s+band|stretch|fracture|tear|durable|grip|anti.?slip|non.?slip|size|material|weight|texture|umbrella|compact|portable|uv|windproof|waterproof/gi);
+  const matches = String(text || "").match(/防滑|硅胶|点胶|抓地|弹力|拉力|阻力|训练|拉伸|抗拉|防断|断裂|不断裂|不惧断裂|不变形|变形|耐用|全身|需求|高弹|柔软|透气|棉|聚酯|氨纶|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|防晒|遮阳|防雨|防风|伞骨|晴雨|材质|面料|工艺|厚薄|针数|袜|鞋|服装|衣服|裤|裙|箱包|背包|手提包|杯|滤纸|包装纸|包花纸|花束|鲜花包装|花艺|礼品包装|伞|cotton|spandex|polyester|silicone|tpe|resistance|exercise\s+band|workout\s+band|stretch|fracture|tear|durable|grip|anti.?slip|non.?slip|size|material|weight|texture|umbrella|compact|portable|uv|windproof|waterproof|wrapping\s+paper|flower\s+wrapping|bouquet|floral\s+wrap|gift\s+wrap/gi);
   return matches ? matches.length : 0;
 }
 
@@ -4463,7 +4349,7 @@ function isLikelyStructuredPurchaseRow(row) {
   if (!withoutSettlement) return false;
   if (/[A-Z]{1,4}\d{2,5}/i.test(withoutSettlement)) return true;
   if (extractPurchaseRowColor(row)) return true;
-  if (/咖啡|滤纸|粉碗|接粉环|口水巾|围兜|项圈|木天蓼|猫玩具|瑜伽|普拉提|五指|五趾|分趾|袜|拉力|弹力|伞|线香|球/.test(withoutSettlement)) return true;
+  if (/咖啡|滤纸|粉碗|接粉环|包装纸|包花纸|花束|鲜花包装|花艺|礼品包装|口水巾|围兜|项圈|木天蓼|猫玩具|瑜伽|普拉提|五指|五趾|分趾|袜|拉力|弹力|伞|线香|球/.test(withoutSettlement)) return true;
   return /[\u4e00-\u9fff]{2,}/.test(row.name || "") && !/^[A-Za-z0-9+/=_-]{2,40}$/i.test(withoutSettlement);
 }
 
@@ -5597,7 +5483,7 @@ async function extractSources() {
     const supplierFileProducts = supplierFileExtraction?.fileSources?.length > 1
       ? productsFromSupplierFileSources(supplierFileExtraction.fileSources)
       : [];
-    const useSupplierBundleProducts = supplierFileProducts.length > 1;
+    const useSupplierFileProducts = supplierFileProducts.length > 1;
     const competitorSourceText = competitorHtml
       ? [
         `REFERENCE_SOURCE_FILES: ${competitorFiles.map((file) => file.name).join(", ")}`,
@@ -5606,13 +5492,13 @@ async function extractSources() {
       : "";
     sourcePayload = {
       purchase: purchaseText,
-      amazonTemplate: useSupplierBundleProducts ? "" : amazonTemplate.sourceText,
+      amazonTemplate: useSupplierFileProducts ? "" : amazonTemplate.sourceText,
       supplier: supplierSource.text,
-      competitor: useSupplierBundleProducts ? "" : competitorSourceText,
+      competitor: useSupplierFileProducts ? "" : competitorSourceText,
     };
     fieldOverrides = {};
     fieldOverridesBySku = {};
-    if (useSupplierBundleProducts) {
+    if (useSupplierFileProducts) {
       extractedProducts = supplierFileProducts;
     } else if (amazonTemplate.products.length) {
       extractedProducts = amazonTemplate.products;
@@ -5622,7 +5508,7 @@ async function extractSources() {
     if (!extractedProducts.length) {
       throw new Error("没有从当前资料中提取到产品 / 款式，请确认采购单、Amazon 模板或 1688 HTML 是否已选择。");
     }
-    renderProductSelect(useSupplierBundleProducts || bundleModeEnabled() ? "EXTRACTED-BUNDLE-SET" : extractedProducts[0]?.id);
+    renderProductSelect(extractedProducts[0]?.id);
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
@@ -5638,13 +5524,13 @@ async function extractSources() {
       ? "OCR 引擎未加载成功，已跳过采购单图片识别。"
       : "";
     const amazonTemplateStatus = amazonTemplateFile
-      ? `Amazon 模板：${useSupplierBundleProducts ? "组合套装模式已忽略旧模板款式" : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
+      ? `Amazon 模板：${useSupplierFileProducts ? "多 1688 文件模式已改按文件输出产品，未使用模板款式" : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
       : "";
     const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；参考链接 HTML：${competitorFiles.length} 个。`;
-    const bundleStatus = useSupplierBundleProducts
-      ? `组合套装：已按 ${supplierFileProducts.length} 个 1688 文件生成组件，并自动选中组合套装产品；旧参考链接内容未参与本次套装提示词。`
+    const supplierFileStatus = useSupplierFileProducts
+      ? `多 1688 文件：已按 ${supplierFileProducts.length} 个文件生成 ${supplierFileProducts.length} 个独立产品选项；旧参考链接内容未参与本次提示词。`
       : "";
-    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${bundleStatus}${amazonTemplateStatus}PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
+    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
   } finally {
     extractButton.disabled = false;
     extractButton.removeAttribute("aria-busy");
@@ -5865,15 +5751,30 @@ function promptContextText(facts) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
+function promptIdentityText(facts) {
+  return [
+    facts.productName,
+    facts.titleSpec,
+    facts.selectedSpec,
+    facts.cupType,
+    facts.material,
+    facts.structure,
+    facts.variants,
+    facts.detailParameter,
+    facts.bundleComponents,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
 function categoryProfile(facts) {
-  const combined = promptContextText(facts);
-  const isResistanceBand = /resistance\s+band|exercise\s+band|workout\s+band|拉力带|拉力片|弹力带|阻力带/.test(combined);
-  const isSock = !isResistanceBand && /sock|socks|toe socks|grip socks|瑜伽袜|普拉提袜|五指袜|五趾袜|分趾袜|船袜|短袜|隐形袜|浅口袜|袜子|袜/.test(combined);
-  const isFootwear = !isSock && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|footwear|shoe|shoes|clog|slides?|拖鞋|凉拖|人字拖|沙滩鞋|鞋/.test(combined);
-  const isUmbrella = /umbrella|parasol|rain\s*umbrella|sun\s*umbrella|folding\s*umbrella|伞|雨伞|遮阳伞|晴雨伞/.test(combined);
-  const isCoffeeFilter = /coffee\s+filters?|filter\s+paper|pour[-\s]?over\s+filter|drip\s+coffee\s+filter|滤纸|咖啡滤纸|木浆纸|原木浆|dripper|pour-over|pour over/.test(combined);
-  const isCoffeeMetalAccessory = /portafilter|filter\s+basket|espresso\s+basket|dosing\s+funnel|espresso|咖啡粉碗|接粉环|粉碗/.test(combined);
-  const isKitchenware = /kitchenware|kitchen\s+tool|cup|mug|bottle|jar|container|厨房用品|杯子|马克杯|水杯|瓶|罐|收纳盒|保鲜盒/.test(combined);
+  const identity = promptIdentityText(facts);
+  const isResistanceBand = /resistance\s+band|exercise\s+band|workout\s+band|拉力带|拉力片|弹力带|阻力带/.test(identity);
+  const isFlowerWrappingPaper = /flower\s+wrapping\s+paper|floral\s+wrapping\s+paper|bouquet\s+wrapping|bouquet\s+wrap|floral\s+wrap|gift\s+wrap(?:ping)?\s+paper|wrapping\s+paper|tissue\s+paper|cellophane|包装纸|包花纸|花束包装|鲜花包装|花艺包装|礼品包装纸|花纸|花束纸|雪梨纸|欧雅纸|雾面纸|玻璃纸/.test(identity);
+  const isSock = !isResistanceBand && /sock|socks|toe socks|grip socks|瑜伽袜|普拉提袜|五指袜|五趾袜|分趾袜|船袜|短袜|隐形袜|浅口袜|袜子|袜/.test(identity);
+  const isFootwear = !isSock && !isFlowerWrappingPaper && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|footwear|shoe|shoes|clog|slides?|拖鞋|凉拖|人字拖|沙滩鞋|鞋/.test(identity);
+  const isUmbrella = /umbrella|parasol|rain\s*umbrella|sun\s*umbrella|folding\s*umbrella|伞|雨伞|遮阳伞|晴雨伞/.test(identity);
+  const isCoffeeFilter = /coffee\s+filters?|filter\s+paper|pour[-\s]?over\s+filter|drip\s+coffee\s+filter|滤纸|咖啡滤纸|木浆纸|原木浆|dripper|pour-over|pour over/.test(identity);
+  const isCoffeeMetalAccessory = /portafilter|filter\s+basket|espresso\s+basket|dosing\s+funnel|espresso|咖啡粉碗|接粉环|粉碗/.test(identity);
+  const isKitchenware = /kitchenware|kitchen\s+tool|cup|mug|bottle|jar|container|厨房用品|杯子|马克杯|水杯|瓶|罐|收纳盒|保鲜盒/.test(identity);
   const profiles = [
     {
       id: "resistance-band",
@@ -5898,6 +5799,34 @@ function categoryProfile(facts) {
         "full-body": "full-body exercise pose icons",
         durable: "TPE edge/material close-up",
         elastic: "elastic stretch close-up",
+      },
+    },
+    {
+      id: "flower-wrapping-paper",
+      match: isFlowerWrappingPaper,
+      apparel: false,
+      background: "Category background: elegant florist studio, bouquet wrapping table, gift packaging station, flower market counter, or wedding/event floral prep scene with soft natural light.",
+      scene: "Scene category: florist studio, bouquet wrapping, gift packaging, flower market, and event floral arrangement scenes; the wrapping paper remains the product hero.",
+      identity: "Flower wrapping paper identity lock: preserve sheet/roll/folded paper form, color, translucency or texture, thickness, printed pattern if verified, and packaging count; do not turn it into flowers, bags, shoes, fabric, ribbons, or finished bouquets only.",
+      negative: "No footwear, slippers, flip-flops, shoes, socks, beach/spa/shower footwear scene, unrelated bags, fabric cloth, wallpaper, gift boxes replacing the product, or flowers hiding the wrapping paper.",
+      multiScene: (sceneList) => [
+        `Flower wrapping paper scene choices for ${sceneList}: florist wrapping bouquet, gift packaging table, flower market display, wedding/event floral prep, craft storage, or paper color/texture selection.`,
+        "Show the wrapping paper clearly as sheets, rolls, folded stacks, or being wrapped around flowers; flowers and ribbons are supporting props only.",
+        "Paper benefits should be implied through handling, wrapping, layering, color matching, texture visibility, and clean finished bouquet presentation.",
+      ],
+      proof: {
+        durable: "show paper being folded or wrapped cleanly around a bouquet without tearing",
+        "multi-use": "show bouquet wrapping, gift packaging, craft decor, and floral arrangement use contexts",
+        material: "show paper texture, translucency, thickness, or matte/gloss finish in a florist setup",
+        soft: "show soft flexible sheet handling around delicate flowers",
+        compact: "show neat roll, folded stack, or easy storage on a packaging shelf",
+      },
+      inset: {
+        durable: "folded edge and wrapped bouquet close-up",
+        "multi-use": "bouquet, gift, and craft use mini scenes",
+        material: "paper texture and translucency close-up",
+        soft: "flexible sheet handling close-up",
+        compact: "roll or folded stack storage close-up",
       },
     },
     {
@@ -6011,7 +5940,7 @@ function categoryProfile(facts) {
 
 function isApparelCategory(facts) {
   return categoryProfile(facts).apparel
-    || /apparel|clothing|garment|wear|activewear|sportswear|fashion|legging|shirt|dress|pants|shorts|bra|glove|hat|cap|服装|衣|裤|裙|帽/.test(promptContextText(facts));
+    || /apparel|clothing|garment|wear|activewear|sportswear|fashion|legging|shirt|dress|pants|shorts|bra|glove|hat|cap|服装|衣|裤|裙|帽/.test(promptIdentityText(facts));
 }
 
 function isFootwearCategory(facts) {
@@ -6019,7 +5948,7 @@ function isFootwearCategory(facts) {
 }
 
 function isThongFlipFlopFacts(facts) {
-  return isThongFlipFlopText(promptContextText(facts));
+  return isThongFlipFlopText(promptIdentityText(facts));
 }
 
 function footwearSceneCategoryText() {
@@ -7966,11 +7895,6 @@ function init() {
     renderAll();
   });
   byId("templateSelect").addEventListener("change", renderAll);
-  byId("bundleMode").addEventListener("change", () => {
-    renderProductSelect(bundleModeEnabled() ? "EXTRACTED-BUNDLE-SET" : extractedProducts[0]?.id);
-    renderFields(true);
-    renderAll();
-  });
   byId("extractSources").addEventListener("click", () => {
     extractSources().catch((error) => {
       extractedProducts = [];
