@@ -1,7 +1,7 @@
 const sourceNotes = {
-  purchase: "采购单主口径：确认已采购的产品款式；不把下单数量当作产品参数。",
-  amazonTemplate: "Amazon 模板口径：Child SKU 定采购款式数量；变体字段定款式属性。",
-  alibaba: "1688 主资料口径：只补产品标题、材质、结构、适配和卖点；不新增采购单外的款式。",
+  purchase: "采购单口径：确认已采购的产品款式；不把下单数量当作产品参数。",
+  amazonTemplate: "Amazon listing 主口径：优先提取标题、五点、描述、类目、Child SKU 与变体字段。",
+  alibaba: "1688 补充口径：仅补 Amazon listing 未填写的材质、结构、适配、场景、尺寸和卖点。",
   amazon: "参考链接口径：提取图组结构、构图任务与卖点分配，不补写未确认参数。",
 };
 
@@ -329,6 +329,63 @@ function dimensionFieldsFromDimensionList(dimensionList, context = "") {
   }
 }
 
+function isFootwearSceneLeakText(value) {
+  const source = String(value || "").toLowerCase();
+  if (!source) return false;
+  if (/slipper|flip\s*-?\s*flops?|sandal|footwear|shoe|shoes|拖鞋|凉拖|人字拖|沙滩鞋/.test(source)) return true;
+  return /beach,\s*hotel,\s*spa,\s*shower,\s*travel,\s*bathroom/.test(source);
+}
+
+function categorySceneFieldText(profile) {
+  return cleanFieldDisplayValue(String(profile?.scene || "")
+    .replace(/^Scene category:\s*/i, "")
+    .replace(/\s*;\s*/g, ", "));
+}
+
+function identityFactsFromData(data = {}) {
+  return {
+    productName: data.productName || defaultProductName(data),
+    titleSpec: data.titleSpec,
+    selectedSpec: data.selectedSpec || data.singleSpec || data.sizeCode || data.shape,
+    cupType: data.cupType,
+    material: data.material,
+    structure: data.structure,
+    variants: data.variantList,
+    detailParameter: data.detailParameter,
+    bundleComponents: data.bundleComponents,
+  };
+}
+
+function sanitizeUseContextFields(data = {}) {
+  const profile = categoryProfile(identityFactsFromData(data));
+  const isFootwear = profile.id === "footwear";
+  const fit = cleanFieldDisplayValue(data.fit || "");
+  const scene = cleanFieldDisplayValue(data.scene || "");
+  const fallbackScene = categorySceneFieldText(profile);
+  return {
+    fit: !isFootwear && isFootwearSceneLeakText(fit) ? "" : fit,
+    scene: !isFootwear && isFootwearSceneLeakText(scene) ? fallbackScene : scene,
+  };
+}
+
+function categoryIdFromSourceText(text) {
+  const profile = categoryProfile({
+    productName: text,
+    detailParameter: text,
+  });
+  return profile.id || "generic";
+}
+
+function categoryIdFromProduct(product) {
+  return categoryProfile(identityFactsFromData(product)).id || "generic";
+}
+
+function sourceCategoriesConflict(primaryCategoryId, secondaryCategoryId) {
+  if (!primaryCategoryId || !secondaryCategoryId) return false;
+  if (primaryCategoryId === "generic" || secondaryCategoryId === "generic") return false;
+  return primaryCategoryId !== secondaryCategoryId;
+}
+
 function valueMap(sku) {
   const isExtractedSku = String(sku.id || "").startsWith("EXTRACTED-");
   const group = productGroups[sku.groupKey] || sku.group || (isExtractedSku ? {} : productGroups.v02);
@@ -346,6 +403,7 @@ function valueMap(sku) {
     sku.structure,
     sku.detailParameter,
   ].filter(Boolean).join(" "));
+  const useContext = sanitizeUseContextFields(sku);
   return {
     productName: cleanFieldDisplayValue(defaultProductName(sku)),
     pack: cleanFieldDisplayValue(sku.pack || ""),
@@ -357,8 +415,8 @@ function valueMap(sku) {
     sideLength: sku.dims?.sideLength || dimensionFields.sideLength || "",
     bottomWidth: sku.dims?.bottomWidth || dimensionFields.bottomWidth || "",
     weight: sku.dims?.weight || dimensionFields.weight || "",
-    fit: cleanFieldDisplayValue(sku.fit || "[COMPATIBLE_USE]"),
-    scene: cleanFieldDisplayValue(sku.scene || "[USE_SCENE]"),
+    fit: useContext.fit,
+    scene: useContext.scene,
     feature1: cleanFieldDisplayValue(sku.feature1 || feature1Fallback),
     feature2: cleanFieldDisplayValue(sku.feature2 || feature2Fallback),
     surfaceFinish: cleanFieldDisplayValue(sku.surfaceFinish || ""),
@@ -406,9 +464,12 @@ function renderFields(reset = false) {
     const value = reset
       ? (values[key] || fallback)
       : (cleanFieldDisplayValue(currentValue) || values[key] || fallback);
-    const displayValue = multilineFieldKeys.has(key)
-      ? formatMultilineSellingPoints(cleanFieldDisplayValue(value))
+    const cleanValue = ["fit", "scene"].includes(key)
+      ? sanitizeUseContextFields({ ...values, [key]: cleanFieldDisplayValue(value) })[key]
       : cleanFieldDisplayValue(value);
+    const displayValue = multilineFieldKeys.has(key)
+      ? formatMultilineSellingPoints(cleanValue)
+      : cleanValue;
     const fieldControl = multilineFieldKeys.has(key)
       ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
       : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
@@ -715,6 +776,9 @@ function currentFields() {
     const value = fieldOverrides[key] ?? readFieldValue(key);
     data[key] = cleanFieldDisplayValue(value) || values[key] || "";
   });
+  const sanitizedUseContext = sanitizeUseContextFields(data);
+  data.fit = sanitizedUseContext.fit;
+  data.scene = sanitizedUseContext.scene;
   return data;
 }
 
@@ -2937,7 +3001,14 @@ function inferProductName(text) {
   return "";
 }
 
+function isFlowerWrappingPaperText(text) {
+  return /flower\s+wrapping\s+paper|floral\s+wrapping\s+paper|bouquet\s+wrapping|bouquet\s+wrap|floral\s+wrap|gift\s+wrap(?:ping)?\s+paper|wrapping\s+paper|tissue\s+paper|cellophane|包装纸|包花纸|花束包装|鲜花包装|花艺包装|礼品包装纸|花纸|花束纸|雪梨纸|欧雅纸|雾面纸|玻璃纸/i.test(String(text || ""));
+}
+
 function inferUseScene(text) {
+  if (isFlowerWrappingPaperText(text)) {
+    return "florist bouquet wrapping, gift packaging, flower market counter, wedding or event floral arrangement prep";
+  }
   if (isResistanceBandText(text)) {
     return "stretching, physical therapy, strength training, and home workout use";
   }
@@ -5067,6 +5138,123 @@ function amazonBulletPoints(row, columns) {
   return points;
 }
 
+function amazonRepeatedRowValues(row, columns, attributeBase, fallbackLabel, limit = 5) {
+  const values = [];
+  for (let index = 1; index <= limit; index += 1) {
+    const attrValue = amazonRowValue(row, columns, `${attributeBase}#${index}.value`);
+    if (attrValue && !values.includes(attrValue)) values.push(attrValue);
+  }
+  if (!values.length && fallbackLabel) {
+    const fallback = amazonRowValue(row, columns, fallbackLabel, attributeBase);
+    if (fallback) values.push(fallback);
+  }
+  return values;
+}
+
+function amazonListingUseSceneText({ title = "", description = "", bullets = [], keywords = [], occasions = [], compatibleUses = [], category = "" } = {}) {
+  const text = [title, description, ...bullets, ...keywords, ...occasions, ...compatibleUses, category].filter(Boolean).join(" ");
+  const scenes = [];
+  const addIf = (pattern, value) => {
+    if (pattern.test(text)) scenes.push(value);
+  };
+
+  if (isFlowerWrappingPaperText(text)) {
+    addIf(/bouquet\s+wrapping|wrap(?:ping)?\s+bouquets?|wrapping\s+bouquets?/i, "bouquet wrapping");
+    addIf(/florist\s+supplies?|florist\s+use|flower\s+shops?/i, "florist supplies / flower shop use");
+    addIf(/floral\s+gift\s+presentation|gift\s+bouquet\s+packaging|gift\s+packaging/i, "floral gift presentation / gift bouquet packaging");
+    addIf(/weddings?/i, "wedding floral packaging");
+    addIf(/birthdays?/i, "birthday gift bouquet packaging");
+    addIf(/graduations?/i, "graduation gift bouquet packaging");
+    addIf(/DIY\s+crafts?|crafts?/i, "DIY craft decoration");
+    addIf(/flower\s+arrangements?|floral\s+arrangements?|flowers?/i, "flower arrangement wrapping");
+    return uniquePromptItems(scenes).join(", ") || inferUseScene(text);
+  }
+
+  addIf(/beach/i, "beach");
+  addIf(/hotel/i, "hotel");
+  addIf(/spa/i, "spa");
+  addIf(/shower|bathroom/i, "shower / bathroom");
+  addIf(/poolside/i, "poolside");
+  addIf(/travel/i, "travel");
+  addIf(/gym\s+showers?/i, "gym shower");
+  return uniquePromptItems(scenes).join(", ") || inferUseScene(text);
+}
+
+function amazonListingCompatibleUseText({ title = "", description = "", bullets = [], keywords = [], occasions = [], compatibleUses = [], category = "" } = {}) {
+  const explicitUses = uniquePromptItems(compatibleUses).join(", ");
+  if (explicitUses) return explicitUses;
+  const text = [title, description, ...bullets, ...keywords, ...occasions, category].filter(Boolean).join(" ");
+  const uses = [];
+  const addIf = (pattern, value) => {
+    if (pattern.test(text)) uses.push(value);
+  };
+  if (isFlowerWrappingPaperText(text)) {
+    addIf(/bouquets?|flowers?|floral\s+arrangements?/i, "bouquets, flowers, and floral arrangements");
+    addIf(/florist\s+supplies?|flower\s+shops?/i, "florist supplies and flower shops");
+    addIf(/gift\s+packaging|gift\s+bouquet/i, "gift bouquet packaging");
+    addIf(/weddings?|birthdays?|graduations?|party|seasonal/i, "wedding, birthday, graduation, party, and seasonal floral packaging");
+    addIf(/DIY\s+crafts?|crafts?/i, "DIY crafts and decorative wrapping");
+    return uniquePromptItems(uses).join(", ");
+  }
+  addIf(/coffee|dripper|brewer|pour[-\s]?over/i, "coffee brewing setup");
+  addIf(/yoga|pilates|barre|workout|fitness/i, "yoga, pilates, workout, and fitness use");
+  addIf(/umbrella|rain|sun|travel|commut/i, "rain, sun, commute, and travel use");
+  addIf(/kitchen|cook|food|storage/i, "kitchen and home use");
+  return uniquePromptItems(uses).join(", ");
+}
+
+function amazonListingStructureText({ text = "", material = "", style = "", itemShape = "", itemForm = "", paperFinish = "", designName = "", height = "", heelType = "" } = {}) {
+  const isThong = isThongFlipFlopText(text);
+  return compactPromptItems([
+    isThong ? "thong flip-flop construction with one Y-shaped strap, central toe post, visible front slit/open hole, exposed footbed texture, open heel with no back strap" : "",
+    !isThong && /backstrap/i.test(text) ? "backstrap closure" : "",
+    itemShape && `${itemShape} shape`,
+    itemForm && `${itemForm} form`,
+    style && `${style} style`,
+    designName && `${designName} design`,
+    paperFinish && `${paperFinish} finish`,
+    material && `${material} material`,
+    height && `${height} profile`,
+    heelType && `${heelType} heel`,
+  ], "", 6);
+}
+
+function amazonListingPackText(text, row, columns) {
+  const count = extractFirstMatch(text, [
+    /\b([1-9]\d*\s*(?:sheets?|pcs|pieces?|count|counts|rolls?|packs?|sets?))\b/i,
+    /\b(pack\s+of\s+[1-9]\d*)\b/i,
+  ]);
+  if (count) return count;
+  const itemPackageQuantity = amazonRowValue(row, columns, "Item Package Quantity", "item_package_quantity[marketplace_id=ATVPDKIKX0DER]#1.value");
+  const numberOfItems = amazonRowValue(row, columns, "Number of Items", "number_of_items[marketplace_id=ATVPDKIKX0DER]#1.value");
+  return [itemPackageQuantity, numberOfItems]
+    .map((value) => cleanFieldDisplayValue(value))
+    .find((value) => value && !/^1$/.test(value)) || "";
+}
+
+function amazonListingDimensionListText(row, columns) {
+  const size = amazonRowValue(row, columns, "Size", "size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
+  const paperSize = amazonRowValue(row, columns, "Paper Size", "paper_size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
+  const paperSizeUnit = amazonRowValue(row, columns, "Paper Size Unit", "paper_size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.unit");
+  const displayLength = amazonRowValue(row, columns, "Item Display Length", "item_display_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.value");
+  const displayLengthUnit = amazonRowValue(row, columns, "Item Display Length Unit", "item_display_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.unit");
+  const dimensions = uniquePromptItems([
+    size && `Size: ${size}`,
+    paperSize && `Paper Size: ${paperSize}${paperSizeUnit ? ` ${paperSizeUnit}` : ""}`,
+    displayLength && `Display Length: ${displayLength}${displayLengthUnit ? ` ${displayLengthUnit}` : ""}`,
+  ]);
+  return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
+}
+
+function amazonFactsWithFallback(primary, fallback) {
+  const merged = { ...fallback };
+  Object.entries(primary || {}).forEach(([key, value]) => {
+    const hasValue = Array.isArray(value) ? value.length : cleanFieldDisplayValue(value);
+    if (hasValue) merged[key] = value;
+  });
+  return merged;
+}
+
 function amazonVariantAttributes(row, columns, theme) {
   const themeParts = String(theme || "")
     .split("/")
@@ -5144,29 +5332,49 @@ function amazonSharedFacts(row, columns, browsePath = "") {
   const bullets = amazonBulletPoints(row, columns);
   const title = amazonRowValue(row, columns, "Item Name", "item_name");
   const description = amazonRowValue(row, columns, "Product Description", "product_description");
-  const style = amazonRowValue(row, columns, "Style", "style");
-  const material = amazonRowValue(row, columns, "Material", "material")
+  const keywords = amazonRepeatedRowValues(row, columns, "generic_keyword[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Generic Keyword");
+  const occasionTypes = amazonRepeatedRowValues(row, columns, "occasion_type[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Occasion");
+  const occasions = uniquePromptItems([
+    ...occasionTypes,
+    ...amazonRepeatedRowValues(row, columns, "occasion[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Occasion"),
+  ]);
+  const compatibleUses = amazonRepeatedRowValues(row, columns, "recommended_uses_for_product[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Recommended Uses For Product");
+  const style = amazonRowValue(row, columns, "Product Style", "Style", "style[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value", "style");
+  const itemShape = amazonRowValue(row, columns, "Item Shape", "item_shape[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
+  const itemForm = amazonRowValue(row, columns, "Item Form", "item_form[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
+  const paperFinish = amazonRowValue(row, columns, "Paper Finish", "paper_finish[marketplace_id=ATVPDKIKX0DER]#1.value");
+  const designName = amazonRowValue(row, columns, "Design Name", "design_name[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
+  const material = uniquePromptItems([
+    ...amazonRepeatedRowValues(row, columns, "material[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Material"),
+    amazonRowValue(row, columns, "Material", "material")
     || amazonRowValue(row, columns, "Sole Material", "sole_material")
     || amazonRowValue(row, columns, "Outer Material", "outer")
-    || amazonRowValue(row, columns, "Compliance - Upper Material", "compliance_upper_material");
+    || amazonRowValue(row, columns, "Compliance - Upper Material", "compliance_upper_material"),
+  ]).join(", ");
   const height = amazonRowValue(row, columns, "Height Map", "height_map");
   const heelType = amazonRowValue(row, columns, "Heel Type", "heel[marketplace_id");
   const targetGender = amazonRowValue(row, columns, "Target Gender", "target_gender");
   const ageRange = amazonRowValue(row, columns, "Age Range Description", "age_range_description");
   const productType = amazonRowValue(row, columns, "Product Type", "product_type");
   const category = amazonRowValue(row, columns, "Item Type Keyword", "item_type_keyword") || browsePath;
-  const productText = `${title} ${description} ${bullets.join(" ")}`;
-  const isThong = isThongFlipFlopText(productText);
-  const englishCategory = englishAmazonValue(category) || "slippers";
-  const readableProductType = productType ? productType.toLowerCase().replace(/_/g, " ") : "slippers";
-  const scenes = uniquePromptItems([
-    extractFirstMatch([title, description, bullets.join(" ")].join(" "), [/(beach|hotel|spa|shower|poolside|bathroom|travel|gym showers?)/i]),
-    /beach/i.test(`${title} ${description}`) ? "beach" : "",
-    /hotel/i.test(`${title} ${description}`) ? "hotel" : "",
-    /spa/i.test(`${title} ${description}`) ? "spa" : "",
-    /shower/i.test(`${title} ${description}`) ? "shower" : "",
-    /travel/i.test(`${title} ${description}`) ? "travel" : "",
-  ]).join(", ");
+  const productText = `${title} ${description} ${bullets.join(" ")} ${keywords.join(" ")} ${occasions.join(" ")}`;
+  const englishCategory = englishAmazonValue(category);
+  const readableProductType = productType ? productType.toLowerCase().replace(/_/g, " ") : "";
+  const scenes = amazonListingUseSceneText({ title, description, bullets, keywords, occasions, compatibleUses, category });
+  const fit = amazonListingCompatibleUseText({ title, description, bullets, keywords, occasions, compatibleUses, category });
+  const structure = amazonListingStructureText({
+    text: productText,
+    material,
+    style,
+    itemShape,
+    itemForm,
+    paperFinish,
+    designName,
+    height,
+    heelType,
+  });
+  const pack = amazonListingPackText(productText, row, columns);
+  const dimensionList = amazonListingDimensionListText(row, columns);
 
   return {
     title,
@@ -5178,21 +5386,25 @@ function amazonSharedFacts(row, columns, browsePath = "") {
     category,
     englishCategory,
     material,
-    structure: compactPromptItems([
-      isThong ? "thong flip-flop construction with one Y-shaped strap, central toe post, visible front slit/open hole, exposed footbed texture, open heel with no back strap" : "",
-      !isThong && /backstrap/i.test(productText) ? "backstrap closure" : "",
-      height && `${height} profile`,
-      heelType && `${heelType} heel`,
-    ], "", 5),
-    scene: scenes || "beach, hotel, spa, shower, travel, bathroom",
+    structure,
+    scene: scenes,
+    fit,
+    pack,
     feature1: bullets[0] || style || "",
     feature2: bullets[1] || bullets[2] || "",
+    surfaceFinish: paperFinish,
+    dimensionList,
     detailParameter: compactPromptItems([
       style,
+      itemShape,
+      itemForm,
+      designName,
+      paperFinish,
       targetGender,
       ageRange,
+      occasions.join(", "),
       englishCategory,
-    ], "", 6),
+    ], "", 8),
   };
 }
 
@@ -5227,6 +5439,7 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
     const sku = amazonRowValue(row, columns, "SKU", "contribution_sku");
     const parentSku = amazonRowValue(row, columns, "Parent SKU", "parent_sku");
     const theme = amazonRowValue(row, columns, "Variation Theme Name", "variation_theme") || amazonRowValue(parentRow, columns, "Variation Theme Name", "variation_theme");
+    const listing = amazonFactsWithFallback(amazonSharedFacts(row, columns, browsePath), shared);
     const attrs = amazonVariantAttributes(row, columns, theme);
     const rowTitle = amazonRowValue(row, columns, "Item Name", "item_name");
     if (/SIZE/i.test(theme || "") && !attrs.size) {
@@ -5240,14 +5453,14 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
     ].filter(Boolean);
     const optionLabel = optionParts.join(" / ") || sku;
     variantLabels.push(optionLabel);
-    const productName = displayVariantText([shared.shortTitle || "slipper", attrs.color, attrs.size].filter(Boolean).join(" - "));
+    const productName = displayVariantText([listing.shortTitle || "Amazon template product", attrs.color, attrs.size].filter(Boolean).join(" - "));
     const sizeCode = displayVariantText(optionParts.join(" / "));
     return {
       id: `EXTRACTED-AMAZON-${index + 1}-${sku.replace(/[^A-Z0-9]+/gi, "-")}`,
       label: `${sku} | ${optionLabel}`,
       displayLabel: `${sku} | ${optionLabel}`,
       productName,
-      baseProductName: shared.shortTitle || "foldable flip flops",
+      baseProductName: listing.shortTitle || "Amazon template product",
       shape: productName,
       model: sku,
       parentSku,
@@ -5259,20 +5472,20 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
       variantStyle: "",
       sizeCode,
       outputSizeCode: sizeCode,
-      pack: "",
-      material: shared.material,
-      structure: shared.structure,
-      scene: shared.scene,
-      feature1: shared.feature1,
-      feature2: shared.feature2,
-      surfaceFinish: "",
-      fit: compactPromptItems([shared.scene, shared.englishCategory, shared.readableProductType].filter(Boolean), "", 4),
-      detailParameter: shared.detailParameter,
+      pack: listing.pack || "",
+      material: listing.material,
+      structure: listing.structure,
+      scene: listing.scene,
+      feature1: listing.feature1,
+      feature2: listing.feature2,
+      surfaceFinish: listing.surfaceFinish || "",
+      fit: listing.fit || compactPromptItems([listing.scene, listing.englishCategory, listing.readableProductType].filter(Boolean), "", 4),
+      detailParameter: listing.detailParameter,
       groupKey: parentSku || amazonRowValue(parentRow, columns, "SKU", "contribution_sku") || "amazon-template",
       group: {
-        promptName: shared.shortTitle || shared.title || "Amazon template product",
-        promptSpecs: [shared.readableProductType, shared.englishCategory, theme, shared.material, shared.structure].filter(Boolean),
-        dimensions: [],
+        promptName: listing.shortTitle || listing.title || "Amazon template product",
+        promptSpecs: [listing.readableProductType, listing.englishCategory, theme, listing.pack, listing.material, listing.structure, listing.scene].filter(Boolean),
+        dimensions: listing.dimensionList ? extractDimensions(listing.dimensionList) : [],
         evidenceNote: `Amazon 模板：按 Child SKU 提取 ${sourceRowInfos.length} 个采购款式；变体主题 ${theme || "未填写"}。${filter?.hasFilter ? `筛选：${filter.raw}。` : ""}`,
       },
       dims: {
@@ -5280,9 +5493,9 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
         source: `Amazon 模板：Child SKU = 款式数量；${theme || "变体"} = 款式属性。`,
       },
       singleSpec: `[CURRENT_PRODUCT_OPTION: ${optionLabel}]`,
-      specList: `[SPEC_LIST: ${[shared.shortTitle, optionLabel, shared.material, shared.structure, shared.scene].filter(Boolean).join(" / ")}]`,
+      specList: `[SPEC_LIST: ${[listing.shortTitle, optionLabel, listing.pack, listing.material, listing.structure, listing.scene].filter(Boolean).join(" / ")}]`,
       variantList: "",
-      dimensionList: "",
+      dimensionList: listing.dimensionList || "",
     };
   });
 
@@ -5313,6 +5526,124 @@ async function extractAmazonTemplateProducts(file, skuFilter = "") {
     ].filter(Boolean).join("\n")
     : "";
   return { products, sourceText };
+}
+
+function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, supplierBaseName) {
+  const supplierName = cleanFieldDisplayValue(
+    supplierProduct.outputProductName
+      || supplierProduct.baseProductName
+      || supplierProduct.productName
+      || supplierBaseName
+      || defaultProductName(supplierProduct)
+  );
+  const amazonOption = displayVariantText(amazonProduct.sizeCode || amazonProduct.outputSizeCode || cleanTokenValue(amazonProduct.singleSpec) || "");
+  const amazonBaseName = cleanFieldDisplayValue(
+    amazonProduct.baseProductName
+      || amazonProduct.productName
+      || defaultProductName(amazonProduct)
+  );
+  const baseName = amazonBaseName || supplierName;
+  const productName = displayVariantText([
+    baseName,
+    amazonOption && !promptItemsOverlap(baseName, amazonOption) ? amazonOption : "",
+  ].filter(Boolean).join(" - ")) || amazonProduct.productName || supplierName;
+  const supplierGroup = supplierProduct.group || {};
+  const amazonGroup = amazonProduct.group || {};
+  const dimensions = (amazonGroup.dimensions || []).length ? amazonGroup.dimensions : (supplierGroup.dimensions || []);
+  const dimensionList = amazonProduct.dimensionList
+    || supplierProduct.dimensionList
+    || (dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "");
+  const material = amazonProduct.material || supplierProduct.material || "";
+  const structure = amazonProduct.structure || supplierProduct.structure || "";
+  const scene = amazonProduct.scene || supplierProduct.scene || "";
+  const feature1 = amazonProduct.feature1 || supplierProduct.feature1 || "";
+  const feature2 = amazonProduct.feature2 || supplierProduct.feature2 || "";
+  const fit = amazonProduct.fit || supplierProduct.fit || "";
+  const detailParameter = amazonProduct.detailParameter || supplierProduct.detailParameter || "";
+  const promptSpecs = uniquePromptItems([
+    productName,
+    amazonOption,
+    amazonProduct.pack || supplierProduct.pack,
+    material,
+    structure,
+    scene,
+  ]).filter(Boolean);
+  const evidenceNote = compactPromptItems([
+    amazonProduct.group?.evidenceNote || "Amazon listing：优先采用模板中的 listing 字段和 Child SKU 款式结构。",
+    "1688 / 采购单：仅补充 Amazon 未填写的材质、结构、场景、卖点、尺寸等参数。",
+  ], "Amazon listing 优先，1688 补缺。", 4);
+
+  return {
+    ...amazonProduct,
+    productName,
+    baseProductName: amazonBaseName || supplierName || productName,
+    shape: productName || amazonProduct.shape || supplierProduct.shape,
+    pack: amazonProduct.pack || supplierProduct.pack || "",
+    material,
+    structure,
+    scene,
+    feature1,
+    feature2,
+    feature3: "",
+    surfaceFinish: amazonProduct.surfaceFinish || supplierProduct.surfaceFinish || "",
+    fit,
+    detailParameter,
+    bundleComponents: amazonProduct.bundleComponents || supplierProduct.bundleComponents || "",
+    dims: amazonProduct.dims || supplierProduct.dims,
+    dimensionList,
+    cupRange: amazonProduct.cupRange || amazonProduct.dims?.cupRange || supplierProduct.cupRange || supplierProduct.dims?.cupRange || "",
+    group: {
+      promptName: productName || amazonGroup.promptName || supplierName || supplierGroup.promptName || "",
+      promptSpecs,
+      dimensions,
+      evidenceNote,
+    },
+    singleSpec: `[CURRENT_PRODUCT_OPTION: ${[productName, amazonOption].filter(Boolean).join(", ")}]`,
+    specList: `[SPEC_LIST: ${promptSpecs.join(" / ")}]`,
+    variantList: amazonProduct.variantList || supplierProduct.variantList || "",
+  };
+}
+
+function supplierProductForAmazonVariant(supplierProducts, amazonProduct, index) {
+  if (!supplierProducts.length) return {};
+  if (supplierProducts.length === 1) return supplierProducts[0];
+  const amazonText = [
+    amazonProduct.color,
+    amazonProduct.displayColor,
+    amazonProduct.colorEnglish,
+    amazonProduct.size,
+    amazonProduct.sizeCode,
+    amazonProduct.outputSizeCode,
+    amazonProduct.label,
+  ].filter(Boolean).join(" ").toLowerCase();
+  const matched = supplierProducts.find((product) => {
+    const supplierText = [
+      product.color,
+      product.displayColor,
+      product.colorEnglish,
+      product.size,
+      product.sizeCode,
+      product.outputSizeCode,
+      product.label,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return supplierText && amazonText && (promptItemsOverlap(supplierText, amazonText) || promptItemsOverlap(amazonText, supplierText));
+  });
+  return matched || supplierProducts[index % supplierProducts.length] || supplierProducts[0];
+}
+
+function mergeAmazonProductsWithSupplierFacts(amazonProducts, supplierProducts) {
+  if (!amazonProducts.length || !supplierProducts.length) return amazonProducts;
+  const supplierBaseName = cleanFieldDisplayValue(
+    supplierProducts[0].outputProductName
+      || supplierProducts[0].baseProductName
+      || supplierProducts[0].productName
+      || defaultProductName(supplierProducts[0])
+  );
+  return amazonProducts.map((amazonProduct, index) => mergedAmazonProductWithSupplierFacts(
+    amazonProduct,
+    supplierProductForAmazonVariant(supplierProducts, amazonProduct, index),
+    supplierBaseName
+  ));
 }
 
 function inferProductsFromSources(purchaseText, supplierText, competitorText) {
@@ -5565,12 +5896,29 @@ async function extractSources() {
     fieldOverridesBySku = {};
     appliedSellingPointOverridesBySku = {};
     sellingPointDraftDirty = false;
+    const inferredSourceProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
+    let supplierCategoryId = categoryIdFromProduct(inferredSourceProducts[0] || {});
+    if (supplierCategoryId === "generic") {
+      supplierCategoryId = categoryIdFromSourceText([sourcePayload.purchase, sourcePayload.supplier].filter(Boolean).join(" "));
+    }
+    let amazonCategoryId = categoryIdFromProduct(amazonTemplate.products[0] || {});
+    if (amazonCategoryId === "generic") {
+      amazonCategoryId = categoryIdFromSourceText(amazonTemplate.sourceText);
+    }
+    const amazonSupplierConflict = amazonTemplate.products.length
+      && inferredSourceProducts.length
+      && sourceCategoriesConflict(supplierCategoryId, amazonCategoryId);
+    const mergedAmazonSupplierProducts = amazonTemplate.products.length && inferredSourceProducts.length
+      ? mergeAmazonProductsWithSupplierFacts(amazonTemplate.products, inferredSourceProducts)
+      : [];
     if (useSupplierFileProducts) {
       extractedProducts = supplierFileProducts;
+    } else if (mergedAmazonSupplierProducts.length) {
+      extractedProducts = mergedAmazonSupplierProducts;
     } else if (amazonTemplate.products.length) {
       extractedProducts = amazonTemplate.products;
     } else {
-      extractedProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
+      extractedProducts = inferredSourceProducts;
     }
     if (!extractedProducts.length) {
       throw new Error("没有从当前资料中提取到产品 / 款式，请确认采购单、Amazon 模板或 1688 HTML 是否已选择。");
@@ -5591,7 +5939,11 @@ async function extractSources() {
       ? "OCR 引擎未加载成功，已跳过采购单图片识别。"
       : "";
     const amazonTemplateStatus = amazonTemplateFile
-      ? `Amazon 模板：${useSupplierFileProducts ? "多 1688 文件模式已改按文件输出产品，未使用模板款式" : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
+      ? `Amazon 模板：${useSupplierFileProducts
+        ? "多 1688 文件模式已改按文件输出产品，未使用模板款式"
+        : mergedAmazonSupplierProducts.length
+            ? `${amazonTemplate.products.length} 个子 SKU 款式；listing 参数优先，1688 / 采购单仅补缺${amazonSupplierConflict ? "；检测到类目不一致，请确认文件是否配套" : ""}${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`
+            : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
       : "";
     const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；参考链接 HTML：${competitorFiles.length} 个。`;
     const supplierFileStatus = useSupplierFileProducts
@@ -5835,7 +6187,7 @@ function promptIdentityText(facts) {
 function categoryProfile(facts) {
   const identity = promptIdentityText(facts);
   const isResistanceBand = /resistance\s+band|exercise\s+band|workout\s+band|拉力带|拉力片|弹力带|阻力带/.test(identity);
-  const isFlowerWrappingPaper = /flower\s+wrapping\s+paper|floral\s+wrapping\s+paper|bouquet\s+wrapping|bouquet\s+wrap|floral\s+wrap|gift\s+wrap(?:ping)?\s+paper|wrapping\s+paper|tissue\s+paper|cellophane|包装纸|包花纸|花束包装|鲜花包装|花艺包装|礼品包装纸|花纸|花束纸|雪梨纸|欧雅纸|雾面纸|玻璃纸/.test(identity);
+  const isFlowerWrappingPaper = isFlowerWrappingPaperText(identity);
   const isSock = !isResistanceBand && /sock|socks|toe socks|grip socks|瑜伽袜|普拉提袜|五指袜|五趾袜|分趾袜|船袜|短袜|隐形袜|浅口袜|袜子|袜/.test(identity);
   const isFootwear = !isSock && !isFlowerWrappingPaper && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|footwear|shoe|shoes|clog|slides?|拖鞋|凉拖|人字拖|沙滩鞋|鞋/.test(identity);
   const isUmbrella = /umbrella|parasol|rain\s*umbrella|sun\s*umbrella|folding\s*umbrella|伞|雨伞|遮阳伞|晴雨伞/.test(identity);
@@ -6016,13 +6368,6 @@ function isFootwearCategory(facts) {
 
 function isThongFlipFlopFacts(facts) {
   return isThongFlipFlopText(promptIdentityText(facts));
-}
-
-function footwearSceneCategoryText() {
-  return categoryProfile({
-    productName: "slippers",
-    scene: "beach hotel spa shower poolside",
-  }).scene;
 }
 
 function mainImageRule() {
@@ -6481,6 +6826,17 @@ function sellingPointGroups(facts, groupIndex = 0, groupSize = 2) {
 }
 
 function conciseSellingPointLabel(point, fallback = "Verified Product Benefit") {
+  const words = String(point || "")
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/[^a-z0-9\s-]/gi, " ")
+    .replace(/[-_/]+/g, " ")
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => /^[a-z0-9]+$/i.test(word))
+    .slice(0, 5);
+  if (words.length >= 2) {
+    return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ");
+  }
   const labelByKey = {
     compact: "Easy Travel Packing",
     lightweight: "Lightweight Easy Carry",
@@ -6504,17 +6860,6 @@ function conciseSellingPointLabel(point, fallback = "Verified Product Benefit") 
   };
   const key = sellingPointKey(point);
   if (labelByKey[key]) return labelByKey[key];
-  const words = String(point || "")
-    .replace(/\[[^\]]+\]/g, " ")
-    .replace(/[^a-z0-9\s-]/gi, " ")
-    .replace(/[-_/]+/g, " ")
-    .split(/\s+/)
-    .map((word) => word.trim())
-    .filter((word) => /^[a-z0-9]+$/i.test(word))
-    .slice(0, 5);
-  if (words.length >= 2) {
-    return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ");
-  }
   return fallback;
 }
 
@@ -7802,6 +8147,24 @@ function promptFor(templateId, typeId, sku, data) {
   return featureTemplatePrompt(typeId, sku, data);
 }
 
+function sellingPointGroupForImageTitle(templateId, typeId, facts) {
+  if (templateId === "spec" && typeId === "6") return sellingPointGroups(facts, 0);
+  if (templateId === "scene" && typeId === "5") return sellingPointGroups(facts, 0);
+  if (templateId === "scene" && typeId === "6") return sellingPointGroups(facts, 1);
+  if (templateId === "feature" && typeId === "6") return sellingPointGroups(facts, 0);
+  if (templateId === "feature" && typeId === "7") return sellingPointGroups(facts, 1);
+  if (templateId === "plantTie" && typeId === "4") return sellingPointGroups(facts, 0);
+  return [];
+}
+
+function promptImageDisplayTitle(template, type, facts) {
+  const points = sellingPointGroupForImageTitle(template.id, type.id, facts);
+  if (!points.length) return "";
+  const prefix = String(type.name || "").match(/^\s*([0-9]+[A-Z]?\.\s*)/)?.[1] || "";
+  const label = sellingPointDisplayText(points);
+  return `${prefix}${label}`;
+}
+
 function renderFacts() {
   const sku = selectedSku();
   const template = selectedTemplate();
@@ -7836,12 +8199,13 @@ function renderProductPromptGrid() {
 
   grid.innerHTML = template.imageTypes.map((type, index) => {
     const prompt = promptStore[index].prompt;
+    const displayTitle = promptImageDisplayTitle(template, type, facts) || type.name;
     return `
       <article class="prompt-card">
         <div class="prompt-card-head">
           <div>
             <span>${escapeHtml(displayLabel)}</span>
-            <h3>${type.name}</h3>
+            <h3>${escapeHtml(displayTitle)}</h3>
           </div>
           <button type="button" class="copy-prompt" data-prompt-index="${index}">Copy</button>
         </div>
@@ -7874,7 +8238,11 @@ function allPromptsForSku() {
   const sku = selectedSku();
   const template = selectedTemplate();
   const data = currentPromptData(sku);
-  return template.imageTypes.map((type) => `## ${type.promptName || type.name}\n\n${promptFor(template.id, type.id, sku, data)}`).join("\n\n---\n\n");
+  const facts = promptFacts(sku, data);
+  return template.imageTypes.map((type) => {
+    const title = promptImageDisplayTitle(template, type, facts) || type.promptName || type.name;
+    return `## ${title}\n\n${promptFor(template.id, type.id, sku, data)}`;
+  }).join("\n\n---\n\n");
 }
 
 function clearExtractedSourceState() {
