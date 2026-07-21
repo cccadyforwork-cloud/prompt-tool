@@ -187,6 +187,18 @@ const templates = [
     ],
   },
   {
+    id: "plantTie",
+    name: "植物绑带模型",
+    description: "植物绑带产品专用 5 张图：主场景、白底、多场景、卖点、尺寸材质产品信息详情。",
+    imageTypes: [
+      { id: "1", name: "1. 主图场景图", promptName: "1. Main Scene Image" },
+      { id: "2", name: "2. 白底图", promptName: "2. White Background Product Image" },
+      { id: "3", name: "3. 多场景使用图", promptName: "3. Multi-Scene Usage Image" },
+      { id: "4", name: "4. 卖点图", promptName: "4. Selling Point Image" },
+      { id: "5", name: "5. 尺寸材质产品信息详情图", promptName: "5. Product Detail Information Image" },
+    ],
+  },
+  {
     id: "reference",
     name: "参考链接模板",
     description: "参考链接静态图组的图片顺序、构图任务和卖点分配，代入当前产品信息生成 6 张图。",
@@ -321,20 +333,33 @@ function dimensionFieldsFromDimensionList(dimensionList, context = "") {
 }
 
 function cleanBundleComponentName(sku) {
-  return promptValue(sku.outputProductName || sku.baseProductName || sku.productName || sku.outputSpec || sku.shape || sku.label, "")
-    || "bundle component";
+  const candidates = [
+    sku.rawSpec,
+    sku.supplierOption?.rawSpec,
+    sku.productName,
+    sku.outputProductName,
+    sku.baseProductName,
+    sku.outputSpec,
+    sku.shape,
+    sku.label,
+  ];
+  for (const candidate of candidates) {
+    const clean = cleanProductDisplayName(candidate, "");
+    if (clean) return clean;
+  }
+  return "bundle component";
 }
 
 function bundleComponentLine(sku, index) {
   const values = valueMap(sku);
   const name = cleanBundleComponentName(sku);
-  const option = promptValue(sku.outputSpec || values.singleSpec || sku.sizeCode || sku.shape, "");
+  const option = displayVariantText(sku.outputSpec || sku.spec || sku.sizeCode || sku.shape || "");
   const pack = promptValue(values.pack || sku.pack, "");
   const material = promptValue(values.material, "");
   const dimensions = promptValue(values.dimensionList || sku.dimensionList, "");
   return compactPromptItems([
     `Component ${index + 1}: ${name}`,
-    option && `option ${option}`,
+    option && !promptItemsOverlap(option, name) && `option ${option}`,
     pack && `count ${pack}`,
     material && `material ${material}`,
     dimensions && `dimensions ${dimensions}`,
@@ -518,6 +543,38 @@ function cleanFieldDisplayValue(value) {
 
 function isCodeLikeValue(value) {
   return /<\s*\/?\s*(?:script|style|html|body)|\b(?:body|html)\s*\{|display\s*:|window\.|traceId|polyfill|RegeneratorRuntime|<\/script|src\s*=|PRODUCT_ATTRIBUTE|SKU_OPTION|PRODUCT_TITLE|Source HTML file|Purchase order image OCR|model\s*=|colorEnglish\s*=|[{}]{2,}/i.test(String(value || ""));
+}
+
+function isMachineProductText(value) {
+  const clean = String(value || "").trim();
+  if (!clean) return true;
+  if (/^(?:temu|tmall|taobao|1688|alibaba|amazon|source html file)$/i.test(clean)) return true;
+  return /SKU_OPTION|PRODUCT_ATTRIBUTE|PRODUCT_TITLE|SUPPLIER-SKU|model\s*=|colorEnglish\s*=|rawSpec\s*=|variantStyle\s*=|traceId|window\.|<\/?[a-z]/i.test(clean);
+}
+
+function readableNameFromRawSpec(value) {
+  const raw = String(value || "").match(/rawSpec\s*=\s*([^;\n|]+)/i)?.[1] || String(value || "");
+  const clean = decodeHtmlEntities(raw)
+    .replace(/SKU_OPTION\s*[:;]+/gi, " ")
+    .replace(/\bmodel\s*=\s*[^;\n|]+/gi, " ")
+    .replace(/\bcolor(?:English)?\s*=\s*[^;\n|]+/gi, " ")
+    .replace(/\bvariantStyle\s*=\s*[^;\n|]+/gi, " ")
+    .replace(/\bsize\s*=\s*[^;\n|]+/gi, " ")
+    .replace(/不送工具|不含工具|送工具|白色|黑色|透明色|透明|颜色\s*[:：]?/gi, " ")
+    .replace(/[;|]+/g, " ")
+    .replace(/\s*-\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean || isMachineProductText(clean)) return "";
+  const match = clean.match(/([\u4e00-\u9fff]{2,}(?:\s*[0-9]+(?:\.[0-9]+)?\s*(?:ml|mL|g|kg|cm|mm|L|升|克|毫升))?)/);
+  return (match?.[1] || clean).replace(/\s+/g, " ").trim();
+}
+
+function cleanProductDisplayName(value, fallback = "Product") {
+  const rawSpecName = readableNameFromRawSpec(value);
+  const source = rawSpecName || stripSupplierModelCodes(cleanFieldDisplayValue(value));
+  if (!source || isMachineProductText(source)) return fallback;
+  return source.length > 60 ? source.slice(0, 60).trim() : source;
 }
 
 function isInvalidParameterValue(value) {
@@ -2064,7 +2121,7 @@ function extractSupplierSkuOptions(text) {
   const options = [];
   const seen = new Set();
 
-  const structuredPattern = /SKU_OPTION:\s*([\s\S]*?)(?=\s+SKU_OPTION\s*:|\s+PRODUCT_(?:TITLE|ATTRIBUTE)\s*:|\n|$)/gi;
+  const structuredPattern = /SKU_OPTION\s*[:;]+\s*([\s\S]*?)(?=\s+SKU_OPTION\s*[:;]+|\s+PRODUCT_(?:TITLE|ATTRIBUTE)\s*:|\n|$)/gi;
   for (const match of decoded.matchAll(structuredPattern)) {
     const optionText = match[1].replace(/\s+(?=(?:model|color|colorEnglish|variantStyle|size|rawSpec|length|width|height|weight)=)/gi, "; ");
     const parts = Object.fromEntries(optionText
@@ -2438,11 +2495,26 @@ function productsFromSupplierFileSources(fileSources) {
     const products = inferProductsFromSources("", source.text, "");
     const product = products[0];
     if (!product) return null;
+    const rawSpecName = readableNameFromRawSpec([
+      product.supplierOption?.rawSpec,
+      product.outputSpec,
+      product.spec,
+      product.label,
+      source.text,
+    ].filter(Boolean).join(" "));
+    const displayName = cleanProductDisplayName(product.productName || product.outputProductName || product.label, rawSpecName || `Product ${index + 1}`);
+    const productName = displayName || rawSpecName || `Product ${index + 1}`;
+    if (!rawSpecName && /^Product\s+\d+$/i.test(productName)) return null;
     return {
       ...product,
       id: `EXTRACTED-SUPPLIER-FILE-${index + 1}`,
-      label: `${source.name} | ${product.label || product.productName || `Product ${index + 1}`}`,
-      displayLabel: product.displayLabel || product.productName || product.label || `Product ${index + 1}`,
+      label: productName,
+      displayLabel: productName,
+      productName,
+      outputProductName: product.outputProductName && !isMachineProductText(product.outputProductName) ? product.outputProductName : productName,
+      baseProductName: product.baseProductName && !isMachineProductText(product.baseProductName) ? product.baseProductName : productName,
+      shape: cleanProductDisplayName(product.shape || product.outputSpec || product.spec, productName),
+      rawSpec: product.supplierOption?.rawSpec || rawSpecName,
       sourceFile: source.name,
     };
   }).filter(Boolean);
@@ -2885,7 +2957,9 @@ function hasUmbrellaDimensionSignal(text) {
 
 function inferProductName(text) {
   const supplierTitle = extractFirstMatch(text, [/PRODUCT_TITLE:\s*([^\n]+)/i]);
-  if (supplierTitle) return translateProductTitleWords(supplierTitle) || supplierTitle;
+  if (supplierTitle && !isMachineProductText(supplierTitle)) return translateProductTitleWords(supplierTitle) || supplierTitle;
+  const rawSpecName = readableNameFromRawSpec(extractFirstMatch(text, [/rawSpec\s*=\s*([^;\n|]+)/i, /SKU_OPTION\s*[:;]+([^\n]+)/i]));
+  if (rawSpecName) return rawSpecName;
   const explicit = extractFirstMatch(text, [
     /(?:Product Name|产品名称|品名|商品名称)[:：]\s*([^。；;.\n|]{2,80})/i,
     /(?:Coffee Filters?|coffee filter paper|filter paper)/i,
@@ -4601,13 +4675,17 @@ function toCrossBorderProductName(productName, fallbackSpec) {
 
 function displayProductName(productName, context = "") {
   const combined = [productName, context].filter(Boolean).join(" ");
+  const rawSpecName = readableNameFromRawSpec(combined);
+  if (rawSpecName) return rawSpecName;
   if (isYogaSockText(combined)) return "五指瑜伽袜";
   if (/船袜|短袜|隐形袜|浅口袜|no[-\s]?show/i.test(combined)) return "船袜";
   if (isSockFamilyText(combined)) return "袜子";
-  return stripSupplierModelCodes(cleanFieldDisplayValue(productName));
+  return cleanProductDisplayName(productName, "");
 }
 
 function crossBorderProductName(productName, context = "") {
+  const rawSpecName = readableNameFromRawSpec([productName, context].filter(Boolean).join(" "));
+  if (rawSpecName) return rawSpecName;
   const translated = translateProductTitleWords(productName, context);
   const translatedFromContext = translateProductTitleWords(extractFirstMatch(context, [/PRODUCT_TITLE:\s*([^\n]+)/i]), context);
   const coreTitle = compactCoreProductTitle(translated || productName, translatedFromContext || context);
@@ -4788,13 +4866,18 @@ function stripSupplierModelCodes(value) {
 }
 
 function displayVariantText(value) {
-  return stripSupplierModelCodes(value)
+  const rawSpecName = readableNameFromRawSpec(value);
+  if (rawSpecName) return rawSpecName;
+  const source = stripSupplierModelCodes(value)
     .replace(/(?:^|[-\s/])(?:quantity|qty)\s*[:：]?\s*[1-9]\d*(?=$|[-\s/])/gi, " ")
     .replace(/(?:^|[-\s/])数量\s*[:：]?\s*[1-9]\d*(?=$|[-\s/])/gi, " ")
+    .replace(/\b(?:model|colorEnglish|color|rawSpec|variantStyle|size)\s*=\s*[^;\n|/]+/gi, " ")
+    .replace(/SKU_OPTION\s*[:;]+/gi, " ")
     .replace(/\s*-\s*(?=[-\s/]|$)/g, " ")
     .replace(/\s+/g, " ")
     .replace(/^[\s,/-]+|[\s,/-]+$/g, "")
     .trim();
+  return isMachineProductText(source) ? "" : source;
 }
 
 function productVariantName(productName, item, fallback = "Product") {
@@ -7398,6 +7481,145 @@ function featureTemplatePrompt(typeId, sku, data) {
   return featureModulePrompt(typeId, facts);
 }
 
+function plantTieUseSceneText(facts) {
+  return compactSpecificPromptItems([
+    facts.scene,
+    facts.fit,
+  ], "garden plant support, potted plants, climbing vines, trellis, greenhouse, nursery", 4);
+}
+
+function plantTieIdentityRule(facts) {
+  return compactPromptItems([
+    "Plant tie template: product must remain the exact selected plant tie / garden tie item from the source.",
+    "Show plant tying, stem support, vine training, bundling, or garden organization only when compatible with verified product use.",
+    "Do not turn the product into rope, tape dispenser, cable tie, ribbon, wire, hose, strap hardware, or unrelated gardening accessory.",
+    facts.material && `Verified material: ${facts.material}`,
+    facts.structure && `Verified structure: ${facts.structure}`,
+    facts.color && `Verified color: ${facts.color}`,
+  ], "", 6);
+}
+
+function plantTieDetailInfo(facts) {
+  const dimensionLine = dimensionText(facts);
+  const optionText = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
+  return compactSpecificPromptItems([
+    facts.productName && `Product: ${facts.productName}`,
+    optionText && `Current option: ${optionText}`,
+    facts.pack && `Count / set: ${facts.pack}`,
+    facts.cupRange && `Size / range: ${facts.cupRange}`,
+    dimensionLine && `Mandatory measurement labels on image: ${dimensionLine}`,
+    facts.material && `Material: ${facts.material}`,
+    facts.structure && `Structure: ${facts.structure}`,
+    facts.surfaceFinish && `Technology: ${facts.surfaceFinish}`,
+    visibleDetailParameter(facts.detailParameter) && `Detail: ${visibleDetailParameter(facts.detailParameter)}`,
+  ], "", 8);
+}
+
+function plantTieMainSceneStyle(facts, sceneText) {
+  return sceneOverallStyleText(facts, "1", [
+    plantTieIdentityRule(facts),
+    `Main scene: product-first realistic plant support scene in ${sceneText}.`,
+    "Use healthy real plants, stems, vines, trellis, garden bed, greenhouse, or potted-plant context as appropriate.",
+    "A person/model appears only if actual product use needs a human action; if present, hands or gardener action stays secondary and the product remains clear.",
+    "No added overlay text; product use must look natural, clean, and Amazon-ready.",
+  ].join(" "));
+}
+
+function plantTieWhiteBackgroundStyle(facts) {
+  return [
+    "Pure white Amazon main image: show only the current plant tie product itself, centered and source-accurate.",
+    "No plant, stem, soil, pot, hand, person, tool, trellis, garden scene, props, added title, or added labels.",
+    "Product occupies about 85% of the frame; preserve true color, material texture, packaging, and authentic non-Chinese markings only.",
+    premiumStudioRenderRule(),
+    plantTieIdentityRule(facts),
+  ].join(" ");
+}
+
+function plantTieMultiSceneStyle(facts, sceneText) {
+  return [
+    multiSceneLifestyleStyleText(facts, sceneText),
+    plantTieIdentityRule(facts),
+    "Every panel must show the plant tie visibly supporting, training, bundling, or organizing real plants without damaging stems.",
+    "Use plant-support scenes first; avoid unrelated household cable management unless explicitly verified.",
+  ].join(" / ");
+}
+
+function plantTieModulePrompt(typeId, facts) {
+  const sceneText = plantTieUseSceneText(facts);
+  const sellingPointGroup = sellingPointGroups(facts, 0);
+  const productInfo = plantTieDetailInfo(facts);
+  const modules = {
+    "1": {
+      basic: "1:1 Amazon main scene image, 4K clarity, sharp realistic detail, no added overlay text, plant support use scene, person/model optional only when product use requires it.",
+      details: sceneProductDetailText(facts, [
+        plantTieIdentityRule(facts),
+        `Use scene: ${sceneText}`,
+        visibleTextureDetails(facts),
+      ], 8),
+      style: plantTieMainSceneStyle(facts, sceneText),
+    },
+    "2": {
+      basic: "1:1 Amazon white-background product image, 4K clarity, sharp realistic detail, pure white background, no added overlay text, product occupies about 85% of the frame.",
+      details: sceneProductDetailText(facts, [
+        plantTieIdentityRule(facts),
+        visibleTextureDetails(facts),
+      ], 7),
+      style: plantTieWhiteBackgroundStyle(facts),
+    },
+    "3": {
+      basic: "1:1 Amazon multi-scene usage image, 4K clarity, sharp realistic detail, exactly 4 complete plant-use scenes, clean 2x2/four-panel collage.",
+      details: sceneContextProductDetailText(facts, [
+        plantTieIdentityRule(facts),
+        `Use scenes: ${sceneText}`,
+        "Scene purpose: show different verified plant support, vine training, stem fixing, garden tying, or potted-plant organization uses.",
+      ], 7),
+      style: plantTieMultiSceneStyle(facts, sceneText),
+    },
+    "4": {
+      basic: basicImageRequirements("plantTie", "4"),
+      details: productDetailText(facts, [
+        plantTieIdentityRule(facts),
+        sellingPointLine(sellingPointGroup, "verified plant tie benefit"),
+        sellingPointOnImageRule(sellingPointGroup, "verified plant tie benefit"),
+      ], 7),
+      style: sceneOverallStyleText(facts, "4", [
+        plantTieIdentityRule(facts),
+        sellingPointImageTemplateRule(sellingPointGroup, facts, "Plant tie template Image 4"),
+        "Use plant-support visual proof first: show the tie holding stems, training vines, preventing droop, organizing growth, or proving verified material/structure benefits.",
+      ].join(" ")),
+    },
+    "5": {
+      basic: "1:1 Amazon product detail information image, 4K clarity, sharp realistic detail, verified dimensions/material/structure/specification details only.",
+      details: productDetailText(facts, [
+        plantTieIdentityRule(facts),
+        productInfo,
+      ], 9),
+      style: overallStyleText(facts, "5", [
+        parameterIllustrationRule(),
+        sceneExplanationStyleText(facts),
+        "Product detail image: reuse existing product detail / product information rules; focus on verified size, material, structure, count/set, texture, and specification information.",
+        "Use 2-3 concise English information labels plus visible ruler arrows or detail callouts only when verified; no dense table or invented specs.",
+      ].join(" "), { includeHumanRule: false }),
+    },
+  };
+  const selected = modules[typeId] || modules["1"];
+
+  return buildPromptSections({
+    facts,
+    templateId: "plantTie",
+    typeId,
+    basic: selected.basic,
+    details: selected.details,
+    style: selected.style,
+    negative: negativePrompt(facts),
+  });
+}
+
+function plantTieTemplatePrompt(typeId, sku, data) {
+  const facts = promptFacts(sku, data);
+  return plantTieModulePrompt(typeId, facts);
+}
+
 function referenceLinkGlobalRule(facts, typeId = "") {
   return compactPromptItems([
     "Current product identity is the top priority; reference layout must adapt to the current product, never the reverse.",
@@ -7541,6 +7763,10 @@ function promptFor(templateId, typeId, sku, data) {
 
   if (templateId === "reference") {
     return referenceLinkTemplatePrompt(typeId, sku, data);
+  }
+
+  if (templateId === "plantTie") {
+    return plantTieTemplatePrompt(typeId, sku, data);
   }
 
   return featureTemplatePrompt(typeId, sku, data);
