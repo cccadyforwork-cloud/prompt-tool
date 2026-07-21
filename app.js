@@ -233,6 +233,7 @@ const fields = [
 ];
 
 const multilineFieldKeys = new Set(["feature1", "feature2"]);
+const sellingPointFieldKeys = new Set(["feature1", "feature2"]);
 
 let promptStore = [];
 let extractedProducts = [];
@@ -256,7 +257,9 @@ let sourcePayload = {
 };
 let fieldOverrides = {};
 let fieldOverridesBySku = {};
+let appliedSellingPointOverridesBySku = {};
 let fieldSnapshot = "";
+let sellingPointDraftDirty = false;
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -391,12 +394,14 @@ function renderFields(reset = false) {
   const fieldList = byId("fieldList");
   if (reset) {
     fieldOverrides = { ...(fieldOverridesBySku[sku?.id] || {}) };
+    sellingPointDraftDirty = false;
   }
+  ensureAppliedSellingPointValues(sku);
   if (!hasExtractedProducts()) {
     fieldList.innerHTML = `<p class="empty-state">解析资料后显示可替换参数。</p>`;
     return;
   }
-  fieldList.innerHTML = fields.map(([key, label, fallback]) => {
+  const fieldControls = fields.map(([key, label, fallback]) => {
     const currentValue = byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
     const value = reset
       ? (values[key] || fallback)
@@ -414,17 +419,29 @@ function renderFields(reset = false) {
       </div>
     `;
   }).join("");
+  fieldList.innerHTML = `${fieldControls}
+    <div id="sellingPointApplyWrap" class="selling-point-apply-wrap${sellingPointDraftDirty ? "" : " is-hidden"}">
+      <button id="applySellingPoints" type="button" class="ghost selling-point-apply">确认生成卖点图提示词</button>
+      <p class="selling-point-apply-note">卖点已修改，点击后更新右侧卖点图场景和提示词。</p>
+    </div>
+  `;
   fieldList.querySelectorAll("input, textarea").forEach((input) => {
     ["input", "change"].forEach((eventName) => input.addEventListener(eventName, handleFieldInput));
   });
+  byId("applySellingPoints")?.addEventListener("click", applySellingPointChanges);
+  updateSellingPointApplyState();
 }
 
 function formatMultilineSellingPoints(value) {
+  return splitSellingPointText(value).join("\n");
+}
+
+function splitSellingPointText(value) {
   return String(value || "")
-    .split(/\s*(?:\r?\n|,|，|\/|\+)\s*/)
+    .replace(/\r\n?/g, "\n")
+    .split(/\n+|[;；]\s*|\s+\+\s+|\s+\/\s+/)
     .map((item) => item.trim())
-    .filter(Boolean)
-    .join("\n");
+    .filter(Boolean);
 }
 
 function cleanTokenValue(value) {
@@ -728,20 +745,63 @@ function currentFieldSignature() {
   return fields.map(([key]) => `${key}:${readFieldValue(key)}`).join("|");
 }
 
+function ensureAppliedSellingPointValues(sku = selectedSku()) {
+  const skuId = sku?.id || "";
+  if (!skuId || appliedSellingPointOverridesBySku[skuId]) return;
+  const values = valueMap(sku);
+  appliedSellingPointOverridesBySku[skuId] = {
+    feature1: cleanFieldDisplayValue(values.feature1),
+    feature2: cleanFieldDisplayValue(values.feature2),
+  };
+}
+
+function appliedSellingPointValues(sku = selectedSku()) {
+  ensureAppliedSellingPointValues(sku);
+  const skuId = sku?.id || "";
+  return appliedSellingPointOverridesBySku[skuId] || {};
+}
+
+function updateSellingPointApplyState() {
+  const wrap = byId("sellingPointApplyWrap");
+  if (!wrap) return;
+  wrap.classList.toggle("is-hidden", !sellingPointDraftDirty);
+}
+
+function applySellingPointChanges() {
+  captureFieldOverrides();
+  const skuId = selectedSku()?.id || "";
+  if (skuId) {
+    appliedSellingPointOverridesBySku[skuId] = {
+      feature1: readFieldValue("feature1"),
+      feature2: readFieldValue("feature2"),
+    };
+  }
+  fieldSnapshot = currentFieldSignature();
+  sellingPointDraftDirty = false;
+  updateSellingPointApplyState();
+  renderAll();
+}
+
 function handleFieldInput(event) {
   const key = event.currentTarget?.dataset?.key;
+  const isSellingPointField = sellingPointFieldKeys.has(key);
   if (key) {
     fieldOverrides[key] = event.currentTarget.value;
     const skuId = selectedSku()?.id || "";
-    if (skuId) {
+    if (skuId && !isSellingPointField) {
       fieldOverridesBySku[skuId] = {
         ...(fieldOverridesBySku[skuId] || {}),
         [key]: event.currentTarget.value,
       };
     }
   }
-  captureFieldOverrides();
   fieldSnapshot = currentFieldSignature();
+  if (isSellingPointField) {
+    sellingPointDraftDirty = true;
+    updateSellingPointApplyState();
+    return;
+  }
+  captureFieldOverrides();
   renderAll();
 }
 
@@ -844,6 +904,11 @@ function currentPromptData(sku) {
     detailParameter: fieldsData.detailParameter ?? base.detailParameter,
     feature3: "",
   };
+  if (sellingPointDraftDirty) {
+    const appliedSellingPoints = appliedSellingPointValues(sku);
+    data.feature1 = appliedSellingPoints.feature1 ?? base.feature1 ?? "";
+    data.feature2 = appliedSellingPoints.feature2 ?? base.feature2 ?? "";
+  }
   const group = productGroups[sku.groupKey] || sku.group || {};
   const productName = promptValue(data.productName, defaultProductName(sku));
   const liveColor = promptValue(data.color, "");
@@ -5498,6 +5563,8 @@ async function extractSources() {
     };
     fieldOverrides = {};
     fieldOverridesBySku = {};
+    appliedSellingPointOverridesBySku = {};
+    sellingPointDraftDirty = false;
     if (useSupplierFileProducts) {
       extractedProducts = supplierFileProducts;
     } else if (amazonTemplate.products.length) {
@@ -6338,17 +6405,13 @@ function uniqueSellingPoints(items, limit = 6) {
 }
 
 function sellingPointCandidates(facts, limit = 6) {
-  const splitPointItems = (value) => String(value || "")
-    .split(/\s*(?:\r?\n|,|，|\/|\+)\s*/)
-    .map((item) => item.trim())
-    .filter(Boolean);
   return uniqueSellingPoints([
-    ...splitPointItems(facts.feature1),
-    ...splitPointItems(facts.feature2),
-    ...splitPointItems(facts.feature3),
+    ...splitSellingPointText(facts.feature1),
+    ...splitSellingPointText(facts.feature2),
+    ...splitSellingPointText(facts.feature3),
     facts.structure,
     facts.surfaceFinish,
-    ...splitPointItems(visibleDetailParameter(facts.detailParameter)),
+    ...splitSellingPointText(visibleDetailParameter(facts.detailParameter)),
     facts.fit,
   ].filter((point) => !isOrdinaryMaterialSellingPoint(point)), limit);
 }
@@ -6462,9 +6525,14 @@ function sellingPointLabels(points, fallback = "Verified Product Benefit") {
   return uniquePromptItems(labels).slice(0, 2);
 }
 
+function sellingPointFocusText(points, fallback = "verified product benefit") {
+  return limitedSellingPoints(points, 2).join(" + ") || fallback;
+}
+
 function sellingPointLine(points, fallback = "verified product benefit") {
   const labels = sellingPointLabels(points, conciseSellingPointLabel(fallback));
-  return `Selling point label${labels.length > 1 ? "s" : ""} (max 2, unique, 3-5 English words each): ${labels.join(" + ") || conciseSellingPointLabel(fallback)}`;
+  const focusText = sellingPointFocusText(points, fallback);
+  return `Selling point focus: ${focusText}. On-image label${labels.length > 1 ? "s" : ""} (max 2, unique, 3-5 English words each): ${labels.join(" + ") || conciseSellingPointLabel(fallback)}`;
 }
 
 function sellingPointDisplayText(points, fallback = "verified product benefit") {
@@ -6473,7 +6541,8 @@ function sellingPointDisplayText(points, fallback = "verified product benefit") 
 
 function sellingPointOnImageRule(points, fallback = "verified product benefit") {
   const labelText = sellingPointDisplayText(points, fallback);
-  return `On-image title/labels: large high-contrast title "${labelText}"; max 2 readable 3-5 word English labels; no extra claims; use simple icons/arrows only to prove them.`;
+  const focusText = sellingPointFocusText(points, fallback);
+  return `On-image title/labels: large high-contrast title "${labelText}" reflecting "${focusText}"; max 2 readable 3-5 word English labels; no extra claims; use simple icons/arrows only to prove them.`;
 }
 
 function sellingPointSceneGuide(points, facts = {}) {
@@ -6492,11 +6561,24 @@ function sellingPointSceneGuide(points, facts = {}) {
   ], "", 4);
 }
 
+function sellingPointSceneDescription(points, facts = {}, fallback = "verified product benefit") {
+  const focusText = sellingPointFocusText(points, fallback);
+  const sceneGuide = sellingPointSceneGuide(points, facts);
+  const baseScene = compactSpecificPromptItems([
+    facts.scene,
+    facts.fit,
+  ], categoryProfile(facts).scene || "category-matched product-use scene", 2);
+  return `Selling-point matched scene description: build the scene around "${focusText}"; use environment, action, props, close-ups, and product placement that prove ${sceneGuide || focusText}; base scene context: ${baseScene}.`;
+}
+
 function sellingPointImageTemplateRule(points, facts = {}, imageName = "this selling-point image") {
   const labelText = sellingPointDisplayText(points);
+  const focusText = sellingPointFocusText(points);
+  const sceneDescription = sellingPointSceneDescription(points, facts);
   const sceneGuide = sellingPointSceneGuide(points, facts);
   return [
-    `${imageName}: max 2 unique selling points; title "${labelText}" must be large, high-contrast, immediately visible.`,
+    `${imageName}: max 2 unique selling points; exact selling-point focus is "${focusText}"; title "${labelText}" must be large, high-contrast, immediately visible.`,
+    sceneDescription,
     "Labels must be 3-5 English words; no extra slogans, badges, claim blocks, or repeated benefits.",
     `Pair scene to selling points: ${sceneGuide}; props/action/environment must prove them.`,
     "Second selling-point image must not repeat the previous one.",
@@ -7201,7 +7283,12 @@ function sceneSellingPointItems(facts, points, fallback) {
     facts.material && !promptItemsOverlap(sellingPointText, facts.material) ? facts.material : "",
     facts.color && !promptItemsOverlap(sellingPointText, facts.color) ? facts.color : "",
   ], "", 2);
-  return [sellingPointLine(sellingPoints, fallback), sellingPointOnImageRule(sellingPoints, fallback), support].filter(Boolean);
+  return [
+    sellingPointLine(sellingPoints, fallback),
+    sellingPointSceneDescription(sellingPoints, facts, fallback),
+    sellingPointOnImageRule(sellingPoints, fallback),
+    support,
+  ].filter(Boolean);
 }
 
 function summaryInsetGuide(facts, points) {
@@ -7800,6 +7887,8 @@ function clearExtractedSourceState() {
   extractedProducts = [];
   fieldOverrides = {};
   fieldOverridesBySku = {};
+  appliedSellingPointOverridesBySku = {};
+  sellingPointDraftDirty = false;
   promptStore = [];
   renderProductSelect();
   renderFields(true);
@@ -7898,6 +7987,8 @@ function init() {
   byId("extractSources").addEventListener("click", () => {
     extractSources().catch((error) => {
       extractedProducts = [];
+      appliedSellingPointOverridesBySku = {};
+      sellingPointDraftDirty = false;
       renderProductSelect();
       renderFields(true);
       renderAll();
@@ -7914,6 +8005,9 @@ function init() {
     if (input.type === "text") input.addEventListener("input", updateStatus);
   });
   byId("resetFields").addEventListener("click", () => {
+    const skuId = selectedSku()?.id || "";
+    if (skuId) delete appliedSellingPointOverridesBySku[skuId];
+    sellingPointDraftDirty = false;
     renderFields(true);
     renderAll();
   });

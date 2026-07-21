@@ -125,9 +125,31 @@ input {
   min-height: 112px;
   padding: 10px;
   line-height: 1.5;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   resize: vertical;
   white-space: pre-wrap;
+}
+
+.selling-point-apply-wrap {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.selling-point-apply-wrap.is-hidden {
+  display: none;
+}
+
+.selling-point-apply {
+  margin-top: 0;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.selling-point-apply-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 input[type="file"].source-file {
