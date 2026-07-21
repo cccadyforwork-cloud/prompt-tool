@@ -230,8 +230,9 @@ const fields = [
   ["scene", "Use Scene", ""],
   ["feature1", "Selling Point 1", ""],
   ["feature2", "Selling Point 2", ""],
-  ["feature3", "Selling Point 3", ""],
 ];
+
+const multilineFieldKeys = new Set(["feature1", "feature2"]);
 
 let promptStore = [];
 let extractedProducts = [];
@@ -514,17 +515,30 @@ function renderFields(reset = false) {
     const value = reset
       ? (values[key] || fallback)
       : (cleanFieldDisplayValue(currentValue) || values[key] || fallback);
-    const displayValue = cleanFieldDisplayValue(value);
+    const displayValue = multilineFieldKeys.has(key)
+      ? formatMultilineSellingPoints(cleanFieldDisplayValue(value))
+      : cleanFieldDisplayValue(value);
+    const fieldControl = multilineFieldKeys.has(key)
+      ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
+      : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
     return `
       <div>
         <label for="field-${key}">${label}</label>
-        <input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">
+        ${fieldControl}
       </div>
     `;
   }).join("");
-  fieldList.querySelectorAll("input").forEach((input) => {
+  fieldList.querySelectorAll("input, textarea").forEach((input) => {
     ["input", "change"].forEach((eventName) => input.addEventListener(eventName, handleFieldInput));
   });
+}
+
+function formatMultilineSellingPoints(value) {
+  return String(value || "")
+    .split(/\s*(?:\r?\n|,|，|\/|\+)\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 function cleanTokenValue(value) {
@@ -942,7 +956,7 @@ function currentPromptData(sku) {
     ...nonEmptyFieldsData,
     surfaceFinish: fieldsData.surfaceFinish ?? base.surfaceFinish,
     detailParameter: fieldsData.detailParameter ?? base.detailParameter,
-    feature3: fieldsData.feature3 ?? base.feature3 ?? sku.feature3 ?? "",
+    feature3: "",
   };
   const group = productGroups[sku.groupKey] || sku.group || {};
   const productName = promptValue(data.productName, defaultProductName(sku));
@@ -6396,7 +6410,7 @@ function uniqueSellingPoints(items, limit = 6) {
 
 function sellingPointCandidates(facts, limit = 6) {
   const splitPointItems = (value) => String(value || "")
-    .split(/\s*(?:,|，|\/|\+)\s*/)
+    .split(/\s*(?:\r?\n|,|，|\/|\+)\s*/)
     .map((item) => item.trim())
     .filter(Boolean);
   return uniqueSellingPoints([

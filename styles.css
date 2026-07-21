@@ -121,6 +121,15 @@ input {
   padding: 8px 10px;
 }
 
+.selling-point-input {
+  min-height: 112px;
+  padding: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
 input[type="file"].source-file {
   min-height: auto;
   padding: 9px;
