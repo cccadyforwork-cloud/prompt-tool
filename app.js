@@ -236,6 +236,7 @@ const multilineFieldKeys = new Set(["feature1", "feature2"]);
 const sellingPointFieldKeys = new Set(["feature1", "feature2"]);
 
 let promptStore = [];
+let promptLanguageByCard = {};
 let extractedProducts = [];
 let hasUserSourceAttempt = false;
 const emptyExtractedProduct = {
@@ -675,34 +676,19 @@ function escapeHtml(value) {
 
 function highlightPromptVariables(text, facts, typeId = "") {
   const escapedText = escapeHtml(text);
-  const escapePattern = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-  const values = promptVariableValues(facts)
-    .filter(Boolean)
-    .map((value) => String(value).trim())
-    .filter((value) => value.length >= 3)
-    .sort((a, b) => b.length - a.length);
-
-  const seen = new Set();
-  const patterns = values.map((rawValue) => {
-    const escapedValue = escapeHtml(rawValue);
-    const escapedBracketValue = escapeHtml(bracketValue(rawValue));
-    const key = escapedValue.toLowerCase();
-    if (seen.has(key)) return "";
-    seen.add(key);
-    return `${escapePattern(escapedBracketValue)}|${escapePattern(escapedValue)}`;
-  }).filter(Boolean);
-
-  if (!patterns.length) return escapedText;
-
-  return escapedText.replace(new RegExp(patterns.join("|"), "g"), (match) => `<span class="variable-token">◆ ${match}</span>`);
+  return escapedText
+    .replace(/^((?:PRIORITY|VISUAL|TEXT|AVOID)|(?:优先级 PRIORITY|视觉画面 VISUAL|文字规则 TEXT|避免事项 AVOID)):$/gm, '<span class="prompt-section-title">$1:</span>')
+    .replace(/^((?:PRODUCT FACTS|SCENE &amp; COMPOSITION)|(?:产品事实 PRODUCT FACTS|场景构图 SCENE &amp; COMPOSITION)):/gm, '<span class="prompt-subsection-title">$1:</span>')
+    .replace(/(【[^】\n]{3,600}】)/g, '<span class="variable-token">$1</span>');
 }
 
 function promptVariableValues(facts) {
-  return [
+  return uniquePromptItems([
     facts.productName,
     facts.cupType,
     facts.selectedSpec,
+    facts.skuOption,
+    facts.titleSpec,
     facts.pack,
     facts.cupRange,
     facts.material,
@@ -723,30 +709,41 @@ function promptVariableValues(facts) {
     facts.structure,
     facts.surfaceFinish,
     facts.detailParameter,
-  ];
+    ...splitSellingPointText(facts.feature1),
+    ...splitSellingPointText(facts.feature2),
+  ].map((value) => cleanTokenValue(value)).filter(Boolean));
 }
 
 function bracketValue(value) {
   const clean = String(value || "").trim();
-  return clean ? `[${clean}]` : "";
+  return clean ? `【${clean}】` : "";
 }
 
 function bracketPromptVariables(text, facts, typeId = "") {
   const values = promptVariableValues(facts)
     .filter(Boolean)
     .map((value) => String(value).trim())
-    .filter((value) => value.length >= 3)
+    .filter((value) => value.length >= 3 && !isGenericPromptFallback(value))
     .sort((a, b) => b.length - a.length);
   const seen = new Set();
-  let bracketed = text;
-  values.forEach((value) => {
-    const key = value.toLowerCase();
-    if (seen.has(key)) return;
+  const uniqueValues = values.filter((value) => {
+    const key = comparablePromptItem(value);
+    if (!key || seen.has(key)) return false;
     seen.add(key);
-    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    bracketed = bracketed.replace(new RegExp(`(^|[^\\[])${escaped}(?!\\])`, "g"), (_, prefix) => `${prefix}${bracketValue(value)}`);
+    return true;
   });
-  return bracketed;
+  if (!uniqueValues.length) return text;
+  const pattern = new RegExp(uniqueValues
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|"), "g");
+
+  return String(text || "")
+    .split(/(【[^】]+】)/g)
+    .map((segment) => {
+      if (/^【[^】]+】$/.test(segment)) return segment;
+      return segment.replace(pattern, (match) => bracketValue(match));
+    })
+    .join("");
 }
 
 function readFieldValue(key) {
@@ -6379,13 +6376,13 @@ function isMainImageType(typeId) {
 }
 
 function shortTextRule() {
-  return "Text: English only; labels 3-5 words; max 2 labels on selling-point images, max 3 on parameter/summary images; no paragraphs, bullets, slogans, badges, repeated claims, or text stacking; keep authentic non-Chinese markings only.";
+  return "English labels only: 3-5 words, max 2 on selling-point images and max 3 on parameter/summary images; no paragraphs, badges, repeated claims, or text stacking.";
 }
 
 function humanSceneRule(facts) {
   return isApparelCategory(facts)
-    ? "People: optional European/American lifestyle model only; product-first fit/use; do not copy Asian reference ethnicity."
-    : "People: optional European/American only; product-first use; do not copy Asian reference ethnicity.";
+    ? "People optional; use European/American model only when it proves fit/use."
+    : "People optional; product remains the focus.";
 }
 
 function sharedVisualRules(facts, typeId = "") {
@@ -6410,27 +6407,26 @@ function basicImageRequirements(templateId, typeId, extra = "") {
       parts.push("premium scene-based hero background matched to the product theme");
     }
   } else {
-    parts.push("verified added overlay text only when useful", "all added text must be English only", "preserve authentic non-Chinese product/packaging markings only");
+    parts.push("verified overlay text only when useful");
   }
   if (extra) parts.push(extra);
-  if (!isMainImageType(typeId)) parts.push(shortTextRule(), visualProofFirstRule());
   return compactPromptItems(parts, "", 8);
 }
 
 function noChineseTextRule() {
-  return "No Chinese text anywhere; readable text must be English only.";
+  return "No Chinese text; keep authentic non-Chinese product markings only.";
 }
 
 function visualProofFirstRule() {
-  return "Visual proof first: show product behavior, close-ups, icons, arrows, measurements, or scene action; text is only a short locator.";
+  return "Visual proof first: use action, close-ups, icons, arrows, or measurements; text is only a short locator.";
 }
 
 function imageMeasurementUnitRule() {
-  return "Measurement unit lock: any length or size label shown in the generated image must use inches (in), not cm or mm; convert source cm/mm measurements to inches for on-image text.";
+  return "On-image length labels use inches (in); convert source cm/mm.";
 }
 
 function amazonImageFileSizeRule() {
-  return "Amazon file rule: final exported image file size must be 5 MB or less.";
+  return "Final image file <= 5 MB.";
 }
 
 function formatInches(value) {
@@ -6537,7 +6533,7 @@ function productIdentityBasicRule(facts) {
 
 function sceneProductDetailText(facts, extraItems = [], limit = 8) {
   return productDetailText(facts, [
-    productIdentityLockText(facts),
+    categoryProfile(facts).identity,
     ...extraItems,
   ], limit);
 }
@@ -6554,14 +6550,10 @@ function sceneContextProductDetailText(facts, extraItems = [], limit = 5) {
 }
 
 function overallStyleText(facts, typeId, extra = "", options = {}) {
-  const includeHumanRule = options.includeHumanRule !== false;
   return compactPromptItems([
     categoryStyleRule(facts),
-    includeHumanRule ? humanSceneRule(facts) : "",
-    isMainImageType(typeId) ? "" : shortTextRule(),
-    referenceRuleText(),
     extra,
-  ], "", 6);
+  ], "", 3);
 }
 
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
@@ -6569,10 +6561,10 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     productIdentityBasicRule(facts),
     basic || basicImageRequirements(templateId, typeId),
   ], "", 8);
-  const visualText = compactPromptItems([
-    details || productDetailText(facts),
-    style || overallStyleText(facts, typeId),
-  ], "", 10);
+  const visualText = promptSubsections([
+    ["PRODUCT FACTS", details || productDetailText(facts)],
+    ["SCENE & COMPOSITION", style || overallStyleText(facts, typeId)],
+  ]);
   const textRules = compactPromptItems([
     noChineseTextRule(),
     isMainImageType(typeId) ? "" : shortTextRule(),
@@ -6581,7 +6573,7 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     imageMeasurementUnitRule(),
     amazonImageFileSizeRule(),
     referenceRuleText(),
-  ], "", 8);
+  ], "", 6);
   const sections = [
     promptSection("PRIORITY", priorityText),
     promptSection("VISUAL", visualText),
@@ -6590,15 +6582,162 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
   if (includeNegative) {
     sections.push(promptSection("AVOID", negative || negativePrompt(facts)));
   }
-  return sections.join("\n");
+  return sections.join("\n\n");
 }
 
 function promptSection(label, value) {
+  const clean = normalizePromptLines(value);
+  const lines = clean.split("\n").filter(Boolean);
+  const formatted = lines.length > 1
+    ? lines.map((line) => ensurePromptPeriod(line)).join("\n")
+    : ensurePromptPeriod(clean);
+  return `${label}:\n${formatted}`;
+}
+
+function promptSubsections(sections) {
+  return sections.map(([label, value]) => {
+    const clean = normalizePromptLines(value).replace(/\n+/g, " / ");
+    return clean ? `${label}: ${clean}` : "";
+  }).filter(Boolean).join("\n");
+}
+
+function normalizePromptLines(value) {
+  return String(value || "")
+    .split(/\n+/)
+    .map((line) => line
+      .replace(/\s+/g, " ")
+      .replace(/[.。]+$/g, "")
+      .trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function ensurePromptPeriod(value) {
   const clean = String(value || "")
     .replace(/\s+/g, " ")
-    .replace(/[.。]+$/g, "")
     .trim();
-  return `${label}: ${clean}.`;
+  if (!clean) return "";
+  return /[.!?。]$/.test(clean) ? clean : `${clean}.`;
+}
+
+function promptCardKey(sku, template, type) {
+  return [sku?.id || "sku", template?.id || "template", type?.id || "type"].join("::");
+}
+
+function promptLanguageLabel(language) {
+  return language === "zh" ? "中" : "英";
+}
+
+function promptTextForLanguage(englishPrompt, language) {
+  return language === "zh" ? translatePromptToChinese(englishPrompt) : englishPrompt;
+}
+
+function translatePromptToChinese(prompt) {
+  return String(prompt || "")
+    .split(/(【[^】]+】|"[^"]*"|'[^']*')/g)
+    .map((segment) => {
+      if (/^(?:【[^】]+】|"[^"]*"|'[^']*')$/.test(segment)) return segment;
+      return translatePromptSegment(segment);
+    })
+    .join("");
+}
+
+function translatePromptSegment(segment) {
+  const replacements = [
+    [/^PRIORITY:$/gm, "优先级 PRIORITY:"],
+    [/^VISUAL:$/gm, "视觉画面 VISUAL:"],
+    [/^TEXT:$/gm, "文字规则 TEXT:"],
+    [/^AVOID:$/gm, "避免事项 AVOID:"],
+    [/^PRODUCT FACTS:/gm, "产品事实 PRODUCT FACTS:"],
+    [/^SCENE & COMPOSITION:/gm, "场景构图 SCENE & COMPOSITION:"],
+    [/\bProduct identity lock comes first\b/g, "产品身份锁定优先"],
+    [/\bexact selected current product only\b/g, "只生成当前选中的准确产品"],
+    [/\bno category substitution\b/g, "不要替换成其他品类"],
+    [/\bno redesign\b/g, "不要重新设计产品"],
+    [/\bno invented parts\b/g, "不要虚构部件"],
+    [/\bIdentity lock\b/g, "产品身份锁定"],
+    [/\bExact source product\b/g, "准确来源产品"],
+    [/\bExact product type\/name\b/g, "准确产品类型/名称"],
+    [/\bExact option\/spec\b/g, "准确选项/规格"],
+    [/\bExact color\b/g, "准确颜色"],
+    [/\bExact material\b/g, "准确材质"],
+    [/\bExact visible structure\b/g, "准确可见结构"],
+    [/\bPack count if shown\b/g, "如展示包装数量需准确"],
+    [/\bKeep authentic markings\b/g, "保留真实产品标识"],
+    [/\bCurrent selected option\b/g, "当前选中选项"],
+    [/\bCurrent option\b/g, "当前选项"],
+    [/\bDetail fields\b/g, "细节字段"],
+    [/\bSummary points\b/g, "总结卖点"],
+    [/\bDetail inset subjects\b/g, "细节小窗主题"],
+    [/\bMacro focus\b/g, "微距重点"],
+    [/\bScene\b/g, "场景"],
+    [/\bReference\b/g, "参考"],
+    [/\bcomposition only\b/g, "只参考构图"],
+    [/\bcopy no claims, text, brand, or people\b/g, "不要复制对方宣称、文字、品牌或人物"],
+    [/\b1:1 Amazon listing image\b/g, "1:1 亚马逊 listing 图片"],
+    [/\b1:1 Amazon image\b/g, "1:1 亚马逊图片"],
+    [/\b4K clarity\b/g, "4K 清晰度"],
+    [/\bsharp realistic detail\b/g, "清晰真实细节"],
+    [/\bpremium scene-based hero background\b/g, "高级场景化主图背景"],
+    [/\bproduct occupies most of the frame\b/g, "产品占据画面主体"],
+    [/\bwhite background\b/g, "白底"],
+    [/\bclean studio lighting\b/g, "干净棚拍光线"],
+    [/\bverified overlay text only when useful\b/g, "只在有用时添加已验证的覆盖文字"],
+    [/\bNo Chinese text\b/g, "图片内不要出现中文文字"],
+    [/\bkeep authentic non-Chinese product markings only\b/g, "只保留真实的非中文产品标识"],
+    [/\bEnglish labels only\b/g, "图片内标签只用英文"],
+    [/\blabels 3-5 words\b/g, "标签 3-5 个英文词"],
+    [/\bmax 2 on selling-point images\b/g, "卖点图最多 2 个标签"],
+    [/\bmax 3 on parameter\/summary images\b/g, "参数/总结图最多 3 个标签"],
+    [/\bno paragraphs\b/g, "不要段落文字"],
+    [/\bno badges\b/g, "不要徽章式贴纸"],
+    [/\bno repeated claims\b/g, "不要重复宣称"],
+    [/\bno text stacking\b/g, "不要堆叠文字"],
+    [/\bVisual proof first\b/g, "视觉证明优先"],
+    [/\buse action, close-ups, icons, arrows, or measurements\b/g, "用动作、特写、图标、箭头或尺寸证明"],
+    [/\btext is only a short locator\b/g, "文字只作为短标签定位"],
+    [/\bPeople optional\b/g, "人物可选"],
+    [/\bproduct remains the focus\b/g, "产品始终是主体"],
+    [/\buse European\/American model only when it proves fit\/use\b/g, "仅在证明穿戴/使用时使用欧美模特"],
+    [/\bOn-image length labels use inches \(in\)\b/g, "图片内长度标签使用英寸 (in)"],
+    [/\bconvert source cm\/mm\b/g, "将来源 cm/mm 转换为英寸"],
+    [/\bFinal image file <= 5 MB\b/g, "最终图片文件不超过 5 MB"],
+    [/\bNo wrong product\b/g, "不要错误产品"],
+    [/\binvented specs\b/g, "不要虚构规格"],
+    [/\bunsupported claims\b/g, "不要无依据宣称"],
+    [/\bextra logos\b/g, "不要额外 logo"],
+    [/\bChinese\/source text\b/g, "不要中文/来源文字"],
+    [/\bdense copy\b/g, "不要密集文案"],
+    [/\blong labels\b/g, "不要长标签"],
+    [/\bbullets\b/g, "不要项目符号"],
+    [/\bblur\b/g, "不要模糊"],
+    [/\bfocus\b/g, "聚焦"],
+    [/\bheadline\b/g, "标题"],
+    [/\buses polished Amazon editorial typography integrated with the scene\b/g, "使用自然融入场景的精致亚马逊编辑风标题排版"],
+    [/\bprove\b/g, "证明"],
+    [/\bthrough\b/g, "通过"],
+    [/\bElegant hierarchy\b/g, "层级优雅"],
+    [/\bgenerous padding\b/g, "留白充足"],
+    [/\bnatural line breaks\b/g, "自然换行"],
+    [/\bno oversized hard-sell banner\b/g, "不要夸张硬广横幅"],
+    [/\bsticker look\b/g, "不要贴纸感"],
+    [/\bdense claim block\b/g, "不要密集宣称块"],
+    [/\brepeated benefit\b/g, "不要重复卖点"],
+    [/\bDistinct from Image\b/g, "需区别于第"],
+    [/\bProduct remains clear and accurate\b/g, "产品保持清晰准确"],
+    [/\bno unsupported claims\b/g, "不要无依据宣称"],
+    [/\bUse the reference blueprint proof method\b/g, "使用参考蓝图的证明方式"],
+    [/\bdo not force\b/g, "不要强行加入"],
+    [/\bunless verified\b/g, "除非资料已验证"],
+    [/\bExecute slot composition exactly\b/g, "严格执行该图位构图"],
+    [/\bBlueprint proof method\b/g, "蓝图证明方式"],
+    [/\bProduct\b/g, "产品"],
+    [/\bOption\b/g, "选项"],
+    [/\bColor\b/g, "颜色"],
+    [/\bMaterial\b/g, "材质"],
+    [/\bStructure\b/g, "结构"],
+  ];
+  return replacements.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), segment);
 }
 
 function compactPromptItems(items, fallback = "", limit = 5) {
@@ -6874,20 +7013,8 @@ function sellingPointFocusText(points, fallback = "verified product benefit") {
   return limitedSellingPoints(points, 2).join(" + ") || fallback;
 }
 
-function sellingPointLine(points, fallback = "verified product benefit") {
-  const labels = sellingPointLabels(points, conciseSellingPointLabel(fallback));
-  const focusText = sellingPointFocusText(points, fallback);
-  return `Selling point focus: ${focusText}. On-image label${labels.length > 1 ? "s" : ""} (max 2, unique, 3-5 English words each): ${labels.join(" + ") || conciseSellingPointLabel(fallback)}`;
-}
-
 function sellingPointDisplayText(points, fallback = "verified product benefit") {
   return sellingPointLabels(points, conciseSellingPointLabel(fallback)).join(" + ") || conciseSellingPointLabel(fallback);
-}
-
-function sellingPointOnImageRule(points, fallback = "verified product benefit") {
-  const labelText = sellingPointDisplayText(points, fallback);
-  const focusText = sellingPointFocusText(points, fallback);
-  return `On-image title/labels: large high-contrast title "${labelText}" reflecting "${focusText}"; max 2 readable 3-5 word English labels; no extra claims; use simple icons/arrows only to prove them.`;
 }
 
 function sellingPointSceneGuide(points, facts = {}) {
@@ -6913,7 +7040,7 @@ function sellingPointSceneDescription(points, facts = {}, fallback = "verified p
     facts.scene,
     facts.fit,
   ], categoryProfile(facts).scene || "category-matched product-use scene", 2);
-  return `Selling-point matched scene description: build the scene around "${focusText}"; use environment, action, props, close-ups, and product placement that prove ${sceneGuide || focusText}; base scene context: ${baseScene}.`;
+  return `Scene: ${baseScene}; prove "${focusText}" through ${sceneGuide || focusText}.`;
 }
 
 function sellingPointImageTemplateRule(points, facts = {}, imageName = "this selling-point image") {
@@ -6922,11 +7049,9 @@ function sellingPointImageTemplateRule(points, facts = {}, imageName = "this sel
   const sceneDescription = sellingPointSceneDescription(points, facts);
   const sceneGuide = sellingPointSceneGuide(points, facts);
   return [
-    `${imageName}: max 2 unique selling points; exact selling-point focus is "${focusText}"; title "${labelText}" must be large, high-contrast, immediately visible.`,
+    `${imageName}: focus "${focusText}"; headline "${labelText}" uses polished Amazon editorial typography integrated with the scene.`,
     sceneDescription,
-    "Labels must be 3-5 English words; no extra slogans, badges, claim blocks, or repeated benefits.",
-    `Pair scene to selling points: ${sceneGuide}; props/action/environment must prove them.`,
-    "Second selling-point image must not repeat the previous one.",
+    "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, or repeated benefit.",
   ].join(" ");
 }
 
@@ -7329,8 +7454,8 @@ function specModulePrompt(typeId, facts) {
     },
     "6": {
       basic: basicImageRequirements("spec", "6"),
-      details: productDetailText(facts, [sellingPointLine(sellingPointGroup1), sellingPointOnImageRule(sellingPointGroup1)], 6),
-      style: overallStyleText(facts, "6", `Selling-point proof scene: ${sellingPointSceneGuide(sellingPointGroup1, facts)}; prove benefits with icons/arrows/insets/action first; use only short 3-5 word labels.`),
+      details: productDetailText(facts, [], 5),
+      style: overallStyleText(facts, "6", sellingPointImageTemplateRule(sellingPointGroup1, facts, "Spec template Image 6")),
     },
     "7": {
       basic: basicImageRequirements("spec", "7"),
@@ -7396,11 +7521,8 @@ function sceneOverallStyleText(facts, typeId, extra = "") {
   return compactPromptItems([
     sceneCategoryStyleRule(facts),
     sceneQualityRule(),
-    isMainImageType(typeId) ? "" : "Use only short verified labels when useful.",
-    humanSceneRule(facts),
-    sourcePayload.competitor ? referenceRuleText() : "",
     extra,
-  ], "", 7);
+  ], "", 4);
 }
 
 function multiSceneLifestyleStyleText(facts, sceneList) {
@@ -7420,7 +7542,6 @@ function multiSceneLifestyleStyleText(facts, sceneList) {
     ...globalSceneLines,
     ...categoryLines,
     "No added selling-point text, no callout labels, no badges, no arrows, no feature icons, no product-spec explanation, no inset close-up panels.",
-    humanSceneRule(facts),
   ].filter(Boolean).join(" / ");
 }
 
@@ -7628,12 +7749,7 @@ function sceneSellingPointItems(facts, points, fallback) {
     facts.material && !promptItemsOverlap(sellingPointText, facts.material) ? facts.material : "",
     facts.color && !promptItemsOverlap(sellingPointText, facts.color) ? facts.color : "",
   ], "", 2);
-  return [
-    sellingPointLine(sellingPoints, fallback),
-    sellingPointSceneDescription(sellingPoints, facts, fallback),
-    sellingPointOnImageRule(sellingPoints, fallback),
-    support,
-  ].filter(Boolean);
+  return [support].filter(Boolean);
 }
 
 function summaryInsetGuide(facts, points) {
@@ -7698,12 +7814,12 @@ function sceneModulePrompt(typeId, facts) {
     "5": {
       basic: basicImageRequirements("scene", "5"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup1, "the primary verified benefit"), 7),
-      style: sceneOverallStyleText(facts, "5", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")} Use visual proof first; labels/callouts are short locators only.`),
+      style: sceneOverallStyleText(facts, "5", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")}`),
     },
     "6": {
       basic: basicImageRequirements("scene", "6"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup2, "the secondary verified benefit"), 6),
-      style: sceneOverallStyleText(facts, "6", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Composition and selling points must differ from Image 5; use visual proof first and short labels only.`),
+      style: sceneOverallStyleText(facts, "6", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Distinct from Image 5.`),
     },
     "7": {
       basic: basicImageRequirements("scene", "7"),
@@ -7818,15 +7934,13 @@ function featureModulePrompt(typeId, facts) {
     },
     "6": {
       basic: basicImageRequirements("feature", "6"),
-      details: productDetailText(facts, [sellingPointLine(sellingPointGroup1), sellingPointOnImageRule(sellingPointGroup1)], 6),
+      details: productDetailText(facts, [], 5),
       style: overallStyleText(facts, "6", `Core function demo. ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Feature template Image 6")} Product remains clear and accurate.`),
     },
     "7": {
       basic: basicImageRequirements("feature", "7"),
       details: productDetailText(facts, [
         `Detail fields: ${detailInfo}`,
-        sellingPointLine(sellingPointGroup2, "verified secondary benefit"),
-        sellingPointOnImageRule(sellingPointGroup2, "verified secondary benefit"),
       ], 8),
       style: overallStyleText(facts, "7", `Detail/material feature display with macro close-ups or structure proof. ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Feature template Image 7")} Distinct from Image 6; no unsupported claims.`, { includeHumanRule: false }),
     },
@@ -7954,8 +8068,6 @@ function plantTieModulePrompt(typeId, facts) {
       basic: basicImageRequirements("plantTie", "4"),
       details: productDetailText(facts, [
         plantTieIdentityRule(facts),
-        sellingPointLine(sellingPointGroup, "verified plant tie benefit"),
-        sellingPointOnImageRule(sellingPointGroup, "verified plant tie benefit"),
       ], 7),
       style: sceneOverallStyleText(facts, "4", [
         plantTieIdentityRule(facts),
@@ -8077,12 +8189,10 @@ function referenceLinkModulePrompt(typeId, facts) {
       basic: blueprintBasic,
       details: productDetailText(facts, [
         blueprintRoute,
-        `Feature focus: ${featurePoint}`,
         referenceInsight,
-        sellingPointOnImageRule(sellingPointGroups(facts, 0), "verified benefit"),
         "Use the reference blueprint proof method; do not force bending, stretching, waterproofing, non-slip, portability, or other claims unless verified.",
       ], 7),
-      style: overallStyleText(facts, "4", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Prove selected benefits through the blueprint proof method: ${blueprint.proof}.`),
+      style: overallStyleText(facts, "4", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. ${sellingPointImageTemplateRule(sellingPointGroups(facts, 0), facts, "Reference template Image 4")} Blueprint proof method: ${blueprint.proof}.`),
     },
     "5": {
       basic: blueprintBasic,
@@ -8192,22 +8302,29 @@ function renderProductPromptGrid() {
   const data = currentPromptData(sku);
   const facts = promptFacts(sku, data);
   const displayLabel = skuDisplayLabel(sku, data);
-  promptStore = template.imageTypes.map((type) => ({
-    id: type.id,
-    prompt: promptFor(template.id, type.id, sku, data),
-  }));
+  promptStore = template.imageTypes.map((type) => {
+    const key = promptCardKey(sku, template, type);
+    const language = promptLanguageByCard[key] || "en";
+    const promptEn = bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
+    const prompt = promptTextForLanguage(promptEn, language);
+    return { id: type.id, key, language, promptEn, prompt };
+  });
 
   grid.innerHTML = template.imageTypes.map((type, index) => {
-    const prompt = promptStore[index].prompt;
-    const displayTitle = promptImageDisplayTitle(template, type, facts) || type.name;
+    const item = promptStore[index];
+    const prompt = item.prompt;
     return `
       <article class="prompt-card">
         <div class="prompt-card-head">
           <div>
             <span>${escapeHtml(displayLabel)}</span>
-            <h3>${escapeHtml(displayTitle)}</h3>
+            <h3>${escapeHtml(type.name)}</h3>
           </div>
-          <button type="button" class="copy-prompt" data-prompt-index="${index}">Copy</button>
+          <div class="prompt-actions">
+            <span class="prompt-language-badge" data-language-badge="${index}">${promptLanguageLabel(item.language)}</span>
+            <button type="button" class="copy-prompt" data-prompt-index="${index}">Copy</button>
+            <button type="button" class="language-toggle" data-prompt-index="${index}">中/英</button>
+          </div>
         </div>
         <pre class="prompt-preview">${highlightPromptVariables(prompt, facts, type.id)}</pre>
       </article>
@@ -8217,6 +8334,25 @@ function renderProductPromptGrid() {
   grid.querySelectorAll(".copy-prompt").forEach((button) => {
     button.addEventListener("click", () => {
       copyText(promptStore[Number(button.dataset.promptIndex)]?.prompt || "", "已复制该图提示词。", button);
+    });
+  });
+
+  grid.querySelectorAll(".language-toggle").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.promptIndex);
+      const item = promptStore[index];
+      const type = template.imageTypes[index];
+      if (!item || !type) return;
+      const nextLanguage = item.language === "zh" ? "en" : "zh";
+      promptLanguageByCard[item.key] = nextLanguage;
+      item.language = nextLanguage;
+      item.prompt = promptTextForLanguage(item.promptEn, nextLanguage);
+      const card = button.closest(".prompt-card");
+      const preview = card?.querySelector(".prompt-preview");
+      const badge = card?.querySelector(`[data-language-badge="${index}"]`);
+      if (preview) preview.innerHTML = highlightPromptVariables(item.prompt, facts, type.id);
+      if (badge) badge.textContent = promptLanguageLabel(nextLanguage);
+      byId("copyStatus").textContent = `已切换为${nextLanguage === "zh" ? "中文" : "英文"}提示词。`;
     });
   });
 }
@@ -8241,7 +8377,10 @@ function allPromptsForSku() {
   const facts = promptFacts(sku, data);
   return template.imageTypes.map((type) => {
     const title = promptImageDisplayTitle(template, type, facts) || type.promptName || type.name;
-    return `## ${title}\n\n${promptFor(template.id, type.id, sku, data)}`;
+    const key = promptCardKey(sku, template, type);
+    const promptEn = bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
+    const prompt = promptTextForLanguage(promptEn, promptLanguageByCard[key] || "en");
+    return `## ${title}\n\n${prompt}`;
   }).join("\n\n---\n\n");
 }
 
@@ -8256,6 +8395,7 @@ function clearExtractedSourceState() {
   fieldOverrides = {};
   fieldOverridesBySku = {};
   appliedSellingPointOverridesBySku = {};
+  promptLanguageByCard = {};
   sellingPointDraftDirty = false;
   promptStore = [];
   renderProductSelect();
