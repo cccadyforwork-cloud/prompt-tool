@@ -676,9 +676,13 @@ function escapeHtml(value) {
 
 function highlightPromptVariables(text, facts, typeId = "") {
   const escapedText = escapeHtml(text);
+  const sectionPattern = "PRIORITY|VISUAL|TEXT|AVOID|优先级|视觉画面|文字规则|避免事项";
+  const subsectionPattern = "PRODUCT FACTS|SCENE &amp; COMPOSITION|SCENE DIRECTION|COMPOSITION \\/ LAYOUT|TEXT \\/ CALLOUTS|ACCURACY GUARDRAILS|OTHER STYLE|产品事实|场景构图|场景方向|构图布局|文字标注|准确性约束|其他风格";
   return escapedText
-    .replace(/^((?:PRIORITY|VISUAL|TEXT|AVOID)|(?:优先级 PRIORITY|视觉画面 VISUAL|文字规则 TEXT|避免事项 AVOID)):$/gm, '<span class="prompt-section-title">$1:</span>')
-    .replace(/^((?:PRODUCT FACTS|SCENE &amp; COMPOSITION)|(?:产品事实 PRODUCT FACTS|场景构图 SCENE &amp; COMPOSITION)):/gm, '<span class="prompt-subsection-title">$1:</span>')
+    .replace(new RegExp(`^(${sectionPattern}):$`, "gm"), '<span class="prompt-section-title">$1</span>')
+    .replace(new RegExp(`^(${subsectionPattern}):(.*)$`, "gm"), (_, label, body) => (
+      `<span class="prompt-subsection-line"><span class="prompt-subsection-title">${label}</span><span class="prompt-subsection-body">${body.trim()}</span></span>`
+    ))
     .replace(/(【[^】\n]{3,600}】)/g, '<span class="variable-token">$1</span>');
 }
 
@@ -6561,10 +6565,10 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     productIdentityBasicRule(facts),
     basic || basicImageRequirements(templateId, typeId),
   ], "", 8);
-  const visualText = promptSubsections([
-    ["PRODUCT FACTS", details || productDetailText(facts)],
-    ["SCENE & COMPOSITION", style || overallStyleText(facts, typeId)],
-  ]);
+  const visualText = promptVisualSubsections(
+    details || productDetailText(facts),
+    style || overallStyleText(facts, typeId)
+  );
   const textRules = compactPromptItems([
     noChineseTextRule(),
     isMainImageType(typeId) ? "" : shortTextRule(),
@@ -6594,11 +6598,56 @@ function promptSection(label, value) {
   return `${label}:\n${formatted}`;
 }
 
-function promptSubsections(sections) {
-  return sections.map(([label, value]) => {
-    const clean = normalizePromptLines(value).replace(/\n+/g, " / ");
-    return clean ? `${label}: ${clean}` : "";
-  }).filter(Boolean).join("\n");
+function promptVisualSubsections(details, style) {
+  const productFacts = normalizePromptLines(details).replace(/\n+/g, " / ");
+  const styleGroups = sceneCompositionGroups(style);
+  return [
+    productFacts && `PRODUCT FACTS: ${productFacts}`,
+    "SCENE & COMPOSITION:",
+    ...styleGroups.map(([label, value]) => value ? `${label}: ${value}` : ""),
+  ].filter(Boolean).join("\n");
+}
+
+function sceneCompositionGroups(style) {
+  const clauses = splitPromptClauses(style);
+  const groups = {
+    scene: [],
+    composition: [],
+    text: [],
+    guardrails: [],
+    other: [],
+  };
+  clauses.forEach((clause) => {
+    const lower = clause.toLowerCase();
+    if (/\b(?:no|do not|don't|never|avoid|must not|unless verified|unsupported|unverified|wrong|invented|preserve|authentic|source-accurate|exact|lock|stay accurate|remains clear|distinct from)\b/.test(lower)) {
+      groups.guardrails.push(clause);
+    } else if (/\b(?:text|label|labels|title|headline|caption|callout|typography|wordart|sticker|badge|slogan|claim block)\b/.test(lower)) {
+      groups.text.push(clause);
+    } else if (/\b(?:composition|layout|grid|panel|poster|inset|close-up|macro|angle|centered|dominant|occupies|frame|hierarchy|padding|line break|ruler|arrow|measured|main subject)\b/.test(lower)) {
+      groups.composition.push(clause);
+    } else if (/\b(?:scene|background|lifestyle|hero|use|environment|product-theme|category|premium|studio|human|model|props|action|proof|demo|show)\b/.test(lower)) {
+      groups.scene.push(clause);
+    } else {
+      groups.other.push(clause);
+    }
+  });
+  return [
+    ["SCENE DIRECTION", compactPromptItems(groups.scene, "", 4)],
+    ["COMPOSITION / LAYOUT", compactPromptItems(groups.composition, "", 5)],
+    ["TEXT / CALLOUTS", compactPromptItems(groups.text, "", 4)],
+    ["ACCURACY GUARDRAILS", compactPromptItems(groups.guardrails, "", 4)],
+    ["OTHER STYLE", compactPromptItems(groups.other, "", 3)],
+  ];
+}
+
+function splitPromptClauses(value) {
+  return String(value || "")
+    .split(/\s+\/\s+|[.!?]\s+/)
+    .map((item) => item
+      .replace(/\s+/g, " ")
+      .replace(/[.。]+$/g, "")
+      .trim())
+    .filter(Boolean);
 }
 
 function normalizePromptLines(value) {
@@ -6617,6 +6666,7 @@ function ensurePromptPeriod(value) {
     .replace(/\s+/g, " ")
     .trim();
   if (!clean) return "";
+  if (/:$/.test(clean)) return clean;
   return /[.!?。]$/.test(clean) ? clean : `${clean}.`;
 }
 
@@ -6624,32 +6674,98 @@ function promptCardKey(sku, template, type) {
   return [sku?.id || "sku", template?.id || "template", type?.id || "type"].join("::");
 }
 
-function promptLanguageLabel(language) {
-  return language === "zh" ? "中" : "英";
-}
-
 function promptTextForLanguage(englishPrompt, language) {
   return language === "zh" ? translatePromptToChinese(englishPrompt) : englishPrompt;
 }
 
 function translatePromptToChinese(prompt) {
-  return String(prompt || "")
-    .split(/(【[^】]+】|"[^"]*"|'[^']*')/g)
-    .map((segment) => {
-      if (/^(?:【[^】]+】|"[^"]*"|'[^']*')$/.test(segment)) return segment;
-      return translatePromptSegment(segment);
-    })
-    .join("");
+  return translatePromptSegment(prompt);
 }
 
 function translatePromptSegment(segment) {
   const replacements = [
-    [/^PRIORITY:$/gm, "优先级 PRIORITY:"],
-    [/^VISUAL:$/gm, "视觉画面 VISUAL:"],
-    [/^TEXT:$/gm, "文字规则 TEXT:"],
-    [/^AVOID:$/gm, "避免事项 AVOID:"],
-    [/^PRODUCT FACTS:/gm, "产品事实 PRODUCT FACTS:"],
-    [/^SCENE & COMPOSITION:/gm, "场景构图 SCENE & COMPOSITION:"],
+    [/^PRIORITY:$/gm, "优先级:"],
+    [/^VISUAL:$/gm, "视觉画面:"],
+    [/^TEXT:$/gm, "文字规则:"],
+    [/^AVOID:$/gm, "避免事项:"],
+    [/^PRODUCT FACTS:/gm, "产品事实:"],
+    [/^SCENE & COMPOSITION:/gm, "场景构图:"],
+    [/^SCENE DIRECTION:/gm, "场景方向:"],
+    [/^COMPOSITION \/ LAYOUT:/gm, "构图布局:"],
+    [/^TEXT \/ CALLOUTS:/gm, "文字标注:"],
+    [/^ACCURACY GUARDRAILS:/gm, "准确性约束:"],
+    [/^OTHER STYLE:/gm, "其他风格:"],
+    [/"Size Reference"/g, "“尺寸参考”"],
+    [/"Product Details"/g, "“产品详情”"],
+    [/"Product Information"/g, "“产品信息”"],
+    [/"Choose Your Color"/g, "“选择颜色”"],
+    [/"Choose Your Style"/g, "“选择款式”"],
+    [/"What You Get"/g, "“套装内容”"],
+    [/"Complete Set"/g, "“完整套装”"],
+    [/\bSize Reference\b/g, "尺寸参考"],
+    [/\bProduct Details\b/g, "产品详情"],
+    [/\bProduct Information\b/g, "产品信息"],
+    [/\bChoose Your Color\b/g, "选择颜色"],
+    [/\bChoose Your Style\b/g, "选择款式"],
+    [/\bWhat You Get\b/g, "套装内容"],
+    [/\bComplete Set\b/g, "完整套装"],
+    [/\bProduct-first proof scene\b/g, "产品优先的证明场景"],
+    [/\bPremium product-theme hero scene\b/g, "高级产品主题主视觉场景"],
+    [/\bRealistic lifestyle use scene\b/g, "真实生活方式使用场景"],
+    [/\bPure white Amazon main image\b/g, "亚马逊纯白底主图"],
+    [/\bSize-reference parameter infographic\b/g, "尺寸参考参数信息图"],
+    [/\bPremium option showcase\b/g, "高级选项展示"],
+    [/\bBundle included-components showcase\b/g, "套装内含组件展示"],
+    [/\bMatch source color exactly\b/gi, "严格匹配来源颜色"],
+    [/\bno hue\/brightness shift\b/gi, "不要色相/亮度偏移"],
+    [/\bproduct hero\b/gi, "产品主体"],
+    [/\bany human presence stays secondary\b/gi, "人物存在也保持次要"],
+    [/\btemplate Image\b/gi, "模板图"],
+    [/\bScene template Image\b/gi, "场景模板图"],
+    [/\bSpec template Image\b/gi, "规格模板图"],
+    [/\bFeature template Image\b/gi, "功能模板图"],
+    [/\bReference template Image\b/gi, "参考模板图"],
+    [/\bKeep authentic non-Chinese product markings only\b/gi, "只保留真实的非中文产品标识"],
+    [/\bKeep authentic non-Chinese product\/packaging markings only\b/gi, "只保留真实的非中文产品/包装标识"],
+    [/\bKeep authentic product markings\b/gi, "保留真实产品标识"],
+    [/\bNo Asian reference ethnicity\b/gi, "不要亚洲参考人种特征"],
+    [/\bpeople only European\/American if shown\b/gi, "如展示人物，仅使用欧美人物"],
+    [/\bReference blueprint slot\b/g, "参考蓝图图位"],
+    [/\bReference-derived composition\b/g, "参考提取构图"],
+    [/\bReference-derived proof method\b/g, "参考提取证明方式"],
+    [/\bReference text density\b/g, "参考文字密度"],
+    [/\bReference layout cues\b/g, "参考布局线索"],
+    [/\bReference proof-slot cues\b/g, "参考证明图位线索"],
+    [/\bExecute this exact reference slot with the current product\b/g, "用当前产品执行这个准确的参考图位"],
+    [/\bExecute slot composition exactly\b/g, "严格执行该图位构图"],
+    [/\bCurrent product identity is the top priority\b/g, "当前产品身份是最高优先级"],
+    [/\bCurrent product fields always override the reference product\b/g, "当前产品字段始终优先于参考产品"],
+    [/\bProduct stays prominent and source-accurate\b/g, "产品保持突出且来源准确"],
+    [/\bProduct geometry stays unchanged\b/g, "产品几何形态保持不变"],
+    [/\bProduct must be in active use\b/g, "产品必须处于实际使用状态"],
+    [/\bnot just placed as a prop\b/g, "不要只是当作道具摆放"],
+    [/\bcomposition should feel aspirational, high-end, and category-matched\b/g, "构图应有高级向往感，并匹配品类"],
+    [/\bshow only the product itself\b/g, "只展示产品本身"],
+    [/\bproduct itself\b/g, "产品本身"],
+    [/\bno hands\b/g, "不要手"],
+    [/\bno people\b/g, "不要人物"],
+    [/\bno body parts\b/g, "不要身体部位"],
+    [/\bno props\b/g, "不要道具"],
+    [/\bno furniture\b/g, "不要家具"],
+    [/\bno room\b/g, "不要室内房间"],
+    [/\bno outdoor scene\b/g, "不要户外场景"],
+    [/\bno lifestyle background\b/g, "不要生活方式背景"],
+    [/\bno added title\b/g, "不要添加标题"],
+    [/\bno added labels\b/g, "不要添加标签"],
+    [/\bno added overlay text\b/g, "不要添加覆盖文字"],
+    [/\bUse the reference slot layout\b/g, "使用参考图位布局"],
+    [/\blabels\/arrows\/insets must explain only verified current-product facts\b/g, "标签/箭头/小窗只能解释已验证的当前产品事实"],
+    [/\bMacro close-ups or insets must come from the current product\b/g, "微距特写或小窗必须来自当前产品"],
+    [/\bIf a referenced detail is not verified for the current product\b/g, "如果某个参考细节未被当前产品验证"],
+    [/\breplace it with a verified current-product detail\b/g, "用已验证的当前产品细节替换"],
+    [/\bDo not copy the reference person, floor, exact pose, text style, or product shape\b/g, "不要复制参考图的人物、地面、准确姿势、文字样式或产品形状"],
+    [/\bDo not invent folding, detachable parts, straps, openings, holes, hinges, or steps\b/g, "不要虚构折叠、可拆部件、带子、开口、孔洞、铰链或步骤"],
+    [/\bdo not add extra views, scenes, claims, or callouts unless the current reference slot calls for them\b/g, "除非当前参考图位需要，否则不要添加额外视角、场景、宣称或标注"],
     [/\bProduct identity lock comes first\b/g, "产品身份锁定优先"],
     [/\bexact selected current product only\b/g, "只生成当前选中的准确产品"],
     [/\bno category substitution\b/g, "不要替换成其他品类"],
@@ -6737,7 +6853,333 @@ function translatePromptSegment(segment) {
     [/\bMaterial\b/g, "材质"],
     [/\bStructure\b/g, "结构"],
   ];
-  return replacements.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), segment);
+  const translated = replacements.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), segment);
+  return translatePromptVocabulary(translated);
+}
+
+function translatePromptVocabulary(text) {
+  const vocabulary = {
+    a: "一个",
+    about: "约",
+    accurate: "准确",
+    accurately: "准确地",
+    accuracy: "准确性",
+    action: "动作",
+    adapt: "适配",
+    add: "添加",
+    added: "添加的",
+    aligned: "对齐的",
+    allowed: "允许",
+    alternative: "替代",
+    amazon: "亚马逊",
+    angle: "角度",
+    annotations: "标注",
+    arrows: "箭头",
+    aspirational: "有高级向往感的",
+    authentic: "真实",
+    avoid: "避免",
+    background: "背景",
+    balanced: "平衡",
+    based: "基于",
+    benefit: "卖点",
+    benefits: "卖点",
+    block: "块",
+    bold: "醒目",
+    borrow: "借用",
+    brightness: "亮度",
+    callout: "标注",
+    callouts: "标注",
+    caption: "说明文字",
+    captions: "说明文字",
+    category: "品类",
+    centered: "居中",
+    certification: "认证",
+    chart: "图表",
+    clarity: "清晰度",
+    clean: "干净",
+    clear: "清晰",
+    claims: "宣称",
+    close: "特写",
+    closeup: "特写",
+    collage: "拼图",
+    color: "颜色",
+    colors: "颜色",
+    comparison: "对比",
+    complete: "完整",
+    composition: "构图",
+    concise: "简洁",
+    consistent: "一致",
+    constraints: "约束",
+    context: "语境",
+    copy: "复制",
+    core: "核心",
+    count: "数量",
+    crop: "裁切",
+    current: "当前",
+    capacity: "容量",
+    compatible: "适配",
+    density: "密度",
+    depth: "层次",
+    desirable: "有吸引力",
+    detail: "细节",
+    details: "细节",
+    diagram: "示意图",
+    different: "不同",
+    dimensions: "尺寸",
+    display: "展示",
+    distance: "距离",
+    dominate: "占主导",
+    dominant: "主体",
+    drawn: "绘制",
+    each: "每个",
+    easy: "易于",
+    edge: "边缘",
+    effects: "效果",
+    english: "英文",
+    environment: "环境",
+    exact: "准确",
+    exactly: "严格",
+    extra: "额外",
+    facts: "事实",
+    feature: "功能",
+    features: "功能",
+    feel: "感觉",
+    filler: "填充",
+    file: "文件",
+    final: "最终",
+    fit: "适配",
+    finish: "工艺",
+    first: "优先",
+    floating: "悬浮",
+    focus: "重点",
+    folded: "折叠",
+    foreground: "前景",
+    form: "形态",
+    frame: "画面",
+    furniture: "家具",
+    generous: "充足",
+    geometry: "几何形态",
+    grid: "网格",
+    guardrails: "约束",
+    guide: "引导",
+    cues: "线索",
+    hands: "手",
+    harsh: "生硬",
+    headline: "标题",
+    hierarchy: "层级",
+    high: "高",
+    end: "端",
+    hide: "遮挡",
+    highlight: "突出",
+    human: "人物",
+    icons: "图标",
+    image: "图片",
+    in: "在",
+    inches: "英寸",
+    included: "包含",
+    information: "信息",
+    infographic: "信息图",
+    insets: "小窗",
+    integrated: "融合",
+    invented: "虚构",
+    item: "物品",
+    items: "物品",
+    label: "标签",
+    labels: "标签",
+    large: "大",
+    largest: "最大",
+    layout: "布局",
+    length: "长度",
+    light: "光线",
+    lighting: "光线",
+    line: "线条",
+    listing: "listing",
+    locator: "定位标签",
+    lock: "锁定",
+    logos: "logo",
+    long: "长",
+    macro: "微距",
+    main: "主要",
+    markings: "标识",
+    material: "材质",
+    measurement: "测量",
+    measurements: "尺寸",
+    method: "方式",
+    mini: "小型",
+    model: "模特",
+    mood: "氛围",
+    natural: "自然",
+    name: "名称",
+    needed: "需要时",
+    negative: "留白",
+    numeric: "数字",
+    object: "对象",
+    occupies: "占据",
+    optional: "可选",
+    option: "选项",
+    options: "选项",
+    order: "顺序",
+    outdoor: "户外",
+    overlay: "覆盖",
+    package: "包装",
+    packaging: "包装",
+    panel: "面板",
+    panels: "面板",
+    parameter: "参数",
+    quantity: "数量",
+    paragraphs: "段落",
+    parts: "部件",
+    people: "人物",
+    photo: "照片",
+    physical: "实体",
+    placed: "放置",
+    polished: "精致",
+    poster: "海报",
+    premium: "高级",
+    present: "呈现",
+    priority: "优先级",
+    product: "产品",
+    props: "道具",
+    proof: "证明",
+    prove: "证明",
+    realistic: "真实",
+    recognizable: "可识别",
+    refined: "精致",
+    reference: "参考",
+    render: "渲染",
+    rendering: "渲染",
+    replace: "替换",
+    repeated: "重复",
+    required: "必需",
+    restrained: "克制",
+    rhythm: "节奏",
+    role: "角色",
+    room: "房间",
+    ruler: "尺规",
+    range: "范围",
+    scene: "场景",
+    scenes: "场景",
+    secondary: "次要",
+    selected: "选中",
+    separate: "分开",
+    set: "套装",
+    shadow: "阴影",
+    shadows: "阴影",
+    shape: "形状",
+    sharp: "清晰",
+    shot: "镜头",
+    show: "展示",
+    shown: "展示",
+    simple: "简单",
+    size: "尺寸",
+    slogans: "口号",
+    soft: "柔和",
+    source: "来源",
+    space: "留白",
+    spacing: "间距",
+    specification: "规格",
+    specs: "规格",
+    stacking: "堆叠",
+    stays: "保持",
+    sticker: "贴纸",
+    studio: "棚拍",
+    style: "风格",
+    subject: "主体",
+    subtle: "细微",
+    surface: "表面",
+    summary: "总结",
+    support: "支撑",
+    table: "表格",
+    tags: "标签",
+    technology: "工艺",
+    text: "文字",
+    texture: "纹理",
+    theme: "主题",
+    through: "通过",
+    tiny: "很小",
+    title: "标题",
+    typography: "字体排版",
+    unverified: "未验证",
+    unsupported: "无依据",
+    use: "使用",
+    useful: "有用",
+    verified: "已验证",
+    view: "视图",
+    visible: "可见",
+    visual: "视觉",
+    width: "宽度",
+    matched: "匹配",
+    matching: "匹配",
+    multi: "多",
+    panel: "面板",
+    first: "优先",
+    derived: "提取",
+    accurate: "准确",
+    waterproofing: "防水",
+    weight: "重量",
+    white: "白色",
+    wordart: "艺术字",
+    wrong: "错误",
+    and: "和",
+    or: "或",
+    with: "带有",
+    without: "不带",
+    only: "仅",
+    when: "当",
+    where: "在",
+    while: "同时",
+    as: "作为",
+    from: "从",
+    for: "用于",
+    into: "成",
+    not: "不",
+    no: "不要",
+    must: "必须",
+    should: "应",
+  };
+  const translated = String(text || "").replace(/\b[A-Za-z][A-Za-z0-9/-]*\b/g, (word) => {
+    if (/^[A-Z0-9/-]{2,}$/.test(word)) return word;
+    return translatePromptWord(word, vocabulary);
+  });
+  return cleanChinesePromptTranslation(markResidualEnglishTerms(translated));
+}
+
+function translatePromptWord(word, vocabulary) {
+  const lower = String(word || "").toLowerCase();
+  if (vocabulary[lower]) return vocabulary[lower];
+  if (/[-/]/.test(lower)) {
+    const translatedParts = lower.split(/[-/]+/).map((part) => vocabulary[part] || part);
+    if (translatedParts.some((part, index) => part !== lower.split(/[-/]+/)[index])) {
+      return translatedParts.join("");
+    }
+  }
+  return word;
+}
+
+function markResidualEnglishTerms(text) {
+  return String(text || "").replace(/\b[A-Za-z][A-Za-z0-9-]*(?:[\/\s]+[A-Za-z][A-Za-z0-9-]*)*\b/g, (match) => {
+    const clean = match.trim();
+    if (!clean) return match;
+    if (/^[A-Z0-9/-]{2,}$/.test(clean)) return match;
+    if (/^(cm|mm|in|mb|kg|g|ml|oz|pcs|pc|set|sets|pack|packs|x)$/i.test(clean)) return match;
+    return `原始词「${clean}」`;
+  });
+}
+
+function cleanChinesePromptTranslation(text) {
+  return String(text || "")
+    .replace(/([一-龥])\s+(?=[一-龥])/g, "$1")
+    .replace(/([一-龥])\s*\/\s*(?=[一-龥])/g, "$1/")
+    .replace(/([一-龥])\s*,\s*/g, "$1，")
+    .replace(/\s*,\s*([一-龥])/g, "，$1")
+    .replace(/([一-龥])\s*;\s*/g, "$1；")
+    .replace(/\s*;\s*([一-龥])/g, "；$1")
+    .replace(/([一-龥])\s*:\s*/g, "$1：")
+    .replace(/\s*:\s*([一-龥])/g, "：$1")
+    .replace(/\s+\./g, ".")
+    .replace(/。+/g, "。")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function compactPromptItems(items, fallback = "", limit = 5) {
@@ -8321,9 +8763,8 @@ function renderProductPromptGrid() {
             <h3>${escapeHtml(type.name)}</h3>
           </div>
           <div class="prompt-actions">
-            <span class="prompt-language-badge" data-language-badge="${index}">${promptLanguageLabel(item.language)}</span>
-            <button type="button" class="copy-prompt" data-prompt-index="${index}">Copy</button>
-            <button type="button" class="language-toggle" data-prompt-index="${index}">中/英</button>
+            <button type="button" class="copy-prompt" data-prompt-index="${index}">复制</button>
+            <button type="button" class="language-toggle" data-prompt-index="${index}">${item.language === "zh" ? "切英文" : "切中文"}</button>
           </div>
         </div>
         <pre class="prompt-preview">${highlightPromptVariables(prompt, facts, type.id)}</pre>
@@ -8349,9 +8790,8 @@ function renderProductPromptGrid() {
       item.prompt = promptTextForLanguage(item.promptEn, nextLanguage);
       const card = button.closest(".prompt-card");
       const preview = card?.querySelector(".prompt-preview");
-      const badge = card?.querySelector(`[data-language-badge="${index}"]`);
       if (preview) preview.innerHTML = highlightPromptVariables(item.prompt, facts, type.id);
-      if (badge) badge.textContent = promptLanguageLabel(nextLanguage);
+      button.textContent = nextLanguage === "zh" ? "切英文" : "切中文";
       byId("copyStatus").textContent = `已切换为${nextLanguage === "zh" ? "中文" : "英文"}提示词。`;
     });
   });
