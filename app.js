@@ -333,7 +333,7 @@ function dimensionFieldsFromDimensionList(dimensionList, context = "") {
 function isFootwearSceneLeakText(value) {
   const source = String(value || "").toLowerCase();
   if (!source) return false;
-  if (/slipper|flip\s*-?\s*flops?|sandal|footwear|shoe|shoes|拖鞋|凉拖|人字拖|沙滩鞋/.test(source)) return true;
+  if (/slipper|flip\s*-?\s*flops?|sandal|footwear|shoe|shoes|拖鞋|凉拖|一字拖|人字拖|沙滩鞋/.test(source)) return true;
   return /beach,\s*hotel,\s*spa,\s*shower,\s*travel,\s*bathroom/.test(source);
 }
 
@@ -5318,7 +5318,7 @@ function englishAmazonValue(value) {
 }
 
 function isThongFlipFlopText(value) {
-  return /thong|flip\s*-?\s*flops?|toe\s*post|y[-\s]?strap|y\s*shaped|人字拖|夹脚/i.test(String(value || ""));
+  return /thong|toe\s*post|y[-\s]?strap|y\s*shaped|人字拖|夹脚|夹趾/i.test(String(value || ""));
 }
 
 function thongFlipFlopStructureLockText() {
@@ -6190,7 +6190,7 @@ function categoryProfile(facts) {
   const isResistanceBand = /resistance\s+band|exercise\s+band|workout\s+band|拉力带|拉力片|弹力带|阻力带/.test(identity);
   const isFlowerWrappingPaper = isFlowerWrappingPaperText(identity);
   const isSock = !isResistanceBand && /sock|socks|toe socks|grip socks|瑜伽袜|普拉提袜|五指袜|五趾袜|分趾袜|船袜|短袜|隐形袜|浅口袜|袜子|袜/.test(identity);
-  const isFootwear = !isSock && !isFlowerWrappingPaper && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|footwear|shoe|shoes|clog|slides?|拖鞋|凉拖|人字拖|沙滩鞋|鞋/.test(identity);
+  const isFootwear = !isSock && !isFlowerWrappingPaper && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|footwear|shoe|shoes|clog|slides?|拖鞋|凉拖|一字拖|人字拖|沙滩鞋|鞋/.test(identity);
   const isUmbrella = /umbrella|parasol|rain\s*umbrella|sun\s*umbrella|folding\s*umbrella|伞|雨伞|遮阳伞|晴雨伞/.test(identity);
   const isCoffeeFilter = /coffee\s+filters?|filter\s+paper|pour[-\s]?over\s+filter|drip\s+coffee\s+filter|滤纸|咖啡滤纸|木浆纸|原木浆|dripper|pour-over|pour over/.test(identity);
   const isCoffeeMetalAccessory = /portafilter|filter\s+basket|espresso\s+basket|dosing\s+funnel|espresso|咖啡粉碗|接粉环|粉碗/.test(identity);
@@ -6279,15 +6279,15 @@ function categoryProfile(facts) {
       apparel: true,
       background: "Category background: premium beach, hotel spa, bathroom shower, poolside, or travel footwear setting with clean surfaces and realistic water-safe context.",
       scene: "Scene category: premium beach, hotel spa, bathroom shower, poolside, and travel footwear lifestyle scenes with clean wet/dry surfaces, natural foot-scale context, and upscale resort lighting.",
-      identity: "Footwear structure lock: preserve source slipper structure; for thong flip-flops keep Y strap, central toe post, visible front slit/open hole, exposed footbed texture between straps, side anchors, and open heel; preserve sole outline/thickness, edge profile, material texture, and selected color.",
-      negative: "No changed strap layout, missing toe-post/opening, sealed triangular vamp, closed/filled front, covered footbed, added heel/back/ankle strap, second parallel strap, wide slide band, two-band sandal upper, changed sole outline/thickness, invented decoration, wrong material texture/color, or extra logo.",
+      identity: "Footwear structure lock: preserve the exact source slipper/slide/sandal construction; keep upper band or strap layout/count/width, open or closed toe area as shown, sole outline/thickness, edge profile, fold/hinge if present, material texture, and selected color.",
+      negative: "No changed footwear construction, strap/band layout/count/width, open/closed toe area, sole outline/thickness, fold/hinge, invented heel/back/ankle strap, second parallel strap, two-band upper, decoration, wrong material texture/color, or extra logo.",
       multiScene: (sceneList) => [
         `Footwear scene choices for ${sceneList}: beach walk, hotel spa, shower/bathroom floor, poolside deck, gym shower, or travel packing.`,
-        "Show the flip-flops being worn, carried, packed, or placed naturally in each environment while keeping realistic foot scale and true color.",
+        "Show the exact slippers/slides/sandals being worn, carried, packed, or placed naturally in each environment while keeping realistic foot scale and true color.",
         "Footwear benefits should be implied through scene action and environment cues only, such as quick drying after shower, non-slip wet-floor use, lightweight travel packing, beach/spa convenience, and relaxed casual wear.",
       ],
       proof: {
-        compact: "show foldable flip-flops packed flat in a travel bag, hotel amenity pouch, beach tote, or bathroom shelf without changing the shoe shape",
+        compact: "show foldable slippers or slides packed flat in a travel bag, hotel amenity pouch, beach tote, or bathroom shelf without changing the shoe shape",
         lightweight: "show easy hand carry, suitcase packing, or relaxed walking with the lightweight EVA sandals while preserving realistic scale",
         grip: "show textured non-slip sole contacting a wet bathroom tile, pool deck, spa floor, or shower surface with realistic traction detail",
         rain: "show quick-drying sandals after shower, poolside, or beach use with water droplets on EVA material; do not imply waterproof certification",
@@ -6295,11 +6295,11 @@ function categoryProfile(facts) {
       },
       inset: {
         grip: "textured non-slip sole on wet tile close-up",
-        compact: "foldable flip-flops packed flat in travel bag or hotel pouch",
+        compact: "foldable slippers or slides packed flat in travel bag or hotel pouch",
         lightweight: "one-hand carry or suitcase packing proof with realistic scale",
         rain: "quick-drying EVA surface with water droplets after shower or pool use",
         material: "EVA material texture and flexible sole edge close-up",
-        "cross-strap": "backstrap or thong strap structure close-up",
+        "cross-strap": "upper strap or backstrap structure close-up",
       },
     },
     {
@@ -8000,7 +8000,7 @@ function sceneMultiSceneStyleText(facts, sceneList) {
   if (!isFootwearCategory(facts)) return base;
   return [
     base,
-    "Every panel preserves source slipper structure; scenes must not change strap layout, sole, toe-post/opening, or fold/hinge.",
+    "Every panel preserves source slipper/slide/sandal construction; scenes must not change upper band or strap layout/count/width, sole outline, toe area, or fold/hinge.",
     isThongFlipFlopFacts(facts) ? `Across all panels, ${thongFlipFlopShortLockText()}` : "",
   ].filter(Boolean).join(" / ");
 }
@@ -8019,7 +8019,7 @@ function sceneMultiAngleStyleText(facts) {
   if (!isFootwearCategory(facts)) return base;
   return [
     base,
-    "All angles show the same exact product and reveal strap layout, toe-post/opening, sole outline/thickness, edge profile, and fold/hinge if present.",
+    "All angles show the same exact product and reveal upper band or strap layout/count/width, toe area, sole outline/thickness, edge profile, and fold/hinge if present.",
     isThongFlipFlopFacts(facts) ? `For every angle, ${thongFlipFlopShortLockText()}` : "",
   ].filter(Boolean).join(" ");
 }
@@ -8100,7 +8100,7 @@ function footwearStructureReferenceText(facts) {
   const isThong = isThongFlipFlopFacts(facts);
   return compactPromptItems([
     "Footwear reference lock: copy source geometry before adding scene/model/foot; reference overrides generic footwear assumptions.",
-    "Keep strap layout/count/width, toe-post/opening, sole outline/thickness, edge profile, and fold/hinge if present.",
+    "Keep upper band or strap layout/count/width, toe area, sole outline/thickness, edge profile, and fold/hinge if present.",
     isThong && thongFlipFlopStructureLockText(),
     facts.structure && `Source structure field: ${facts.structure}`,
     facts.color && `Source color field: ${facts.color}`,
@@ -8111,7 +8111,7 @@ function footwearStructureReferenceText(facts) {
 function footwearStructureNegativeText(facts) {
   if (!isFootwearCategory(facts)) return "";
   return compactPromptItems([
-    "No changed footwear structure, strap layout/count, toe-post/opening, sole outline/thickness, or fold/hinge",
+    "No changed footwear construction, upper band or strap layout/count/width, toe area, sole outline/thickness, or fold/hinge",
     "no added heel/back/ankle strap or second parallel strap",
     isThongFlipFlopFacts(facts) && "no slide sandals, wide-band shower slides, two-strap sandals, sealed triangular vamp, closed/filled front, covered footbed, missing front slit/open hole, missing Y strap, missing central toe post, or closed heel",
     "no invented decoration, wrong material texture, wrong color, or extra brand logo",
@@ -8148,13 +8148,13 @@ function sceneHeroStyleText(facts, mainScene, heroVariant = "product") {
   if (isFootwearCategory(facts)) {
     return sceneOverallStyleText(facts, "1", [
       heroVariant === "human"
-        ? `Main template B: show a natural person wearing or stepping with the exact selected flip-flops/slippers in ${mainScene}; foot/lower-leg use state is the main lifestyle story.`
-        : `Main template A: place the exact selected flip-flops/slippers as the dominant product hero in ${mainScene}; model feet/lower legs optional and secondary.`,
+        ? `Main template B: show a natural person wearing or stepping with the exact selected slippers/slides/sandals in ${mainScene}; foot/lower-leg use state is the main lifestyle story.`
+        : `Main template A: place the exact selected slippers/slides/sandals as the dominant product hero in ${mainScene}; model feet/lower legs optional and secondary.`,
       "Medium environmental framing with beach/resort/spa/travel story, props, depth; not only shoes/feet.",
       heroVariant === "human"
         ? "Person-use state leads the image, but footwear structure must stay clear; leave environment, light, texture, and negative space."
         : "Product clear and desirable, roughly 35-55% of frame; leave environment, light, texture, negative space.",
-      isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "Preserve true color, strap shape, sole thickness/outline, toe-post/opening, and fold/hinge if visible.",
+      isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "Preserve true color, upper band/strap shape, sole thickness/outline, toe area, and fold/hinge if visible.",
       "If the scene angle would hide or distort key structure, adjust camera/placement instead of changing the slipper.",
     ].join(" "));
   }
