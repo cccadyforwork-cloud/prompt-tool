@@ -264,10 +264,52 @@ let sellingPointDraftDirty = false;
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+const PDFJS_SCRIPT_URL = "./vendor/pdfjs/pdf.min.js";
+const PDFJS_WORKER_URL = "./vendor/pdfjs/pdf.worker.min.js";
+const XLSX_SCRIPT_URL = "./vendor/xlsx.full.min.js";
+const DETAIL_FETCH_TIMEOUT_MS = 15000;
+const IMAGE_LOAD_TIMEOUT_MS = 15000;
+const OCR_RECOGNIZE_TIMEOUT_MS = 45000;
+const PURCHASE_IMAGE_OCR_TIMEOUT_MS = 45000;
 const GENERIC_SUPPLIER_SKU_MODEL = "SUPPLIER-SKU";
+const scriptLoadPromises = {};
 
 function byId(id) {
   return document.getElementById(id);
+}
+
+function loadScriptOnce(src, globalName) {
+  if (globalName && window[globalName]) return Promise.resolve(window[globalName]);
+  if (scriptLoadPromises[src]) return scriptLoadPromises[src];
+
+  scriptLoadPromises[src] = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener("load", () => resolve(globalName ? window[globalName] : true));
+      existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)));
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve(globalName ? window[globalName] : true);
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+
+  return scriptLoadPromises[src];
+}
+
+async function loadPdfJs() {
+  const existing = window.pdfjsLib || window["pdfjs-dist/build/pdf"];
+  if (existing) return existing;
+  await loadScriptOnce(PDFJS_SCRIPT_URL);
+  return window.pdfjsLib || window["pdfjs-dist/build/pdf"];
+}
+
+async function loadXlsx() {
+  return window.XLSX || await loadScriptOnce(XLSX_SCRIPT_URL, "XLSX");
 }
 
 function selectedSku() {
@@ -362,10 +404,9 @@ function sanitizeUseContextFields(data = {}) {
   const isFootwear = profile.id === "footwear";
   const fit = cleanFieldDisplayValue(data.fit || "");
   const scene = cleanFieldDisplayValue(data.scene || "");
-  const fallbackScene = categorySceneFieldText(profile);
   return {
     fit: !isFootwear && isFootwearSceneLeakText(fit) ? "" : fit,
-    scene: !isFootwear && isFootwearSceneLeakText(scene) ? fallbackScene : scene,
+    scene: !isFootwear && isFootwearSceneLeakText(scene) ? "" : scene,
   };
 }
 
@@ -1210,12 +1251,18 @@ async function fetchDetailHtml(detailUrls, onProgress) {
   const fragments = [];
   for (let index = 0; index < detailUrls.length; index += 1) {
     const url = detailUrls[index];
+    const fetchStartedAt = performance.now();
     onProgress?.(`正在读取 1688 详情描述片段... ${index + 1}/${detailUrls.length}`);
     try {
-      const response = await withTimeout(fetch(url, { credentials: "omit" }), 15000, "Detail fetch timed out");
-      if (!response.ok) continue;
+      const response = await withTimeout(fetch(url, { credentials: "omit" }), DETAIL_FETCH_TIMEOUT_MS, "Detail fetch timed out");
+      if (!response.ok) {
+        onProgress?.(`1688 详情描述片段 ${index + 1}/${detailUrls.length} 读取失败：HTTP ${response.status}，耗时 ${elapsedText(fetchStartedAt)}。`);
+        continue;
+      }
       fragments.push(await response.text());
+      onProgress?.(`1688 详情描述片段 ${index + 1}/${detailUrls.length} 读取完成：${elapsedText(fetchStartedAt)}。`);
     } catch {
+      onProgress?.(`1688 详情描述片段 ${index + 1}/${detailUrls.length} 读取超时或失败：${elapsedText(fetchStartedAt)}。`);
       // Detail fragments are optional; OCR can still run against images in the saved HTML.
     }
   }
@@ -1277,21 +1324,7 @@ function uniqueByUrl(candidates) {
 
 function loadOcrEngine() {
   if (window.Tesseract) return Promise.resolve(window.Tesseract);
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${OCR_SCRIPT_URL}"]`);
-    if (existing) {
-      existing.addEventListener("load", () => resolve(window.Tesseract));
-      existing.addEventListener("error", () => reject(new Error("OCR engine failed to load")));
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = OCR_SCRIPT_URL;
-    script.async = true;
-    script.onload = () => resolve(window.Tesseract);
-    script.onerror = () => reject(new Error("OCR engine failed to load"));
-    document.head.appendChild(script);
-  });
+  return loadScriptOnce(OCR_SCRIPT_URL, "Tesseract");
 }
 
 function cleanOcrText(text) {
@@ -2307,6 +2340,11 @@ function withTimeout(promise, timeoutMs, message) {
   ]);
 }
 
+function elapsedText(startTime) {
+  const elapsedSeconds = (performance.now() - startTime) / 1000;
+  return `${elapsedSeconds.toFixed(elapsedSeconds >= 10 ? 0 : 1)}s`;
+}
+
 async function ocrImageUrls(imageUrls, onProgress) {
   if (!imageUrls.length) {
     return { text: "", scannedCount: 0, failedCount: 0, acceptedCount: 0, available: false };
@@ -2314,6 +2352,7 @@ async function ocrImageUrls(imageUrls, onProgress) {
 
   let Tesseract;
   try {
+    onProgress?.(`正在加载 OCR 引擎，准备识别 ${imageUrls.length} 张 1688 图片...`);
     Tesseract = await loadOcrEngine();
   } catch {
     return { text: "", scannedCount: 0, failedCount: imageUrls.length, acceptedCount: 0, available: false };
@@ -2329,27 +2368,42 @@ async function ocrImageUrls(imageUrls, onProgress) {
     if (!url) continue;
     attemptedCount += 1;
     const sourceLabel = candidate.source === "detail" ? "详情描述图" : "页面图片";
-    onProgress?.(`正在识别 1688 ${sourceLabel}文字... ${index + 1}/${imageUrls.length}`);
+    const progressPrefix = `正在识别 1688 ${sourceLabel}文字... ${index + 1}/${imageUrls.length}`;
+    let loadStartedAt = performance.now();
+    let loadElapsed = "";
+    onProgress?.(`${progressPrefix}，正在加载图片...`);
     try {
-      const ocrInput = await withTimeout(imageUrlToOcrInput(url), 15000, "Image load timed out");
+      const ocrInput = await withTimeout(imageUrlToOcrInput(url), IMAGE_LOAD_TIMEOUT_MS, "Image load timed out");
+      loadElapsed = elapsedText(loadStartedAt);
       const imageMeta = ocrInput.size;
       if (!imageMeta.ok || !imageHasEnoughReadableSize(imageMeta)) {
         failedCount += 1;
+        onProgress?.(`${progressPrefix}，图片加载 ${loadElapsed}，跳过：图片过小或不可读取。`);
         continue;
       }
+      const ocrStartedAt = performance.now();
+      onProgress?.(`${progressPrefix}，图片加载 ${loadElapsed}，正在 OCR...`);
       const result = await withTimeout(
         Tesseract.recognize(ocrInput.input, "chi_sim+eng"),
-        45000,
+        OCR_RECOGNIZE_TIMEOUT_MS,
         "OCR timed out",
       );
+      const ocrElapsed = elapsedText(ocrStartedAt);
       const text = cleanOcrText(result?.data?.text || "");
       if (isUsefulOcrText(text, candidate)) {
         texts.push(text);
         if (isProductSellingPointText(text)) sellingPointCount += 1;
+        onProgress?.(`${progressPrefix}，图片加载 ${loadElapsed} / OCR ${ocrElapsed}，已提取有效文字。`);
         if (candidate.source !== "detail" && hasEnoughProductDetail(texts.join("\n"))) break;
+      } else {
+        onProgress?.(`${progressPrefix}，图片加载 ${loadElapsed} / OCR ${ocrElapsed}，未提取到有效产品文字。`);
       }
-    } catch {
+    } catch (error) {
       failedCount += 1;
+      const stageText = loadElapsed
+        ? `图片加载 ${loadElapsed} 后失败：${error.message || "OCR 失败"}`
+        : `图片加载失败或超时：${elapsedText(loadStartedAt)}`;
+      onProgress?.(`${progressPrefix}，${stageText}`);
     }
   }
 
@@ -2370,20 +2424,24 @@ async function ocrLocalImageFile(file, onProgress) {
 
   let Tesseract;
   try {
+    onProgress?.(`正在加载 OCR 引擎，准备识别采购单图片：${file.name}...`);
     Tesseract = await loadOcrEngine();
   } catch {
     return { text: "", scannedCount: 0, failedCount: 1, available: false };
   }
 
+  const ocrStartedAt = performance.now();
   onProgress?.(`正在识别采购单图片文字：${file.name}...`);
   try {
     const result = await withTimeout(
       Tesseract.recognize(file, "chi_sim+eng"),
-      45000,
+      PURCHASE_IMAGE_OCR_TIMEOUT_MS,
       "Purchase image OCR timed out",
     );
+    const ocrElapsed = elapsedText(ocrStartedAt);
     const text = cleanOcrText(result?.data?.text || "");
     const structuredRows = structuredPurchaseRowsFromOcrResult(result, text);
+    onProgress?.(`采购单图片 OCR 完成：${ocrElapsed}。`);
     return {
       text: [text, structuredRows].filter(Boolean).join("\n"),
       scannedCount: text ? 1 : 0,
@@ -2391,8 +2449,15 @@ async function ocrLocalImageFile(file, onProgress) {
       available: true,
     };
   } catch {
+    onProgress?.(`采购单图片 OCR 失败或超时：${elapsedText(ocrStartedAt)}。`);
     return { text: "", scannedCount: 0, failedCount: 1, available: true };
   }
+}
+
+function productAttributeLinesFromSource(attributeSource) {
+  return Object.entries(extractProductDetailAttributes(attributeSource)).map(([key, value]) => (
+    `PRODUCT_ATTRIBUTE: ${key}=${value}`
+  ));
 }
 
 async function extractSupplierSourceText(html, onProgress) {
@@ -2410,18 +2475,14 @@ async function extractSupplierSourceText(html, onProgress) {
   const imageUrls = uniqueImageCandidates(detailImageCandidates, htmlImageCandidates);
   if (!imageUrls.length) {
     const attributeSource = productAttributeSourceText(structuredText);
-    const detailAttrLines = Object.entries(extractProductDetailAttributes(attributeSource)).map(([key, value]) => (
-      `PRODUCT_ATTRIBUTE: ${key}=${value}`
-    ));
+    const detailAttrLines = productAttributeLinesFromSource(attributeSource);
     return { text: [baseText, structuredText, ...detailAttrLines].filter(Boolean).join("\n"), imageCount: 0, candidateCount: allImageCandidates.length, scannedCount: 0, failedCount: 0, ocrAvailable: false };
   }
 
   onProgress?.(`已找到 ${allImageCandidates.length} 张 1688 图片，全局筛选后优先识别 ${imageUrls.length} 张疑似产品详情/参数图...`);
   const ocr = await ocrImageUrls(imageUrls, onProgress);
   const attributeSource = productAttributeSourceText(structuredText, ocr.text);
-  const detailAttrLines = Object.entries(extractProductDetailAttributes(attributeSource)).map(([key, value]) => (
-    `PRODUCT_ATTRIBUTE: ${key}=${value}`
-  ));
+  const detailAttrLines = productAttributeLinesFromSource(attributeSource);
   return {
     text: [baseText, structuredText, ...detailAttrLines, attributeSource && `1688 image OCR text: ${attributeSource}`].filter(Boolean).join("\n"),
     imageCount: imageUrls.length,
@@ -2449,11 +2510,12 @@ function readFileAsText(file) {
 
 async function readWorkbook(file) {
   if (!file) return null;
-  if (!window.XLSX) {
-    throw new Error("Excel 解析库未加载，请联网后刷新页面，或先只用 PDF/HTML 资料测试。");
+  const xlsx = await loadXlsx();
+  if (!xlsx) {
+    throw new Error("Excel 解析库未加载，请刷新页面后重试，或先只用 PDF/HTML 资料测试。");
   }
   const buffer = await file.arrayBuffer();
-  return window.XLSX.read(buffer, { type: "array", cellDates: false });
+  return xlsx.read(buffer, { type: "array", cellDates: false });
 }
 
 async function readTextFiles(files, onProgress) {
@@ -2890,11 +2952,11 @@ function serializePurchaseRows(rows) {
 
 async function readPdfText(file) {
   if (!file) return "";
-  const pdfLib = window.pdfjsLib || window["pdfjs-dist/build/pdf"];
+  const pdfLib = await loadPdfJs();
   if (!pdfLib) {
     return `Uploaded purchase PDF: ${file.name}`;
   }
-  pdfLib.GlobalWorkerOptions.workerSrc = "./vendor/pdfjs/pdf.worker.min.js";
+  pdfLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
   const buffer = await file.arrayBuffer();
   const pdf = await pdfLib.getDocument({ data: buffer }).promise;
   const pages = [];
@@ -3007,36 +3069,11 @@ function isFlowerWrappingPaperText(text) {
 }
 
 function inferUseScene(text) {
-  if (isFlowerWrappingPaperText(text)) {
-    return "florist bouquet wrapping, gift packaging, flower market counter, wedding or event floral arrangement prep";
-  }
-  if (isResistanceBandText(text)) {
-    return "stretching, physical therapy, strength training, and home workout use";
-  }
-  if (/伞|umbrella/i.test(text)) {
-    return "daily commuting, travel, campus, office commute, rainy sidewalk, and sunny outdoor shade use";
-  }
-  if (/V60|dripper|pour over|手冲|挂耳|滤杯/i.test(text)) {
-    return "pour-over coffee brewing / drip coffee maker setup";
-  }
-  if (isYogaSockText(text)) {
-    return "yoga / pilates / barre / home workout";
-  }
-  if (isSockFamilyText(text) && /dance|workout|hospital|barefoot|训练|健身/i.test(text)) {
-    return "fitness, dance, home workout, or indoor recovery use";
-  }
-  if (/(?:瑜伽球|普拉提小球|yoga\s+ball|pilates\s+ball|yoga\s+mat|pilates\s+ring)/i.test(text)) {
-    return "yoga, pilates, and home fitness use";
-  }
-  if (/kitchen|home & kitchen|厨房/i.test(text)) {
-    return "home kitchen use";
-  }
   return "";
 }
 
 function umbrellaCompatibleUseText(text) {
-  if (!/伞|umbrella/i.test(text)) return "";
-  return "portable sun and rain protection for commuting, travel, school bags, handbags, and car storage";
+  return "";
 }
 
 function umbrellaStructureText(text) {
@@ -3216,7 +3253,7 @@ function inferSellingPoints(text, material, limit = 2) {
   const categoryPoints = categorySpecificSellingPointCandidates(text, material, attrs);
   const feature1 = /wood pulp|原木浆|unbleached|未漂白|natural/i.test(text)
     ? "natural unbleached material"
-    : cleanFieldDisplayValue(material) || "primary product benefit";
+    : cleanFieldDisplayValue(material) || "";
   const feature2 = /filter|过滤|smooth|均匀|flow|brewing|萃取/i.test(text) ? "smooth filtration performance" : "";
   const points = uniqueSellingPoints([
     ...genericDetailPoints,
@@ -3227,7 +3264,7 @@ function inferSellingPoints(text, material, limit = 2) {
   ], limit);
   return {
     feature1: points[0] || feature1,
-    feature2: points[1] || feature2 || "verified product benefit",
+    feature2: points[1] || feature2,
     points,
   };
 }
@@ -3544,9 +3581,7 @@ function addGenericPurchaseItem(items, seen, usedSupplierOptions, suppliers, com
     productUnitCount: unitCount || "",
     quantity,
     price,
-    fit: isSockFamilyText(combinedText)
-      ? "yoga, pilates, barre, dance, home workout"
-      : "",
+    fit: "",
     dims: matchedOption.dims || {},
     supplierOption: matchedOption,
     inferredColorFromSupplier: !color && Boolean(finalColor),
@@ -4370,9 +4405,7 @@ function genericItemFromPurchaseRow(row) {
     price: row.price,
     pack: "",
     productUnitCount: "",
-    fit: isSockFamilyText(`${row.name} ${row.spec}`)
-      ? "yoga, pilates, barre, dance, home workout"
-      : "",
+    fit: "",
     };
   }
 
@@ -4417,7 +4450,7 @@ function enrichStructuredItemsWithSupplierSkus(items, rows, supplierText) {
       sizeCode: [style, displayColorName(option.color || item.color), size].filter(Boolean).join(" / "),
       dims: option.dims || item.dims,
       supplierOption: option,
-      fit: item.fit || "stretching, physical therapy, strength training, home workout",
+      fit: item.fit || "",
     };
   });
 }
@@ -4669,7 +4702,7 @@ function extractSupplierSkuPurchaseItems(purchaseText, combinedText) {
       productUnitCount: "",
       dims: option.dims || {},
       supplierOption: option,
-      fit: "stretching, physical therapy, strength training, home workout",
+      fit: "",
     };
   }).filter(Boolean);
 }
@@ -5153,55 +5186,11 @@ function amazonRepeatedRowValues(row, columns, attributeBase, fallbackLabel, lim
 }
 
 function amazonListingUseSceneText({ title = "", description = "", bullets = [], keywords = [], occasions = [], compatibleUses = [], category = "" } = {}) {
-  const text = [title, description, ...bullets, ...keywords, ...occasions, ...compatibleUses, category].filter(Boolean).join(" ");
-  const scenes = [];
-  const addIf = (pattern, value) => {
-    if (pattern.test(text)) scenes.push(value);
-  };
-
-  if (isFlowerWrappingPaperText(text)) {
-    addIf(/bouquet\s+wrapping|wrap(?:ping)?\s+bouquets?|wrapping\s+bouquets?/i, "bouquet wrapping");
-    addIf(/florist\s+supplies?|florist\s+use|flower\s+shops?/i, "florist supplies / flower shop use");
-    addIf(/floral\s+gift\s+presentation|gift\s+bouquet\s+packaging|gift\s+packaging/i, "floral gift presentation / gift bouquet packaging");
-    addIf(/weddings?/i, "wedding floral packaging");
-    addIf(/birthdays?/i, "birthday gift bouquet packaging");
-    addIf(/graduations?/i, "graduation gift bouquet packaging");
-    addIf(/DIY\s+crafts?|crafts?/i, "DIY craft decoration");
-    addIf(/flower\s+arrangements?|floral\s+arrangements?|flowers?/i, "flower arrangement wrapping");
-    return uniquePromptItems(scenes).join(", ") || inferUseScene(text);
-  }
-
-  addIf(/beach/i, "beach");
-  addIf(/hotel/i, "hotel");
-  addIf(/spa/i, "spa");
-  addIf(/shower|bathroom/i, "shower / bathroom");
-  addIf(/poolside/i, "poolside");
-  addIf(/travel/i, "travel");
-  addIf(/gym\s+showers?/i, "gym shower");
-  return uniquePromptItems(scenes).join(", ") || inferUseScene(text);
+  return "";
 }
 
 function amazonListingCompatibleUseText({ title = "", description = "", bullets = [], keywords = [], occasions = [], compatibleUses = [], category = "" } = {}) {
-  const explicitUses = uniquePromptItems(compatibleUses).join(", ");
-  if (explicitUses) return explicitUses;
-  const text = [title, description, ...bullets, ...keywords, ...occasions, category].filter(Boolean).join(" ");
-  const uses = [];
-  const addIf = (pattern, value) => {
-    if (pattern.test(text)) uses.push(value);
-  };
-  if (isFlowerWrappingPaperText(text)) {
-    addIf(/bouquets?|flowers?|floral\s+arrangements?/i, "bouquets, flowers, and floral arrangements");
-    addIf(/florist\s+supplies?|flower\s+shops?/i, "florist supplies and flower shops");
-    addIf(/gift\s+packaging|gift\s+bouquet/i, "gift bouquet packaging");
-    addIf(/weddings?|birthdays?|graduations?|party|seasonal/i, "wedding, birthday, graduation, party, and seasonal floral packaging");
-    addIf(/DIY\s+crafts?|crafts?/i, "DIY crafts and decorative wrapping");
-    return uniquePromptItems(uses).join(", ");
-  }
-  addIf(/coffee|dripper|brewer|pour[-\s]?over/i, "coffee brewing setup");
-  addIf(/yoga|pilates|barre|workout|fitness/i, "yoga, pilates, workout, and fitness use");
-  addIf(/umbrella|rain|sun|travel|commut/i, "rain, sun, commute, and travel use");
-  addIf(/kitchen|cook|food|storage/i, "kitchen and home use");
-  return uniquePromptItems(uses).join(", ");
+  return "";
 }
 
 function amazonListingStructureText({ text = "", material = "", style = "", itemShape = "", itemForm = "", paperFinish = "", designName = "", height = "", heelType = "" } = {}) {
@@ -5480,7 +5469,7 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
       feature1: listing.feature1,
       feature2: listing.feature2,
       surfaceFinish: listing.surfaceFinish || "",
-      fit: listing.fit || compactPromptItems([listing.scene, listing.englishCategory, listing.readableProductType].filter(Boolean), "", 4),
+      fit: listing.fit,
       detailParameter: listing.detailParameter,
       groupKey: parentSku || amazonRowValue(parentRow, columns, "SKU", "contribution_sku") || "amazon-template",
       group: {
@@ -5829,7 +5818,7 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     feature1: globalSellingPoint1 || sellingPoints.feature1,
     feature2: globalSellingPoint2 || sellingPoints.feature2,
     surfaceFinish: detailTechnology,
-    fit: item.fit || umbrellaCompatibleUseText(attributeText),
+    fit: item.fit || "",
     detailParameter: compactPromptItems([umbrellaDetailText(attributeText, dimensionList), detailSpecialCraft, extraSellingPointText], "", 6),
     singleSpec: `[CURRENT_PRODUCT_OPTION: ${[variantProductName || outputSpec, safePack].filter(Boolean).join(", ")}]`,
     specList: `[SPEC_LIST: ${[variantProductName || outputSpec, itemCupRange, safePack, itemMaterial, itemStructure].filter(Boolean).join(" / ")}]`,
@@ -6023,10 +6012,10 @@ function promptFacts(sku, data) {
   const pack = packagingValue(data);
   const material = promptValue(data.material, "verified product material");
   const color = promptValue(data.color, "accurate product color");
-  const fit = promptValue(data.fit, sku.fit || "compatible use");
-  const scene = promptValue(data.scene, "realistic product use scene");
-  const feature1 = promptValue(data.feature1, "verified product benefit");
-  const feature2 = promptValue(data.feature2, "verified secondary benefit");
+  const fit = promptValue(data.fit, sku.fit || "");
+  const scene = promptValue(data.scene, "");
+  const feature1 = promptValue(data.feature1, "");
+  const feature2 = promptValue(data.feature2, "");
   const feature3 = promptValue(data.feature3, "");
   const variants = promptValue(data.variantList, "available verified product options");
   const dimensions = promptValue(data.dimensionList, "");
@@ -6277,28 +6266,28 @@ function categoryProfile(facts) {
       id: "footwear",
       match: isFootwear,
       apparel: true,
-      background: "Category background: premium beach, hotel spa, bathroom shower, poolside, or travel footwear setting with clean surfaces and realistic water-safe context.",
-      scene: "Scene category: premium beach, hotel spa, bathroom shower, poolside, and travel footwear lifestyle scenes with clean wet/dry surfaces, natural foot-scale context, and upscale resort lighting.",
+      background: "Category background: neutral product-first footwear setting only when no source scene is verified.",
+      scene: "",
       identity: "Footwear structure lock: preserve the exact source slipper/slide/sandal construction; keep upper band or strap layout/count/width, open or closed toe area as shown, sole outline/thickness, edge profile, fold/hinge if present, material texture, and selected color.",
       negative: "No changed footwear construction, strap/band layout/count/width, open/closed toe area, sole outline/thickness, fold/hinge, invented heel/back/ankle strap, second parallel strap, two-band upper, decoration, wrong material texture/color, or extra logo.",
       multiScene: (sceneList) => [
-        `Footwear scene choices for ${sceneList}: beach walk, hotel spa, shower/bathroom floor, poolside deck, gym shower, or travel packing.`,
-        "Show the exact slippers/slides/sandals being worn, carried, packed, or placed naturally in each environment while keeping realistic foot scale and true color.",
-        "Footwear benefits should be implied through scene action and environment cues only, such as quick drying after shower, non-slip wet-floor use, lightweight travel packing, beach/spa convenience, and relaxed casual wear.",
+        `Footwear scene choices must come only from verified extracted scene text: ${sceneList}.`,
+        "Show the exact slippers/slides/sandals while keeping realistic foot scale and true color.",
+        "Do not add footwear benefits, actions, or environments unless they are present in current source fields.",
       ],
       proof: {
-        compact: "show foldable slippers or slides packed flat in a travel bag, hotel amenity pouch, beach tote, or bathroom shelf without changing the shoe shape",
-        lightweight: "show easy hand carry, suitcase packing, or relaxed walking with the lightweight EVA sandals while preserving realistic scale",
-        grip: "show textured non-slip sole contacting a wet bathroom tile, pool deck, spa floor, or shower surface with realistic traction detail",
-        rain: "show quick-drying sandals after shower, poolside, or beach use with water droplets on EVA material; do not imply waterproof certification",
-        material: "show EVA material texture and flexible sole edge in a clean footwear close-up",
+        compact: "show only source-verified compact or foldable structure without changing the shoe shape",
+        lightweight: "show only source-verified lightweight handling with realistic scale",
+        grip: "show only source-verified sole texture or anti-slip detail",
+        rain: "show only source-verified water or quick-dry detail",
+        material: "show source-verified footwear material texture in a clean close-up",
       },
       inset: {
-        grip: "textured non-slip sole on wet tile close-up",
-        compact: "foldable slippers or slides packed flat in travel bag or hotel pouch",
-        lightweight: "one-hand carry or suitcase packing proof with realistic scale",
-        rain: "quick-drying EVA surface with water droplets after shower or pool use",
-        material: "EVA material texture and flexible sole edge close-up",
+        grip: "source-verified sole texture close-up",
+        compact: "source-verified compact or fold detail close-up",
+        lightweight: "source-verified lightweight detail with realistic scale",
+        rain: "source-verified water or quick-dry detail close-up",
+        material: "source-verified footwear material texture close-up",
         "cross-strap": "upper strap or backstrap structure close-up",
       },
     },
@@ -6375,12 +6364,20 @@ function mainImageRule() {
   return "Main image: no overlay text; preserve authentic non-Chinese product/packaging markings only; product occupies about 85% of the frame.";
 }
 
+function sceneMainProductScaleRule() {
+  return "Scene main image scale: the selected product itself must occupy at least 30% of the image area; crop close enough that the product is easy to inspect; scene, props, model, hands, and environment stay secondary.";
+}
+
+function multiSceneProductScaleRule() {
+  return "Multi-scene scale: in every panel, the selected product itself must occupy at least 20% of that panel; crop close enough that the product remains easy to recognize; people, hands, props, and environment may show real use but must not hide or shrink the product.";
+}
+
 function isMainImageType(typeId) {
   return typeId === "1" || typeId === "1A" || typeId === "1B";
 }
 
 function shortTextRule() {
-  return "English labels only: 3-5 words, max 2 on selling-point images and max 3 on parameter/summary images; no paragraphs, badges, repeated claims, or text stacking.";
+  return "English labels only: selling-point image titles must match the left selling-point count, 1 title group for 1 selling point or 2 title groups for 2 selling points; each group may use soft Title + Explanation text, and each part is max 5 characters; no full sentence captions or explanatory phrases on selling-point images; parameter/summary labels stay 3-5 words max 3; no paragraphs, badges, repeated claims, or text stacking.";
 }
 
 function humanSceneRule(facts) {
@@ -6397,18 +6394,34 @@ function sharedVisualRules(facts, typeId = "") {
   ].filter(Boolean).join(" ");
 }
 
+function neutralProductSceneFallback() {
+  return "neutral product-first setting with clean light, realistic scale, simple surface or placement, and no category-specific props or scene unless present in source fields";
+}
+
+function neutralProductSceneListFallback() {
+  return "";
+}
+
+function verifiedProductDetailFallback() {
+  return "visible product structure, material texture, true color, scale, and verified parameters";
+}
+
 function categoryStyleRule(facts) {
-  return categoryProfile(facts).background || "Category background: realistic light category-matched surface and props, uncluttered Amazon listing style.";
+  const sceneText = cleanFieldDisplayValue(facts?.scene || facts?.fit || "");
+  return sceneText
+    ? `Verified source scene/background: ${sceneText}.`
+    : `Neutral product-first background: ${neutralProductSceneFallback()}.`;
 }
 
 function basicImageRequirements(templateId, typeId, extra = "") {
   const parts = ["1:1 Amazon listing image", "4K clarity", "sharp realistic detail"];
   if (isMainImageType(typeId)) {
-    parts.push("no added overlay text", "preserve authentic non-Chinese product/packaging markings only", "product occupies about 85% of the frame");
+    parts.push("no added overlay text", "preserve authentic non-Chinese product/packaging markings only");
     if (templateId === "feature") {
-      parts.push("pure white background");
+      parts.push("pure white background", "product occupies about 85% of the frame");
     } else {
-      parts.push("premium scene-based hero background matched to the product theme");
+      parts.push(sceneMainProductScaleRule());
+      parts.push(`neutral product-first background: ${neutralProductSceneFallback()}`);
     }
   } else {
     parts.push("verified overlay text only when useful");
@@ -6802,6 +6815,11 @@ function translatePromptSegment(segment) {
     [/\bNo Chinese text\b/g, "图片内不要出现中文文字"],
     [/\bkeep authentic non-Chinese product markings only\b/g, "只保留真实的非中文产品标识"],
     [/\bEnglish labels only\b/g, "图片内标签只用英文"],
+    [/\bno full sentence captions\b/g, "不要完整句说明文字"],
+    [/\bexplanatory phrases\b/g, "不要解释性短语"],
+    [/\bdescriptive caption\b/g, "描述性说明文字"],
+    [/\bvisual proof target only\b/g, "仅作为视觉证明目标"],
+    [/\bnot on-image text\b/g, "不要写到图上"],
     [/\blabels 3-5 words\b/g, "标签 3-5 个英文词"],
     [/\bmax 2 on selling-point images\b/g, "卖点图最多 2 个标签"],
     [/\bmax 3 on parameter\/summary images\b/g, "参数/总结图最多 3 个标签"],
@@ -7406,68 +7424,104 @@ function sellingPointGroups(facts, groupIndex = 0, groupSize = 2) {
   return distributedSellingPointGroups(sellingPointCandidates(facts, 6), groupIndex, groupSize, 4);
 }
 
-function conciseSellingPointLabel(point, fallback = "Verified Product Benefit") {
-  const words = String(point || "")
+function clampSellingPointTitle(value, fallback = "Info") {
+  const clean = String(value || "")
+    .replace(/[^a-z0-9]/gi, "")
+    .trim();
+  const fallbackClean = String(fallback || "Info").replace(/[^a-z0-9]/gi, "") || "Info";
+  const source = clean || fallbackClean;
+  const clipped = source.slice(0, 5);
+  return clipped.charAt(0).toUpperCase() + clipped.slice(1);
+}
+
+function sellingPointWords(point) {
+  return String(point || "")
     .replace(/\[[^\]]+\]/g, " ")
     .replace(/[^a-z0-9\s-]/gi, " ")
     .replace(/[-_/]+/g, " ")
     .split(/\s+/)
     .map((word) => word.trim())
-    .filter((word) => /^[a-z0-9]+$/i.test(word))
-    .slice(0, 5);
-  if (words.length >= 2) {
-    return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ");
-  }
-  const labelByKey = {
-    compact: "Easy Travel Packing",
-    lightweight: "Lightweight Easy Carry",
-    uv: "Sun Shade Protection",
-    rain: "Quick Dry Surface",
-    windproof: "Stable Wind Structure",
-    grip: "Non Slip Grip",
-    "cross-strap": "Secure Strap Design",
-    "five-toe": "Five Toe Fit",
-    coverage: "Comfort Coverage Fit",
-    seam: "Smooth Seam Comfort",
-    sweat: "Moisture Wicking Comfort",
-    friction: "Friction Free Comfort",
-    knit: "Textured Knit Detail",
-    cotton: "Soft Cotton Comfort",
-    elastic: "Flexible Elastic Fit",
-    soft: "Soft Comfort Feel",
-    hygiene: "Fresh Wear Comfort",
-    filtration: "Smooth Coffee Flow",
-    material: "Natural Material Texture",
-  };
-  const key = sellingPointKey(point);
-  if (labelByKey[key]) return labelByKey[key];
-  return fallback;
+    .filter((word) => /^[a-z0-9]+$/i.test(word) && !/^(?:and|with|for|the|product|design|feature|benefit|verified)$/i.test(word));
 }
 
-function sellingPointLabels(points, fallback = "Verified Product Benefit") {
+function sellingPointLabelParts(point, fallback = "Info") {
+  const labelByKey = {
+    compact: ["Pack", "Flat"],
+    lightweight: ["Light", "Carry"],
+    "break-resistant": ["Firm", "Hold"],
+    "deformation-resistant": ["Shape", "Keep"],
+    "stretch-range": ["Range", "Pull"],
+    "full-body": ["Body", "Train"],
+    durable: ["Daily", "Use"],
+    "multi-use": ["Multi", "Use"],
+    "easy-clean": ["Clean", "Wash"],
+    stable: ["Firm", "Base"],
+    uv: ["UV", "Shade"],
+    rain: ["Dry", "Water"],
+    windproof: ["Wind", "Hold"],
+    grip: ["Grip", "Sole"],
+    "cross-strap": ["Strap", "Hold"],
+    "five-toe": ["Toes", "Fit"],
+    coverage: ["Cover", "Fit"],
+    seam: ["Seam", "Soft"],
+    sweat: ["Dry", "Sweat"],
+    friction: ["Glide", "Soft"],
+    knit: ["Knit", "Feel"],
+    cotton: ["Soft", "Touch"],
+    elastic: ["Flex", "Fit"],
+    soft: ["Soft", "Feel"],
+    hygiene: ["Fresh", "Wear"],
+    filtration: ["Flow", "Brew"],
+    material: ["Feel", "Touch"],
+  };
+  const key = sellingPointKey(point);
+  if (labelByKey[key]) {
+    return labelByKey[key].map((part) => clampSellingPointTitle(part, fallback)).filter(Boolean).slice(0, 2);
+  }
+
+  const words = sellingPointWords(point);
+  const preferred = words.filter((word) => word.length >= 3 && word.length <= 5);
+  const title = preferred[0] || words[0] || fallback;
+  const explanation = preferred.find((word) => !promptItemsOverlap(word, title)) || words.find((word) => !promptItemsOverlap(word, title));
+  return [title, explanation]
+    .filter(Boolean)
+    .map((part) => clampSellingPointTitle(part, fallback))
+    .filter(Boolean)
+    .slice(0, 2);
+}
+
+function conciseSellingPointLabel(point, fallback = "Info") {
+  return sellingPointLabelParts(point, fallback).join(" ") || clampSellingPointTitle(fallback, "Info");
+}
+
+function sellingPointLabels(points, fallback = "Info") {
   const labels = limitedSellingPoints(points, 2)
     .map((point) => conciseSellingPointLabel(point, fallback))
     .filter(Boolean);
   return uniquePromptItems(labels).slice(0, 2);
 }
 
-function sellingPointFocusText(points, fallback = "verified product benefit") {
+function sellingPointFocusText(points, fallback = "verified product detail") {
   return limitedSellingPoints(points, 2).join(" + ") || fallback;
 }
 
-function sellingPointDisplayText(points, fallback = "verified product benefit") {
+function sellingPointDisplayText(points, fallback = "Info") {
   return sellingPointLabels(points, conciseSellingPointLabel(fallback)).join(" + ") || conciseSellingPointLabel(fallback);
+}
+
+function sellingPointHeadlineRule(points) {
+  const labels = sellingPointLabels(points);
+  if (!labels.length) return "Use one soft Title + Explanation group only when labeling verified visible product facts; each part max 5 characters.";
+  return `Headline groups: ${labels.join(" + ")}. Match the left selling-point count exactly (${labels.length}); each selling point may use soft Title + Explanation text, each part max 5 characters.`;
 }
 
 function sellingPointSceneGuide(points, facts = {}) {
   const cleanPoints = limitedSellingPoints(points, 2);
-  const profile = categoryProfile(facts);
   const guides = cleanPoints.map((point) => {
     const key = sellingPointKey(point);
-    if (profile.proof?.[key]) return profile.proof[key];
-    if (key === "filtration") return "show real filtration flow in the use setup";
-    if (key === "material") return "show material texture in a realistic category scene";
-    return `show realistic use evidence for ${point}`;
+    if (key === "filtration") return "show real filtration flow visually";
+    if (key === "material") return "show material texture visually";
+    return "show the verified benefit through product imagery only";
   });
   return compactPromptItems([
     ...guides,
@@ -7475,23 +7529,36 @@ function sellingPointSceneGuide(points, facts = {}) {
   ], "", 4);
 }
 
-function sellingPointSceneDescription(points, facts = {}, fallback = "verified product benefit") {
+function sellingPointSceneDescription(points, facts = {}, fallback = "verified product detail") {
+  if (!limitedSellingPoints(points, 2).length) {
+    const baseScene = compactSpecificPromptItems([
+      facts.scene,
+      facts.fit,
+    ], neutralProductSceneFallback(), 2);
+    return `Scene: ${baseScene}; use universal product-detail proof: ${verifiedProductDetailFallback()}; no unsupported benefit claims; no sentence captions.`;
+  }
   const focusText = sellingPointFocusText(points, fallback);
   const sceneGuide = sellingPointSceneGuide(points, facts);
   const baseScene = compactSpecificPromptItems([
     facts.scene,
     facts.fit,
-  ], categoryProfile(facts).scene || "category-matched product-use scene", 2);
-  return `Scene: ${baseScene}; prove "${focusText}" through ${sceneGuide || focusText}.`;
+  ], neutralProductSceneFallback(), 2);
+  return `Scene: ${baseScene}; visual proof target only, do not write this target on the image: ${focusText}. Prove it through ${sceneGuide || "product imagery only"}; no sentence captions or explanatory phrases.`;
 }
 
 function sellingPointImageTemplateRule(points, facts = {}, imageName = "this selling-point image") {
-  const labelText = sellingPointDisplayText(points);
+  if (!limitedSellingPoints(points, 2).length) {
+    return [
+      `${imageName}: detail-focused Amazon proof layout using the current product only.`,
+      sellingPointSceneDescription(points, facts),
+      "On-image text may only be short label groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.",
+      "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, repeated benefit, or unsupported feature claim.",
+    ].join(" ");
+  }
   const focusText = sellingPointFocusText(points);
   const sceneDescription = sellingPointSceneDescription(points, facts);
-  const sceneGuide = sellingPointSceneGuide(points, facts);
   return [
-    `${imageName}: focus "${focusText}"; headline "${labelText}" uses polished Amazon editorial typography integrated with the scene.`,
+    `${imageName}: visual proof target only, not on-image text: ${focusText}. ${sellingPointHeadlineRule(points)} On-image text may only be these headline groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.`,
     sceneDescription,
     "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, or repeated benefit.",
   ].join(" ");
@@ -7674,7 +7741,7 @@ function referenceBlueprintCandidates(text) {
       patterns: [/lifestyle|scene|model|wearing|beach|pool|shower|bathroom|hotel|travel|户外|场景|真人|穿着|沙滩|浴室|泳池|酒店|旅行/i],
       role: "Lifestyle use scene",
       composition: "real use environment with reference crop, prop density, lighting mood, and product visibility",
-      proof: "show current product used in a category-matched scene without copying the reference person or exact set",
+      proof: "show current product only in source-verified use context; if none exists, keep a neutral product-first environment without copying the reference scene",
       text: "no text or one tiny scene label",
     },
     {
@@ -7689,7 +7756,7 @@ function referenceBlueprintCandidates(text) {
       key: "collage",
       patterns: [/collage|grid|panel|四宫格|拼图|组合/i],
       role: "Multi-panel usage collage",
-      composition: "2-4 panel grid or collage rhythm adapted from the reference",
+      composition: "2-4 panel grid or collage rhythm adapted from the reference; selected product occupies at least 20% of every panel",
       proof: "each panel proves a distinct verified use scene or benefit for the current product",
       text: "very short panel labels only if needed",
     },
@@ -7741,8 +7808,8 @@ function defaultReferenceBlueprint() {
     {
       key: "lifestyle",
       role: "Lifestyle use scene",
-      composition: "category-matched real use environment with product clearly visible",
-      proof: "show the current product in a plausible use scene",
+      composition: "source-verified use environment if available; otherwise neutral product-first environment; selected product occupies at least 30% of the image area",
+      proof: "show only extracted scene/use facts; if none exist, show product placement without inferred lifestyle claims",
       text: "no text or one tiny scene label",
     },
     {
@@ -7846,19 +7913,19 @@ function specModulePrompt(typeId, facts) {
   const optionCount = facts.pack ? `Product count/set: ${facts.pack}.` : "";
   const dimensions = dimensionLine ? `Verified dimensions: ${dimensionLine}.` : "No unverified dimensions.";
   const featureLabels = compactPromptItems(sellingPointCandidates(facts, 4), "verified benefits", 4);
-  const sceneUse = compactPromptItems([facts.scene, facts.fit], "realistic use scene", 3);
+  const sceneUse = compactPromptItems([facts.scene, facts.fit], neutralProductSceneFallback(), 3);
   const sellingPointGroup1 = sellingPointGroups(facts, 0);
 
   const modules = {
     "1": {
       basic: basicImageRequirements("spec", "1"),
       details: productDetailText(facts, [option, facts.color], 6),
-      style: overallStyleText(facts, "1", "Premium product-theme hero scene; product is the dominant subject; no added title, no added labels, no added overlay text; keep authentic product markings."),
+      style: overallStyleText(facts, "1", `Premium product-first hero scene; ${sceneMainProductScaleRule()} product is the primary visual subject; no added title, no added labels, no added overlay text; keep authentic product markings.`),
     },
     "2": {
       basic: basicImageRequirements("spec", "2"),
       details: productDetailText(facts, [sceneUse], 6),
-      style: overallStyleText(facts, "2", `Realistic lifestyle use scene: ${sceneUse}; product stays clear and accurate.`),
+      style: overallStyleText(facts, "2", `Realistic lifestyle use scene: ${sceneUse}; ${sceneMainProductScaleRule()} Product stays clear and accurate.`),
     },
     "3A": {
       basic: basicImageRequirements("spec", "3A"),
@@ -7956,7 +8023,10 @@ function sceneTextureLine(facts) {
 }
 
 function sceneCategoryStyleRule(facts) {
-  return categoryProfile(facts).scene || "Scene category: realistic light category-matched surface, props, and color mood.";
+  const sceneText = cleanFieldDisplayValue(facts?.scene || facts?.fit || "");
+  return sceneText
+    ? `Verified source scene: ${sceneText}.`
+    : `No verified use scene extracted; use ${neutralProductSceneFallback()}.`;
 }
 
 function sceneOverallStyleText(facts, typeId, extra = "") {
@@ -7968,21 +8038,21 @@ function sceneOverallStyleText(facts, typeId, extra = "") {
 }
 
 function multiSceneLifestyleStyleText(facts, sceneList) {
-  const profile = categoryProfile(facts);
+  const hasSceneList = Boolean(cleanFieldDisplayValue(facts?.scene || facts?.fit || ""));
   const globalSceneLines = [
     `Exactly 4 distinct complete real-life use scenes for ${sceneList}; clean 2x2/four-panel collage.`,
-    "Each panel needs medium/wide environment, props/context, and natural use action or placement.",
+    multiSceneProductScaleRule(),
+    "Each panel may include environment, props/context, and natural use action or placement, but the product stays the visual anchor.",
     "No product-only close-up, studio shot, macro detail, option grid, or cropped cutout.",
-    "Product visible in every panel, but each panel reads as a full lifestyle scene.",
-  ];
-  const categoryLines = profile.multiScene?.(sceneList) || [
-    "Product benefits should be implied through scene action and environment cues only, such as daily use, storage, handling, compatible context, or easy carry.",
+    "Product clear and recognizable in every panel, and each panel still reads as a complete lifestyle scene.",
   ];
   return [
     sceneCategoryStyleRule(facts),
     "Four complete lifestyle scenes only; not an infographic or product grid.",
     ...globalSceneLines,
-    ...categoryLines,
+    hasSceneList
+      ? "Use only the Use Scene / Compatible Object fields currently shown on the left; do not add other scenes."
+      : "No Use Scene / Compatible Object field is filled yet; wait for the user to add scenes before generating multi-scene lifestyle content, and do not replace it with product-only display panels.",
     "No added selling-point text, no callout labels, no badges, no arrows, no feature icons, no product-spec explanation, no inset close-up panels.",
   ].filter(Boolean).join(" / ");
 }
@@ -8003,6 +8073,13 @@ function sceneMultiSceneStyleText(facts, sceneList) {
     "Every panel preserves source slipper/slide/sandal construction; scenes must not change upper band or strap layout/count/width, sole outline, toe area, or fold/hinge.",
     isThongFlipFlopFacts(facts) ? `Across all panels, ${thongFlipFlopShortLockText()}` : "",
   ].filter(Boolean).join(" / ");
+}
+
+function userProvidedSceneList(facts) {
+  const sceneText = cleanFieldDisplayValue(facts?.scene || "");
+  const fitText = cleanFieldDisplayValue(facts?.fit || "");
+  if (promptItemsOverlap(sceneText, fitText)) return sceneText || fitText;
+  return compactSpecificPromptItems([sceneText, fitText], "USER_SCENE_REQUIRED", 4);
 }
 
 function sceneMultiAngleDetails(facts, physicalDetails) {
@@ -8070,7 +8147,7 @@ function premiumLifestyleHeroRule(sceneText) {
 
 function sceneHeroBasicRequirements(facts, heroVariant = "product") {
   const variantRule = heroVariant === "human"
-    ? "person using product is the primary story, but product remains clear and accurate"
+    ? "person/model may demonstrate use, but the selected product remains the primary visual subject and must not become a small accessory"
     : "product itself is the primary hero subject, with matching scene support";
   if (!isFootwearCategory(facts)) {
     return compactPromptItems([
@@ -8080,8 +8157,9 @@ function sceneHeroBasicRequirements(facts, heroVariant = "product") {
       "no added overlay text",
       "preserve authentic non-Chinese product/packaging markings only",
       variantRule,
-      "premium scene-based hero background matched to the product theme",
-    ], "", 7);
+      sceneMainProductScaleRule(),
+      `neutral product-first background: ${neutralProductSceneFallback()}`,
+    ], "", 8);
   }
   return compactPromptItems([
     "1:1 Amazon lifestyle hero image",
@@ -8089,11 +8167,12 @@ function sceneHeroBasicRequirements(facts, heroVariant = "product") {
     "sharp realistic detail",
     "no added overlay text",
     variantRule,
-    "attractive beach/resort/spa/travel lifestyle scene",
+    sceneMainProductScaleRule(),
+    facts.scene || facts.fit ? "use only the verified source scene/use context" : `neutral product-first lifestyle setting: ${neutralProductSceneFallback()}`,
     "medium environmental framing; not shoe-only close-up",
     "product clear, with scene atmosphere/props filling frame",
     "preserve authentic non-Chinese product/packaging markings only",
-  ], "", 8);
+  ], "", 10);
 }
 
 function footwearStructureReferenceText(facts) {
@@ -8120,7 +8199,7 @@ function footwearStructureNegativeText(facts) {
 
 function sceneHeroProductDetails(facts, mainScene, heroVariant = "product") {
   const variantDetail = heroVariant === "human"
-    ? "Main template B: show a natural person actively using or wearing the product in the matched scene; human action/posture is the main story while the product stays readable."
+    ? "Main template B: show the selected product being used or worn by a natural person in the matched scene; product remains the main visual subject, while human action/posture only explains scale and use."
     : "Main template A: product itself is the dominant subject; use the matched scene as context, props, depth, and atmosphere around the product.";
   if (!isFootwearCategory(facts)) {
     return sceneProductDetailText(facts, [variantDetail, mainScene, visibleTextureDetails(facts)], 8);
@@ -8129,7 +8208,9 @@ function sceneHeroProductDetails(facts, mainScene, heroVariant = "product") {
     footwearStructureReferenceText(facts),
     variantDetail,
     `Hero lifestyle context: ${mainScene}`,
-    "Scene appeal: visible sand/water/towel/beach bag/resort deck/spa/travel prop; natural light, depth, negative space.",
+    facts.scene || facts.fit
+      ? "Scene appeal uses only source-verified props/context; natural light, depth, negative space."
+      : `Scene appeal stays neutral and product-first: ${neutralProductSceneFallback()}.`,
     visibleTextureDetails(facts),
   ], 10);
 }
@@ -8137,23 +8218,27 @@ function sceneHeroProductDetails(facts, mainScene, heroVariant = "product") {
 function sceneHeroStyleText(facts, mainScene, heroVariant = "product") {
   const productFirstRule = [
     `Main template A: product-first hero in ${mainScene}.`,
+    sceneMainProductScaleRule(),
     "Product is the largest visual subject and the first thing noticed; scene, props, natural light, foreground/background, and negative space support the product.",
     "Show product clearly with premium lifestyle atmosphere; avoid turning it into a plain product-only close-up or isolated studio shot.",
   ].join(" ");
   const humanUseRule = [
     `Main template B: human-use hero in ${mainScene}.`,
-    "A natural person actively uses, wears, holds, or interacts with the product; posture/action is the main lifestyle story.",
-    "Product remains visible, source-accurate, and desirable; scene context, props, light, and environment explain the use state.",
+    sceneMainProductScaleRule(),
+    "A natural person may use, wear, hold, or interact with the product, but the product remains the hero subject.",
+    "Use close or medium-close framing so the product is clearly inspectable; human posture, scene context, props, light, and environment explain use without overpowering the product.",
   ].join(" ");
   if (isFootwearCategory(facts)) {
     return sceneOverallStyleText(facts, "1", [
       heroVariant === "human"
-        ? `Main template B: show a natural person wearing or stepping with the exact selected slippers/slides/sandals in ${mainScene}; foot/lower-leg use state is the main lifestyle story.`
+        ? `Main template B: show the exact selected slippers/slides/sandals being worn or stepped with in ${mainScene}; crop close enough that the footwear is the hero subject, while foot/lower-leg use state only supports scale and use.`
         : `Main template A: place the exact selected slippers/slides/sandals as the dominant product hero in ${mainScene}; model feet/lower legs optional and secondary.`,
-      "Medium environmental framing with beach/resort/spa/travel story, props, depth; not only shoes/feet.",
+      facts.scene || facts.fit
+        ? "Medium environmental framing with only source-verified story, props, and depth; not only shoes/feet."
+        : `Medium neutral framing with product placement, light, texture, and depth; ${neutralProductSceneFallback()}; not only shoes/feet.`,
       heroVariant === "human"
-        ? "Person-use state leads the image, but footwear structure must stay clear; leave environment, light, texture, and negative space."
-        : "Product clear and desirable, roughly 35-55% of frame; leave environment, light, texture, negative space.",
+        ? "Footwear leads the image; person-use state stays secondary, and footwear structure must stay clear; leave environment, light, texture, and negative space."
+        : "Product clear and desirable, at least 30% of frame; leave environment, light, texture, negative space.",
       isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "Preserve true color, upper band/strap shape, sole thickness/outline, toe area, and fold/hinge if visible.",
       "If the scene angle would hide or distort key structure, adjust camera/placement instead of changing the slipper.",
     ].join(" "));
@@ -8195,13 +8280,11 @@ function sceneSellingPointItems(facts, points, fallback) {
 }
 
 function summaryInsetGuide(facts, points) {
-  const profile = categoryProfile(facts);
   const guideItems = uniqueSellingPoints(points, 4).map((point) => {
     const key = sellingPointKey(point);
-    if (profile.inset?.[key]) return profile.inset[key];
     if (key === "filtration") return "working-performance close-up";
     if (key === "material") return "material texture close-up";
-    return `${point} visual proof close-up`;
+    return `${point} source-verified detail close-up`;
   });
   return compactPromptItems([
     ...guideItems,
@@ -8215,10 +8298,8 @@ function sceneModulePrompt(typeId, facts) {
     facts.material,
     facts.color,
   ], "visible product structure, material texture, and true color", 3);
-  const sceneList = promptItemsOverlap(facts.scene, facts.fit)
-    ? specificPromptValue(facts.scene || facts.fit, "verified realistic use scenes")
-    : compactSpecificPromptItems([facts.scene, facts.fit], "verified realistic use scenes", 3);
-  const mainScene = compactSpecificPromptItems([facts.scene, facts.fit], "a realistic premium category scene", 2);
+  const sceneList = userProvidedSceneList(facts);
+  const mainScene = compactSpecificPromptItems([facts.scene, facts.fit], neutralProductSceneFallback(), 2);
   const sellingPointSet = sellingPointCandidates(facts, 6);
   const sellingPointGroup1 = sellingPointGroups(facts, 0);
   const sellingPointGroup2 = sellingPointGroups(facts, 1);
@@ -8239,7 +8320,7 @@ function sceneModulePrompt(typeId, facts) {
       style: sceneHeroStyleText(facts, mainScene, "human"),
     },
     "2": {
-      basic: "1:1 Amazon listing image, 4K clarity, sharp realistic detail, multi-panel complete-use-scene collage, environment-first composition.",
+      basic: `1:1 Amazon listing image, 4K clarity, sharp realistic detail, multi-panel complete-use-scene collage. ${multiSceneProductScaleRule()}`,
       details: sceneMultiSceneDetails(facts, sceneList),
       style: sceneMultiSceneStyleText(facts, sceneList),
     },
@@ -8269,7 +8350,7 @@ function sceneModulePrompt(typeId, facts) {
         `Summary points: ${summaryPoints}`,
         `Detail inset subjects: ${summaryInsetText}`,
       ], 8),
-      style: sceneOverallStyleText(facts, "7", `${productFirstOptionalHumanRule()} Strong summary poster: one large central lifestyle use photo plus 3-4 real product-detail inset windows around it. Each inset must show actual close-up visual proof, not only a line, icon, or text callout; optional labels must be 3-5 words. Add one concise 2-4 word top headline only; no bullets, dense table, text-only diagram, or text stacking.`),
+      style: sceneOverallStyleText(facts, "7", `${productFirstOptionalHumanRule()} Polished summary poster: one large central lifestyle use photo plus 3-4 real product-detail inset windows around it. Each inset must show actual close-up visual proof, not only a line, icon, or text callout; optional labels must be 3-5 words. Add one concise 2-4 word top headline only; no bullets, dense table, text-only diagram, or text stacking.`),
     },
   };
   const selected = modules[typeId] || modules["1A"];
@@ -8291,11 +8372,9 @@ function sceneTemplatePrompt(typeId, sku, data) {
 }
 
 function featureModulePrompt(typeId, facts) {
-  const sceneUse = compactSpecificPromptItems([facts.scene, facts.fit], "realistic product use scene", 3);
-  const sceneList = promptItemsOverlap(facts.scene, facts.fit)
-    ? specificPromptValue(facts.scene || facts.fit, "verified realistic use scenes")
-    : compactSpecificPromptItems([facts.scene, facts.fit], "verified realistic use scenes", 3);
-  const mainScene = compactSpecificPromptItems([facts.scene, facts.fit], "a realistic premium category scene", 2);
+  const sceneUse = compactSpecificPromptItems([facts.scene, facts.fit], neutralProductSceneFallback(), 3);
+  const sceneList = userProvidedSceneList(facts);
+  const mainScene = compactSpecificPromptItems([facts.scene, facts.fit], neutralProductSceneFallback(), 2);
   const optionText = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
   const dimensionLine = dimensionText(facts);
   const optionCount = facts.pack ? `Product count/set: ${facts.pack}.` : "";
@@ -8323,11 +8402,11 @@ function featureModulePrompt(typeId, facts) {
     facts.material,
     facts.structure,
     facts.surfaceFinish,
-  ], "verified product benefits", 6);
+  ], verifiedProductDetailFallback(), 6);
   const sceneSummaryPoints = compactSpecificPromptItems([
     facts.fit || facts.scene,
     ...sellingPointSet,
-  ], "main scene / multi-use / key selling points", 4);
+  ], verifiedProductDetailFallback(), 4);
   const summaryInsetText = summaryInsetGuide(facts, sellingPointSet);
   const modules = {
     "1": {
@@ -8336,15 +8415,17 @@ function featureModulePrompt(typeId, facts) {
       style: `Pure white Amazon main image: show only the product itself, centered, no hands, no people, no body parts, no props, no furniture, no room, no outdoor scene, no lifestyle background, no added title, no added labels. ${premiumStudioRenderRule()}`,
     },
     "2": {
-      basic: "1:1 Amazon lifestyle hero image, 4K clarity, sharp realistic detail, premium real-use scene, no added overlay text, product clearly visible and actively used, scene context fills the frame.",
+      basic: `1:1 Amazon lifestyle hero image, 4K clarity, sharp realistic detail, premium real-use scene, no added overlay text, ${sceneMainProductScaleRule()} product clearly visible and actively used.`,
       details: sceneProductDetailText(facts, [mainScene, visibleTextureDetails(facts)], 7),
-      style: sceneOverallStyleText(facts, "1", `${premiumLifestyleHeroRule(mainScene)} Product must be in active use, not just placed as a prop; composition should feel aspirational, high-end, and category-matched.`),
+      style: sceneOverallStyleText(facts, "1", facts.scene || facts.fit
+        ? `${premiumLifestyleHeroRule(mainScene)} ${sceneMainProductScaleRule()} Product must be in active use, not just placed as a prop; composition uses only source-verified context.`
+        : `Premium product-first lifestyle/studio composition; product remains the subject; ${neutralProductSceneFallback()}; use realistic light, depth, scale, and material appeal without inventing an active-use scenario or category benefit story.`),
     },
     "3": {
-      basic: "1:1 Amazon listing image, 4K clarity, sharp realistic detail, premium multi-scene lifestyle collage.",
+      basic: `1:1 Amazon listing image, 4K clarity, sharp realistic detail, premium multi-scene lifestyle collage. ${multiSceneProductScaleRule()}`,
       details: sceneContextProductDetailText(facts, [
         `Use scenes: ${sceneList}`,
-        `Scene-implied benefits only: ${compactSpecificPromptItems(sellingPointSet, "verified product benefits", 4)}`,
+        `Scene-implied benefits only: ${compactSpecificPromptItems(sellingPointSet, verifiedProductDetailFallback(), 4)}`,
       ], 6),
       style: multiSceneLifestyleStyleText(facts, sceneList),
     },
@@ -8392,7 +8473,7 @@ function featureModulePrompt(typeId, facts) {
         `Summary points: ${sceneSummaryPoints || summaryPoints}`,
         `Detail inset subjects: ${summaryInsetText}`,
       ], 8),
-      style: sceneOverallStyleText(facts, "7", `${productFirstOptionalHumanRule()} Strong summary poster: one large central lifestyle use photo plus 3-4 real product-detail inset windows around it. Each inset must show actual close-up visual proof, not only a line, icon, or text callout; optional labels must be 3-5 words. Add one concise 2-4 word top headline only; no bullets, dense table, text-only diagram, or text stacking.`),
+      style: sceneOverallStyleText(facts, "7", `${productFirstOptionalHumanRule()} Polished summary poster: one large central lifestyle use photo plus 3-4 real product-detail inset windows around it. Each inset must show actual close-up visual proof, not only a line, icon, or text callout; optional labels must be 3-5 words. Add one concise 2-4 word top headline only; no bullets, dense table, text-only diagram, or text stacking.`),
     },
   };
   const selected = modules[typeId] || modules["1"];
@@ -8450,8 +8531,9 @@ function plantTieMainSceneStyle(facts, sceneText) {
   return sceneOverallStyleText(facts, "1", [
     plantTieIdentityRule(facts),
     `Main scene: product-first realistic plant support scene in ${sceneText}.`,
+    sceneMainProductScaleRule(),
     "Use healthy real plants, stems, vines, trellis, garden bed, greenhouse, or potted-plant context as appropriate.",
-    "A person/model appears only if actual product use needs a human action; if present, hands or gardener action stays secondary and the product remains clear.",
+    "A person/model appears only if actual product use needs a human action; if present, hands or gardener action stays secondary and the plant tie remains the hero subject.",
     "No added overlay text; product use must look natural, clean, and Amazon-ready.",
   ].join(" "));
 }
@@ -8481,7 +8563,7 @@ function plantTieModulePrompt(typeId, facts) {
   const productInfo = plantTieDetailInfo(facts);
   const modules = {
     "1": {
-      basic: "1:1 Amazon main scene image, 4K clarity, sharp realistic detail, no added overlay text, plant support use scene, person/model optional only when product use requires it.",
+      basic: `1:1 Amazon main scene image, 4K clarity, sharp realistic detail, no added overlay text, ${sceneMainProductScaleRule()} plant support use scene, person/model optional only when product use requires it.`,
       details: sceneProductDetailText(facts, [
         plantTieIdentityRule(facts),
         `Use scene: ${sceneText}`,
@@ -8498,7 +8580,7 @@ function plantTieModulePrompt(typeId, facts) {
       style: plantTieWhiteBackgroundStyle(facts),
     },
     "3": {
-      basic: "1:1 Amazon multi-scene usage image, 4K clarity, sharp realistic detail, exactly 4 complete plant-use scenes, clean 2x2/four-panel collage.",
+      basic: `1:1 Amazon multi-scene usage image, 4K clarity, sharp realistic detail, exactly 4 complete plant-use scenes, clean 2x2/four-panel collage. ${multiSceneProductScaleRule()}`,
       details: sceneContextProductDetailText(facts, [
         plantTieIdentityRule(facts),
         `Use scenes: ${sceneText}`,
@@ -8578,7 +8660,7 @@ function referenceLinkModulePrompt(typeId, facts) {
   const sceneUse = compactSpecificPromptItems([
     facts.scene,
     facts.fit,
-  ], "realistic category-matched use scene", 4);
+  ], neutralProductSceneFallback(), 4);
   const materialDetail = compactSpecificPromptItems([
     facts.material,
     facts.surfaceFinish,
@@ -8588,10 +8670,16 @@ function referenceLinkModulePrompt(typeId, facts) {
   const featurePoint = compactSpecificPromptItems([
     ...sellingPointCandidates(facts, 4),
     facts.fit,
-  ], "verified product benefit", 4);
+  ], verifiedProductDetailFallback(), 4);
   const referenceInsight = referenceLinkInsightText(typeId);
   const referenceRule = referenceLinkGlobalRule(facts, typeId);
   const blueprintBasic = `1:1 Amazon reference-blueprint image ${typeId}, 4K clarity, sharp realistic detail, route: ${blueprint.role}.`;
+  const blueprintMainScale = /hero|multi-angle|product-only/i.test(blueprint.key)
+    ? "Product-only reference hero scale: current product remains the main visual subject and should occupy most of the frame."
+    : sceneMainProductScaleRule();
+  const blueprintPanelScale = /collage|grid|panel/i.test(`${blueprint.key} ${blueprint.composition}`)
+    ? multiSceneProductScaleRule()
+    : "";
   const modules = {
     "1": {
       basic: blueprintBasic,
@@ -8601,7 +8689,7 @@ function referenceLinkModulePrompt(typeId, facts) {
         referenceInsight,
         "Execute this exact reference slot with the current product; do not add extra views, scenes, claims, or callouts unless the current reference slot calls for them.",
       ], 7),
-      style: overallStyleText(facts, "1", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Current product shape, color, material, and structure must stay exact.`, { includeHumanRule: !/hero|multi-angle|product-only/i.test(blueprint.key) }),
+      style: overallStyleText(facts, "1", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. ${blueprintMainScale} Current product shape, color, material, and structure must stay exact.`, { includeHumanRule: !/hero|multi-angle|product-only/i.test(blueprint.key) }),
     },
     "2": {
       basic: blueprintBasic,
@@ -8645,7 +8733,7 @@ function referenceLinkModulePrompt(typeId, facts) {
         referenceInsight,
         "Use the reference blueprint scene role, crop, prop density, and lighting mood; adapt environment to current product category and verified use.",
       ], 7),
-      style: sceneOverallStyleText(facts, "5", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Product stays prominent and source-accurate; no forced travel/folding/packing scene unless verified.`),
+      style: sceneOverallStyleText(facts, "5", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. ${sceneMainProductScaleRule()} ${blueprintPanelScale} Product stays prominent and source-accurate; no forced travel/folding/packing scene unless verified.`),
     },
     "6": {
       basic: blueprintBasic,
@@ -8654,9 +8742,9 @@ function referenceLinkModulePrompt(typeId, facts) {
         `Use-scene proof: ${sceneUse}`,
         `Lifestyle benefit: ${featurePoint}`,
         referenceInsight,
-        "Use the reference blueprint closing role; human/model use is optional and must not hide or alter the current product structure.",
+        "Use the reference blueprint closing role; human/model use is optional and must not hide, shrink, or alter the current product structure.",
       ], 7),
-      style: sceneOverallStyleText(facts, "6", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. Do not copy the reference person, floor, exact pose, text style, or product shape.`),
+      style: sceneOverallStyleText(facts, "6", `${referenceRule} Execute slot composition exactly: ${blueprint.composition}. ${sceneMainProductScaleRule()} ${blueprintPanelScale} Do not copy the reference person, floor, exact pose, text style, or product shape.`),
     },
   };
   const selected = modules[typeId] || modules["1"];
