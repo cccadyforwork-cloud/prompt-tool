@@ -193,7 +193,7 @@ textarea:focus {
 
 .field-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .empty-state {
@@ -253,16 +253,7 @@ textarea:focus {
 }
 
 .field-list label {
-  margin: 0 0 4px;
-}
-
-.field-list input {
-  min-height: 36px;
-  padding: 7px 9px;
-}
-
-.manual-field-list {
-  gap: 7px;
+  margin: 0 0 5px;
 }
 
 button {
