@@ -151,6 +151,33 @@ const imageTypes = [
 
 const templates = [
   {
+    id: "plantTie",
+    name: "植物绑带模型",
+    description: "通用 5 张图结构：主场景、白底、多场景、卖点、尺寸材质产品信息详情。",
+    imageTypes: [
+      { id: "1", name: "1. 主图场景图", promptName: "1. Main Scene Image" },
+      { id: "2", name: "2. 白底图", promptName: "2. White Background Product Image" },
+      { id: "3", name: "3. 多场景使用图", promptName: "3. Multi-Scene Usage Image" },
+      { id: "4", name: "4. 卖点图", promptName: "4. Selling Point Image" },
+      { id: "5", name: "5. 尺寸材质产品信息详情图", promptName: "5. Product Detail Information Image" },
+    ],
+  },
+  {
+    id: "scene",
+    name: "场景展示模板",
+    description: "围绕 A/B 主场景、多场景、多角度展示、产品说明、两个卖点和收口生成 8 张图。",
+    imageTypes: [
+      { id: "1A", name: "1A. 主图 / 产品主体场景图", promptName: "1A. Product-First Main Scene Image" },
+      { id: "1B", name: "1B. 主图 / 人物使用场景图", promptName: "1B. Human-Use Main Scene Image" },
+      { id: "2", name: "2. 多场景 / 多用途图", promptName: "2. Multi-Scene Usage Image" },
+      { id: "3", name: "3. 多角度图", promptName: "3. Multi-Angle Product Image" },
+      { id: "4", name: "4. 产品说明图", promptName: "4. Product Explanation Image" },
+      { id: "5", name: "5. 卖点图 5", promptName: "5. Selling Point Image 5" },
+      { id: "6", name: "6. 卖点图 6", promptName: "6. Selling Point Image 6" },
+      { id: "7", name: "7. 卖点总览图", promptName: "7. Feature Summary Image" },
+    ],
+  },
+  {
     id: "spec",
     name: "参数规格模板",
     description: "围绕规格、产品自身数量/套装、适配、范围和已确认尺寸生成 8 张图。",
@@ -172,33 +199,6 @@ const templates = [
     ],
   },
   {
-    id: "scene",
-    name: "场景展示模板",
-    description: "围绕 A/B 主场景、多场景、多角度展示、产品说明、两个卖点和收口生成 8 张图。",
-    imageTypes: [
-      { id: "1A", name: "1A. 主图 / 产品主体场景图", promptName: "1A. Product-First Main Scene Image" },
-      { id: "1B", name: "1B. 主图 / 人物使用场景图", promptName: "1B. Human-Use Main Scene Image" },
-      { id: "2", name: "2. 多场景 / 多用途图", promptName: "2. Multi-Scene Usage Image" },
-      { id: "3", name: "3. 多角度图", promptName: "3. Multi-Angle Product Image" },
-      { id: "4", name: "4. 产品说明图", promptName: "4. Product Explanation Image" },
-      { id: "5", name: "5. 卖点图 5", promptName: "5. Selling Point Image 5" },
-      { id: "6", name: "6. 卖点图 6", promptName: "6. Selling Point Image 6" },
-      { id: "7", name: "7. 卖点总览图", promptName: "7. Feature Summary Image" },
-    ],
-  },
-  {
-    id: "plantTie",
-    name: "植物绑带模型",
-    description: "植物绑带产品专用 5 张图：主场景、白底、多场景、卖点、尺寸材质产品信息详情。",
-    imageTypes: [
-      { id: "1", name: "1. 主图场景图", promptName: "1. Main Scene Image" },
-      { id: "2", name: "2. 白底图", promptName: "2. White Background Product Image" },
-      { id: "3", name: "3. 多场景使用图", promptName: "3. Multi-Scene Usage Image" },
-      { id: "4", name: "4. 卖点图", promptName: "4. Selling Point Image" },
-      { id: "5", name: "5. 尺寸材质产品信息详情图", promptName: "5. Product Detail Information Image" },
-    ],
-  },
-  {
     id: "reference",
     name: "参考链接模板",
     description: "参考链接静态图组的图片顺序、构图任务和卖点分配，代入当前产品信息生成 6 张图。",
@@ -215,23 +215,28 @@ const templates = [
 
 const fields = [
   ["productName", "Product Name", "[PRODUCT_NAME]"],
-  ["pack", "Product Count / Set", ""],
-  ["cupRange", "Size / Range", ""],
   ["material", "Material", ""],
   ["color", "Color", ""],
   ["structure", "Structure / Craft", ""],
-  ["surfaceFinish", "Technology / Finish", ""],
   ["detailParameter", "Detail Features", ""],
-  ["topWidth", "Dimension 1", ""],
-  ["sideLength", "Dimension 2", ""],
-  ["bottomWidth", "Dimension 3", ""],
-  ["weight", "Weight / Quantity", ""],
   ["scene", "Use Scene", ""],
   ["feature1", "Selling Point 1", ""],
   ["feature2", "Selling Point 2", ""],
 ];
 
-const multilineFieldKeys = new Set(["feature1", "feature2"]);
+const manualFields = [
+  ["pack", "Product Count / Set", ""],
+  ["cupRange", "Size / Range", ""],
+  ["surfaceFinish", "Technology / Finish", ""],
+  ["topWidth", "Dimension 1", ""],
+  ["sideLength", "Dimension 2", ""],
+  ["bottomWidth", "Dimension 3", ""],
+  ["weight", "Weight / Quantity", ""],
+];
+
+const allFields = [...fields, ...manualFields];
+const manualFieldKeys = new Set(manualFields.map(([key]) => key));
+const multilineFieldKeys = new Set(["scene", "feature1", "feature2"]);
 const sellingPointFieldKeys = new Set(["feature1", "feature2"]);
 
 let promptStore = [];
@@ -260,6 +265,7 @@ let fieldOverridesBySku = {};
 let appliedSellingPointOverridesBySku = {};
 let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
+let sceneInputRevision = 0;
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -524,6 +530,10 @@ function fillSelects() {
 
 function renderProductSelect(selectedId = byId("skuSelect")?.value) {
   const products = currentProducts();
+  if (!hasExtractedProducts()) {
+    byId("skuSelect").innerHTML = `<option value="${emptyExtractedProduct.id}">${escapeHtml(emptyExtractedProduct.label)}</option>`;
+    return;
+  }
   byId("skuSelect").innerHTML = products.map((sku) => `<option value="${sku.id}">${escapeHtml(skuDisplayLabel(sku))}</option>`).join("");
   if (selectedId && products.some((sku) => sku.id === selectedId)) {
     byId("skuSelect").value = selectedId;
@@ -534,6 +544,7 @@ function renderFields(reset = false) {
   const sku = selectedSku();
   const values = valueMap(sku);
   const fieldList = byId("fieldList");
+  const manualFieldList = byId("manualFieldList");
   if (reset) {
     fieldOverrides = { ...(fieldOverridesBySku[sku?.id] || {}) };
     sellingPointDraftDirty = false;
@@ -541,22 +552,29 @@ function renderFields(reset = false) {
   ensureAppliedSellingPointValues(sku);
   if (!hasExtractedProducts()) {
     fieldList.innerHTML = `<p class="empty-state">解析资料后显示可替换参数。</p>`;
+    if (manualFieldList) manualFieldList.innerHTML = `<p class="empty-state">解析资料后可手动补充数量、尺寸、重量等参数。</p>`;
     return;
   }
-  const fieldControls = fields.map(([key, label, fallback]) => {
-    const currentValue = byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
+  const renderFieldControls = (fieldDefs, useExtractedDefaults) => fieldDefs.map(([key, label, fallback]) => {
+    const currentValue = reset ? fieldOverrides[key] ?? "" : byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
     const value = reset
-      ? (values[key] || fallback)
-      : (cleanFieldDisplayValue(currentValue) || values[key] || fallback);
+      ? (useExtractedDefaults ? values[key] || fallback : cleanFieldDisplayValue(currentValue))
+      : (cleanFieldDisplayValue(currentValue) || (useExtractedDefaults ? values[key] : "") || fallback);
     const cleanValue = ["fit", "scene"].includes(key)
       ? sanitizeUseContextFields({ ...values, [key]: cleanFieldDisplayValue(value) })[key]
       : cleanFieldDisplayValue(value);
-    const displayValue = multilineFieldKeys.has(key)
-      ? formatMultilineSellingPoints(cleanValue)
-      : cleanValue;
-    const fieldControl = multilineFieldKeys.has(key)
-      ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
-      : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
+    const displayValue = key === "scene"
+      ? formatUseSceneDisplayValue(cleanValue)
+      : multilineFieldKeys.has(key)
+        ? formatMultilineSellingPoints(cleanValue)
+        : cleanValue;
+    const fieldControl = key === "scene"
+      ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="One English use scene per line">${escapeHtml(displayValue)}</textarea>
+        <button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补全 3–5 个英文场景</button>
+        <p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">保留合适的已有场景，并结合网络资料补充、去重。</p>`
+      : multilineFieldKeys.has(key)
+        ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
+        : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
     return `
       <div>
         <label for="field-${key}">${label}</label>
@@ -564,17 +582,33 @@ function renderFields(reset = false) {
       </div>
     `;
   }).join("");
+  const fieldControls = renderFieldControls(fields, true);
+  const manualFieldControls = renderFieldControls(manualFields, false);
   fieldList.innerHTML = `${fieldControls}
     <div id="sellingPointApplyWrap" class="selling-point-apply-wrap${sellingPointDraftDirty ? "" : " is-hidden"}">
       <button id="applySellingPoints" type="button" class="ghost selling-point-apply">确认生成卖点图提示词</button>
       <p class="selling-point-apply-note">卖点已修改，点击后更新右侧卖点图场景和提示词。</p>
     </div>
   `;
-  fieldList.querySelectorAll("input, textarea").forEach((input) => {
+  if (manualFieldList) manualFieldList.innerHTML = manualFieldControls;
+  document.querySelectorAll("#fieldList input, #fieldList textarea, #manualFieldList input, #manualFieldList textarea").forEach((input) => {
     ["input", "change"].forEach((eventName) => input.addEventListener(eventName, handleFieldInput));
   });
   byId("applySellingPoints")?.addEventListener("click", applySellingPointChanges);
+  byId("enrichUseScenes")?.addEventListener("click", enrichUseScenesOnline);
   updateSellingPointApplyState();
+}
+
+function splitUseSceneText(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split(/\n+|\s+\/\s+|[;；]+/)
+    .map((item) => item.replace(/^[\s,，.。-]+|[\s,，.。-]+$/g, "").trim())
+    .filter(Boolean);
+}
+
+function formatUseSceneDisplayValue(value) {
+  return splitUseSceneText(value).join("\n");
 }
 
 function formatMultilineSellingPoints(value) {
@@ -672,12 +706,7 @@ function productParameterRows() {
       cupRange: "",
       material: cleanTokenValue(values.material),
       structure: cleanTokenValue(values.structure),
-      surfaceFinish: cleanTokenValue(values.surfaceFinish),
       detailParameter: cleanTokenValue(values.detailParameter),
-      topWidth: sku.dims?.topWidth || values.topWidth || "",
-      sideLength: sku.dims?.sideLength || values.sideLength || "",
-      bottomWidth: sku.dims?.bottomWidth || values.bottomWidth || "",
-      weight: sku.dims?.weight || values.weight || "",
     };
 
     if (isSelected || !existing.cupRange) {
@@ -685,13 +714,8 @@ function productParameterRows() {
     }
     if (isSelected || !existing.material) existing.material = cleanTokenValue(values.material);
     if (isSelected || !existing.structure) existing.structure = cleanTokenValue(values.structure);
-    if (isSelected || !existing.surfaceFinish) existing.surfaceFinish = cleanTokenValue(values.surfaceFinish);
     if (isSelected || !existing.detailParameter) existing.detailParameter = cleanTokenValue(values.detailParameter);
     if (isSelected || !existing.productName) existing.productName = cleanFieldDisplayValue(values.productName || defaultProductName(sku));
-    if (isSelected || !existing.topWidth) existing.topWidth = values.topWidth || sku.dims?.topWidth || "";
-    if (isSelected || !existing.sideLength) existing.sideLength = values.sideLength || sku.dims?.sideLength || "";
-    if (isSelected || !existing.bottomWidth) existing.bottomWidth = values.bottomWidth || sku.dims?.bottomWidth || "";
-    if (isSelected || !existing.weight) existing.weight = values.weight || sku.dims?.weight || "";
     groups.set(groupKey, existing);
   });
 
@@ -711,22 +735,16 @@ function renderProductParameters() {
 
   const rows = productParameterRows();
   if (!hasExtractedProducts()) {
-    list.innerHTML = `<p class="empty-state">解析采购单和 1688 资料后显示产品主参数。</p>`;
+    list.innerHTML = `<p class="empty-state">解析 Amazon 模板或 1688 资料后显示产品主参数。</p>`;
     return;
   }
   list.innerHTML = rows.map((row) => {
     const params = [
       ["Product / Option", row.productName || row.title],
-      ["Size / Range", row.cupRange],
       ["Use Scene", row.scene],
       ["Material", row.material],
       ["Structure / Craft", row.structure],
-      ["Technology", row.surfaceFinish],
       ["Detail Features", row.detailParameter],
-      ["Length / Size 1", row.topWidth],
-      ["Width / Size 2", row.sideLength],
-      ["Height / Size 3", row.bottomWidth],
-      ["Weight / Quantity", row.weight],
     ].filter(([, value]) => value && !/^\[[A-Z0-9_ ]+\]$/i.test(value));
 
     return `
@@ -837,10 +855,14 @@ function readFieldValue(key) {
   return cleanFieldDisplayValue(input ? input.value : scopedOverrides[key] ?? "");
 }
 
+function hasFieldOverride(key) {
+  return Object.prototype.hasOwnProperty.call(fieldOverrides, key);
+}
+
 function captureFieldOverrides() {
   const skuId = selectedSku()?.id || "";
   const nextOverrides = { ...(fieldOverridesBySku[skuId] || {}) };
-  fields.forEach(([key]) => {
+  allFields.forEach(([key]) => {
     const input = byId(`field-${key}`);
     if (input) nextOverrides[key] = cleanFieldDisplayValue(input.value);
   });
@@ -853,13 +875,15 @@ function currentFields() {
   const sku = selectedSku();
   const values = valueMap(sku);
   const data = {};
-  fields.forEach(([key]) => {
+  allFields.forEach(([key]) => {
     const value = fieldOverrides[key] ?? readFieldValue(key);
-    data[key] = cleanFieldDisplayValue(value) || values[key] || "";
+    data[key] = hasFieldOverride(key)
+      ? cleanFieldDisplayValue(value)
+      : cleanFieldDisplayValue(value) || (manualFieldKeys.has(key) ? "" : values[key]) || "";
   });
   const sanitizedUseContext = sanitizeUseContextFields(data);
   data.fit = "";
-  data.scene = sanitizedUseContext.scene;
+  data.scene = splitUseSceneText(sanitizedUseContext.scene).join(" / ");
   return data;
 }
 
@@ -887,7 +911,7 @@ function hydrateEmptyFieldInputsFromValues() {
 }
 
 function currentFieldSignature() {
-  return fields.map(([key]) => `${key}:${readFieldValue(key)}`).join("|");
+  return allFields.map(([key]) => `${key}:${readFieldValue(key)}`).join("|");
 }
 
 function ensureAppliedSellingPointValues(sku = selectedSku()) {
@@ -930,21 +954,27 @@ function applySellingPointChanges() {
 function handleFieldInput(event) {
   const key = event.currentTarget?.dataset?.key;
   const isSellingPointField = sellingPointFieldKeys.has(key);
+  if (key === "scene") sceneInputRevision += 1;
   if (key) {
     fieldOverrides[key] = event.currentTarget.value;
     const skuId = selectedSku()?.id || "";
-    if (skuId && !isSellingPointField) {
+    if (skuId) {
       fieldOverridesBySku[skuId] = {
         ...(fieldOverridesBySku[skuId] || {}),
         [key]: event.currentTarget.value,
       };
+      if (isSellingPointField) {
+        appliedSellingPointOverridesBySku[skuId] = {
+          ...(appliedSellingPointOverridesBySku[skuId] || {}),
+          [key]: cleanFieldDisplayValue(event.currentTarget.value),
+        };
+      }
     }
   }
   fieldSnapshot = currentFieldSignature();
   if (isSellingPointField) {
-    sellingPointDraftDirty = true;
+    sellingPointDraftDirty = false;
     updateSellingPointApplyState();
-    return;
   }
   captureFieldOverrides();
   renderAll();
@@ -976,7 +1006,6 @@ function sourceSummaryRows(sku, template) {
   const dimensionStatus = sku.dims?.source || selectedGroup.evidenceNote || "按当前字段生成";
   if (!hasExtractedProducts()) {
     return [
-      ["采购单", sourcePayload.purchase ? compactSourceStatus(sourcePayload.purchase) : "待输入", sourceNotes.purchase],
       ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
       ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
       ["参考链接", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
@@ -984,7 +1013,6 @@ function sourceSummaryRows(sku, template) {
     ];
   }
   return [
-    ["采购单", sourcePayload.purchase ? compactSourceStatus(sourcePayload.purchase) : "待输入", sourceNotes.purchase],
     ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
     ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
     ["参考链接", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
@@ -1038,14 +1066,17 @@ function buildDimensionListFromFields(data) {
 function currentPromptData(sku) {
   const base = valueMap(sku);
   const fieldsData = currentFields();
-  const nonEmptyFieldsData = Object.fromEntries(
-    Object.entries(fieldsData).filter(([, value]) => cleanFieldDisplayValue(value)),
-  );
   const data = {
     ...base,
-    ...nonEmptyFieldsData,
-    surfaceFinish: fieldsData.surfaceFinish ?? base.surfaceFinish,
-    detailParameter: fieldsData.detailParameter ?? base.detailParameter,
+    ...fieldsData,
+    pack: fieldsData.pack || "",
+    cupRange: fieldsData.cupRange || "",
+    surfaceFinish: fieldsData.surfaceFinish || "",
+    topWidth: fieldsData.topWidth || "",
+    sideLength: fieldsData.sideLength || "",
+    bottomWidth: fieldsData.bottomWidth || "",
+    weight: fieldsData.weight || "",
+    detailParameter: fieldsData.detailParameter || "",
     feature3: "",
   };
   if (sellingPointDraftDirty) {
@@ -1058,7 +1089,7 @@ function currentPromptData(sku) {
   data.fit = "";
   const liveColor = promptValue(data.color, "");
   const skuColor = promptValue(sku.color || sku.colorEnglish || sku.displayColor, "");
-  const baseSpec = promptValue(cleanTokenValue(base.singleSpec), "");
+  const baseSpec = promptValue(sku.outputSizeCode || sku.sizeCode || sku.shape || group.promptName, "");
   const optionSpec = liveColor && skuColor
     ? liveColor
     : baseSpec
@@ -1068,12 +1099,12 @@ function currentPromptData(sku) {
     || "[PRODUCT_SPEC]";
   const productSpec = productName || optionSpec || "[PRODUCT_SPEC]";
   const pack = fieldsData.pack || "";
-  const cupRange = validSizeRangeValue(fieldsData.cupRange || sizeRangeValueForSku(sku, base));
+  const cupRange = validSizeRangeValue(fieldsData.cupRange || "");
   data.productName = productName;
   data.packagingCount = ensureParameterToken("PRODUCT_COUNT_OR_SET", pack);
   data.singleSpec = `[CURRENT_PRODUCT_OPTION: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
   data.bundleComponents = base.bundleComponents || sku.bundleComponents || "";
-  data.dimensionList = buildDimensionListFromFields(data) || base.dimensionList || sku.dimensionList || "";
+  data.dimensionList = buildDimensionListFromFields(data);
   data.specList = `[SPEC_LIST: ${[productSpec, optionSpec !== productSpec ? optionSpec : "", cupRange, pack, data.material, data.dimensionList].filter(Boolean).join(" / ")}]`;
   return data;
 }
@@ -6077,8 +6108,6 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
 
 async function extractSources() {
   hasUserSourceAttempt = true;
-  const purchaseFile = byId("purchaseFile").files[0];
-  const purchaseImageFile = byId("purchaseImageFile").files[0];
   const amazonTemplateFile = byId("amazonTemplateFile").files[0];
   const amazonSkuFilter = byId("amazonSkuFilter")?.value || "";
   const supplierFiles = Array.from(byId("supplierFile").files || []);
@@ -6089,14 +6118,6 @@ async function extractSources() {
   byId("extractStatus").textContent = "正在解析资料...";
 
   try {
-    const purchasePdfText = await readPdfText(purchaseFile);
-    const purchaseImageOcr = await ocrLocalImageFile(purchaseImageFile, (message) => {
-      byId("extractStatus").textContent = message;
-    });
-    const purchaseText = [
-      purchasePdfText,
-      purchaseImageOcr.text && `Purchase order image OCR text: ${purchaseImageOcr.text}`,
-    ].filter(Boolean).join("\n");
     const amazonTemplate = await extractAmazonTemplateProducts(amazonTemplateFile, amazonSkuFilter);
     const supplierEntries = await readNamedTextFiles(supplierFiles, (message) => {
       byId("extractStatus").textContent = message;
@@ -6124,7 +6145,7 @@ async function extractSources() {
       ].filter(Boolean).join("\n")
       : "";
     sourcePayload = {
-      purchase: purchaseText,
+      purchase: "",
       amazonTemplate: useSupplierFileProducts ? "" : amazonTemplate.sourceText,
       supplier: supplierSource.text,
       competitor: useSupplierFileProducts ? "" : competitorSourceText,
@@ -6158,7 +6179,7 @@ async function extractSources() {
       extractedProducts = inferredSourceProducts;
     }
     if (!extractedProducts.length) {
-      throw new Error("没有从当前资料中提取到产品 / 款式，请确认采购单、Amazon 模板或 1688 HTML 是否已选择。");
+      throw new Error("没有从当前资料中提取到产品 / 款式，请确认 Amazon 模板或 1688 HTML 是否已选择。");
     }
     renderProductSelect(extractedProducts[0]?.id);
     renderFields(true);
@@ -6169,24 +6190,19 @@ async function extractSources() {
     const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
       ? "OCR 引擎未加载成功，已跳过图片文字识别。"
       : "";
-    const purchaseImageStatus = purchaseImageFile
-      ? `采购单图片 OCR：${purchaseImageOcr.scannedCount ? "成功识别" : "未识别到文字或识别失败"}。`
-      : "";
-    const purchaseImageAvailability = purchaseImageFile && !purchaseImageOcr.available
-      ? "OCR 引擎未加载成功，已跳过采购单图片识别。"
-      : "";
     const amazonTemplateStatus = amazonTemplateFile
       ? `Amazon 模板：${useSupplierFileProducts
         ? "多 1688 文件模式已改按文件输出产品，未使用模板款式"
         : mergedAmazonSupplierProducts.length
-            ? `${amazonTemplate.products.length} 个子 SKU 款式；listing 参数优先，1688 / 采购单仅补缺${amazonSupplierConflict ? "；检测到类目不一致，请确认文件是否配套" : ""}${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`
+            ? `${amazonTemplate.products.length} 个子 SKU 款式；listing 参数优先，1688 资料仅补缺${amazonSupplierConflict ? "；检测到类目不一致，请确认文件是否配套" : ""}${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`
             : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
       : "";
     const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；参考链接 HTML：${competitorFiles.length} 个。`;
     const supplierFileStatus = useSupplierFileProducts
       ? `多 1688 文件：已按 ${supplierFileProducts.length} 个文件生成 ${supplierFileProducts.length} 个独立产品选项；旧参考链接内容未参与本次提示词。`
       : "";
-    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}PDF、采购单图片、多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${purchaseImageStatus}${ocrStatus}${purchaseImageAvailability}${ocrAvailability}`;
+    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${ocrStatus}${ocrAvailability}`;
+    autoEnrichUseScenesIfNeeded();
   } finally {
     extractButton.disabled = false;
     extractButton.removeAttribute("aria-busy");
@@ -6266,7 +6282,7 @@ function promptFacts(sku, data) {
   const feature3 = promptValue(data.feature3, "");
   const variants = promptValue(data.variantList, "available verified product options");
   const dimensions = promptValue(data.dimensionList, "");
-  const cupRange = promptValue(data.cupRange || sku.dims?.cupRange || extractFirstMatch(data.specList || "", [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|cup|人份))/i]), "");
+  const cupRange = promptValue(data.cupRange, "");
   const dimension1 = data.topWidth ? cleanTokenValue(data.topWidth) : "";
   const dimension2 = data.sideLength ? cleanTokenValue(data.sideLength) : "";
   const dimension3 = data.bottomWidth ? cleanTokenValue(data.bottomWidth) : "";
@@ -6384,6 +6400,7 @@ function compactDisplayTitle(facts, options = {}) {
 }
 
 function skuDisplayLabel(sku, data = null) {
+  if (!hasExtractedProducts() && sku?.id === emptyExtractedProduct.id) return emptyExtractedProduct.label;
   if (sku.displayLabel) return sku.displayLabel;
   const facts = promptFacts(sku, data || valueMap(sku));
   return compactDisplayTitle(facts, { includePack: true }) || sku.label || sku.id;
@@ -6664,6 +6681,242 @@ function neutralProductSceneListFallback() {
   return "";
 }
 
+const useSceneCatalogs = {
+  "resistance-band": [
+    ["Home strength workout", ["home workout", "strength", "exercise"]],
+    ["Gym resistance training", ["gym", "resistance training", "fitness"]],
+    ["Physical therapy session", ["physical therapy", "rehabilitation", "therapy"]],
+    ["Pre-workout stretching", ["stretching", "warm-up", "mobility"]],
+    ["Outdoor fitness training", ["outdoor", "travel", "portable"]],
+  ],
+  "flower-wrapping-paper": [
+    ["Florist bouquet wrapping", ["florist", "bouquet", "flower wrapping"]],
+    ["Gift packaging table", ["gift", "packaging", "wrapping"]],
+    ["Wedding floral preparation", ["wedding", "event", "floral"]],
+    ["Flower market counter", ["flower market", "retail", "display"]],
+    ["Craft studio projects", ["craft", "diy", "decor"]],
+  ],
+  "coffee-filter": [
+    ["Home pour-over brewing", ["home", "pour-over", "brewing"]],
+    ["Specialty coffee bar", ["coffee shop", "cafe", "barista"]],
+    ["Office coffee break", ["office", "workplace", "coffee break"]],
+    ["Camping coffee setup", ["camping", "outdoor", "travel"]],
+    ["Morning kitchen routine", ["kitchen", "morning", "daily"]],
+  ],
+  "coffee-metal-accessory": [
+    ["Home espresso station", ["home", "espresso", "coffee station"]],
+    ["Specialty cafe counter", ["cafe", "coffee shop", "barista"]],
+    ["Office coffee bar", ["office", "workplace", "coffee bar"]],
+    ["Barista training session", ["barista", "training", "practice"]],
+    ["Compact travel coffee kit", ["travel", "portable", "compact"]],
+  ],
+  kitchen: [
+    ["Everyday kitchen preparation", ["kitchen", "cooking", "preparation"]],
+    ["Family dining table", ["dining", "family", "table"]],
+    ["Office lunch break", ["office", "lunch", "workplace"]],
+    ["Outdoor picnic", ["picnic", "outdoor", "travel"]],
+    ["Pantry organization", ["pantry", "storage", "organization"]],
+  ],
+  footwear: [
+    ["Everyday home wear", ["home", "indoor", "daily"]],
+    ["Bathroom after shower", ["bathroom", "shower", "water"]],
+    ["Poolside relaxation", ["pool", "poolside", "resort"]],
+    ["Beach vacation", ["beach", "vacation", "sand"]],
+    ["Hotel and spa stay", ["hotel", "spa", "travel"]],
+  ],
+  "yoga-socks": [
+    ["Yoga studio practice", ["yoga", "studio", "practice"]],
+    ["Pilates reformer class", ["pilates", "reformer", "class"]],
+    ["Home mat workout", ["home", "mat", "workout"]],
+    ["Barre fitness class", ["barre", "fitness", "class"]],
+    ["Dance warm-up session", ["dance", "warm-up", "studio"]],
+  ],
+  umbrella: [
+    ["Rainy city commute", ["rain", "commute", "city"]],
+    ["Sunny outdoor shade", ["sun", "shade", "outdoor"]],
+    ["Travel sightseeing", ["travel", "sightseeing", "portable"]],
+    ["School-run rain protection", ["school", "rain", "daily"]],
+    ["Compact handbag carry", ["handbag", "compact", "carry"]],
+  ],
+  generic: [
+    ["Everyday home use", ["home", "daily", "indoor"]],
+    ["Professional workspace", ["professional", "workplace", "studio"]],
+    ["Travel and on-the-go use", ["travel", "portable", "on-the-go"]],
+    ["Outdoor daily activity", ["outdoor", "daily", "activity"]],
+    ["Organized storage area", ["storage", "organization", "compact"]],
+  ],
+};
+
+function normalizedScenePhrase(value) {
+  return String(value || "")
+    .replace(/^(?:scene category|use scenes?|usage scenarios?)\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.。]+$/g, "")
+    .trim();
+}
+
+function isUsableEnglishScene(value) {
+  const clean = normalizedScenePhrase(value);
+  return clean.length >= 6
+    && clean.length <= 70
+    && !/[\u3400-\u9fff]/.test(clean)
+    && /^[\x00-\x7F]+$/.test(clean)
+    && (clean.match(/[a-z]+/gi) || []).length >= 2
+    && !/^(?:scene selection task|do not|because use scene)/i.test(clean);
+}
+
+function currentSceneResearchFacts() {
+  const sku = selectedSku();
+  const values = valueMap(sku || {});
+  const overrides = fieldOverridesBySku[sku?.id || ""] || fieldOverrides;
+  return {
+    ...values,
+    ...Object.fromEntries(Object.entries(overrides).map(([key, value]) => [key, cleanFieldDisplayValue(value)])),
+    selectedSpec: values.singleSpec || sku?.selectedSpec || sku?.size || "",
+  };
+}
+
+function useSceneSearchQuery(facts) {
+  const identity = compactPromptItems([
+    facts.productName,
+    facts.selectedSpec,
+    facts.structure,
+  ], "product", 3);
+  return `${identity} common uses occasions where used`;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function stripResearchMarkup(value) {
+  const container = document.createElement("div");
+  container.innerHTML = String(value || "");
+  return (container.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+async function fetchOnlineUseSceneResearch(facts) {
+  const query = useSceneSearchQuery(facts);
+  const encoded = encodeURIComponent(query);
+  const requests = [
+    fetchJsonWithTimeout(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encoded}&srlimit=8&format=json&origin=*`)
+      .then((data) => ({
+        source: "Wikipedia",
+        text: (data?.query?.search || []).map((item) => `${item.title}. ${stripResearchMarkup(item.snippet)}`).join(" "),
+      })),
+    fetchJsonWithTimeout(`https://api.duckduckgo.com/?q=${encoded}&format=json&no_html=1&skip_disambig=1`)
+      .then((data) => ({
+        source: "DuckDuckGo",
+        text: [
+          data?.Heading,
+          data?.AbstractText,
+          ...(data?.RelatedTopics || []).flatMap((item) => item?.Topics || [item]).map((item) => item?.Text),
+        ].filter(Boolean).join(" "),
+      })),
+  ];
+  const settled = await Promise.allSettled(requests);
+  const useful = settled
+    .filter((result) => result.status === "fulfilled" && result.value.text.length >= 20)
+    .map((result) => result.value);
+  return {
+    query,
+    sources: useful.map((item) => item.source),
+    text: useful.map((item) => item.text).join(" "),
+  };
+}
+
+function suggestedUseSceneItems(facts, research = {}, limit = 5) {
+  const profileId = categoryProfile(identityFactsFromData(facts)).id || "generic";
+  const catalog = useSceneCatalogs[profileId] || useSceneCatalogs.generic;
+  const evidence = `${research.text || ""} ${promptIdentityText(facts)}`.toLowerCase();
+  const ranked = catalog.map(([label, cues], index) => ({
+    label,
+    score: cues.reduce((total, cue) => total + (evidence.includes(cue.toLowerCase()) ? 4 : 0), 0) - index * 0.05,
+  })).sort((left, right) => right.score - left.score);
+  const existing = splitUseSceneText(facts.scene)
+    .flatMap((item) => item.split(/[,，]+/))
+    .map(normalizedScenePhrase)
+    .filter(isUsableEnglishScene)
+    .slice(0, 3);
+  const combined = [...existing, ...ranked.map((item) => item.label)];
+  const seen = new Set();
+  return combined.filter((item) => {
+    const key = comparablePromptItem(item);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, Math.max(3, Math.min(limit, 5)));
+}
+
+async function enrichUseScenesOnline() {
+  const button = byId("enrichUseScenes");
+  const status = byId("sceneEnrichStatus");
+  const input = byId("field-scene");
+  if (!button || !status || !input || !hasExtractedProducts()) return;
+  const requestedSkuId = selectedSku()?.id || "";
+  const requestedSceneRevision = sceneInputRevision;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  status.textContent = "正在联网查阅适合当前产品的使用场景…";
+  try {
+    const facts = currentSceneResearchFacts();
+    const research = await fetchOnlineUseSceneResearch(facts);
+    if ((selectedSku()?.id || "") !== requestedSkuId) return;
+    if (sceneInputRevision !== requestedSceneRevision) {
+      status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
+      return;
+    }
+    const scenes = suggestedUseSceneItems({ ...facts, scene: input.value }, research, 5);
+    input.value = scenes.join("\n");
+    fieldOverrides.scene = input.value;
+    if (requestedSkuId) {
+      fieldOverridesBySku[requestedSkuId] = {
+        ...(fieldOverridesBySku[requestedSkuId] || {}),
+        scene: input.value,
+      };
+    }
+    captureFieldOverrides();
+    fieldSnapshot = currentFieldSignature();
+    renderAll();
+    status.textContent = research.sources.length
+      ? `已结合 ${research.sources.join(" + ")} 补全 ${scenes.length} 个英文场景，可继续手动修改。`
+      : `网络资料暂时不可用，已按当前产品类目补全 ${scenes.length} 个英文场景，可继续手动修改。`;
+  } catch (error) {
+    if ((selectedSku()?.id || "") !== requestedSkuId) return;
+    if (sceneInputRevision !== requestedSceneRevision) {
+      status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
+      return;
+    }
+    const facts = currentSceneResearchFacts();
+    const scenes = suggestedUseSceneItems({ ...facts, scene: input.value }, {}, 5);
+    input.value = scenes.join("\n");
+    captureFieldOverrides();
+    renderAll();
+    status.textContent = `联网失败，已使用产品类目兜底补全 ${scenes.length} 个英文场景。`;
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
+function autoEnrichUseScenesIfNeeded() {
+  const sceneItems = splitUseSceneText(byId("field-scene")?.value || "")
+    .flatMap((item) => item.split(/[,，]+/))
+    .filter(Boolean);
+  if (hasExtractedProducts() && sceneItems.length < 3) enrichUseScenesOnline();
+}
+
 function hasVerifiedUseContext(facts) {
   return Boolean(cleanFieldDisplayValue(facts?.scene || ""));
 }
@@ -6692,7 +6945,7 @@ function recommendedUseSceneText(facts, fallback = neutralProductSceneFallback()
 
 function useSceneText(facts, fallback = neutralProductSceneFallback(), limit = 4) {
   const sceneText = cleanFieldDisplayValue(facts?.scene || "");
-  return sceneText || recommendedUseSceneText(facts, fallback, limit);
+  return (sceneText ? splitUseSceneText(sceneText).join(" / ") : "") || recommendedUseSceneText(facts, fallback, limit);
 }
 
 function verifiedProductDetailFallback() {
@@ -6760,12 +7013,12 @@ function convertLengthUnitsToInches(value) {
 }
 
 function dimensionText(facts) {
-  return compactSpecificPromptItems([
+  return [
     facts.dimension1 && `${dimensionLabelForFacts(facts, 1)}: ${convertLengthUnitsToInches(facts.dimension1)}`,
     facts.dimension2 && `${dimensionLabelForFacts(facts, 2)}: ${convertLengthUnitsToInches(facts.dimension2)}`,
     facts.dimension3 && `${dimensionLabelForFacts(facts, 3)}: ${convertLengthUnitsToInches(facts.dimension3)}`,
     facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
-  ], "", 4);
+  ].filter(Boolean).join(" / ");
 }
 
 function dimensionLabelForFacts(facts, index) {
@@ -8371,6 +8624,14 @@ function sceneMultiSceneStyleText(facts, sceneList) {
   ].filter(Boolean).join(" / ");
 }
 
+function sceneMultiSceneModule(facts, sceneList) {
+  return {
+    basic: `1:1 Amazon listing image, 4K clarity, sharp realistic detail, equal 2x2 multi-panel complete-use-scene collage. ${multiSceneEqualPanelRule()} ${multiSceneProductScaleRule()}`,
+    details: sceneMultiSceneDetails(facts, sceneList),
+    style: sceneMultiSceneStyleText(facts, sceneList),
+  };
+}
+
 function userProvidedSceneList(facts) {
   return useSceneText(facts, recommendedUseSceneText(facts, "", 4), 4);
 }
@@ -8395,11 +8656,13 @@ function sceneMultiAngleStyleText(facts) {
 }
 
 function sceneExplanationDetails(facts, physicalDetails) {
+  const dimensionLine = dimensionText(facts);
   const infoText = [
     "Main title required: Product Information.",
+    dimensionLine && `Verified dimensions: ${dimensionLine}.`,
     "Use 2-3 short English info labels for verified material, structure, texture, size/range, or visible detail only.",
     "Premium text hierarchy: large title plus 2-3 short 3-5 word labels, aligned rows, crisp typography, spacing, no dense paragraphs.",
-  ];
+  ].filter(Boolean);
   if (!isFootwearCategory(facts)) return sceneProductDetailText(facts, [...infoText, physicalDetails, visibleTextureDetails(facts)], 9);
   return sceneProductDetailText(facts, [
     ...infoText,
@@ -8627,9 +8890,7 @@ function sceneModulePrompt(typeId, facts) {
       style: sceneHeroStyleText(facts, mainScene, "human"),
     },
     "2": {
-      basic: `1:1 Amazon listing image, 4K clarity, sharp realistic detail, equal 2x2 multi-panel complete-use-scene collage. ${multiSceneEqualPanelRule()} ${multiSceneProductScaleRule()}`,
-      details: sceneMultiSceneDetails(facts, sceneList),
-      style: sceneMultiSceneStyleText(facts, sceneList),
+      ...sceneMultiSceneModule(facts, sceneList),
     },
     "3": {
       basic: "1:1 Amazon multi-angle product image, 4K clarity, sharp realistic detail, product-only layout, no added text, labels, callouts, badges, captions, or arrows.",
@@ -8800,24 +9061,22 @@ function featureTemplatePrompt(typeId, sku, data) {
   return featureModulePrompt(typeId, facts);
 }
 
-function plantTieUseSceneText(facts) {
-  return compactSpecificPromptItems([
-    facts.scene,
-  ], "garden plant support, potted plants, climbing vines, trellis, greenhouse, nursery", 4);
+function genericFiveImageUseSceneText(facts) {
+  return userProvidedSceneList(facts);
 }
 
-function plantTieIdentityRule(facts) {
+function genericFiveImageIdentityRule(facts) {
   return compactPromptItems([
-    "Plant tie template: product must remain the exact selected plant tie / garden tie item from the source.",
-    "Show plant tying, stem support, vine training, bundling, or garden organization only when compatible with verified product use.",
-    "Do not turn the product into rope, tape dispenser, cable tie, ribbon, wire, hose, strap hardware, or unrelated gardening accessory.",
+    "Generic template: product must remain the exact current product from the selected source fields.",
+    "Do not change product category, structure, material, color, count/set, dimensions, or verified option facts.",
+    "Do not invent category-specific use scenes, props, benefits, labels, or accessories unless they are present in current product fields.",
     facts.material && `Verified material: ${facts.material}`,
     facts.structure && `Verified structure: ${facts.structure}`,
     facts.color && `Verified color: ${facts.color}`,
   ], "", 6);
 }
 
-function plantTieDetailInfo(facts) {
+function genericFiveImageDetailInfo(facts) {
   const dimensionLine = dimensionText(facts);
   const optionText = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
   return compactSpecificPromptItems([
@@ -8833,82 +9092,77 @@ function plantTieDetailInfo(facts) {
   ], "", 8);
 }
 
-function plantTieMainSceneStyle(facts, sceneText) {
+function genericFiveImageMainSceneStyle(facts, sceneText) {
   return sceneOverallStyleText(facts, "1", [
-    plantTieIdentityRule(facts),
-    `Main scene: product-first realistic plant support scene in ${sceneText}.`,
+    genericFiveImageIdentityRule(facts),
+    `Main scene: product-first realistic use scene in ${sceneText}.`,
     sceneMainProductScaleRule(),
-    "Use healthy real plants, stems, vines, trellis, garden bed, greenhouse, or potted-plant context as appropriate.",
-    "A person/model appears only if actual product use needs a human action; if present, hands or gardener action stays secondary and the plant tie remains the hero subject.",
+    "Use only props, backgrounds, actions, and people that fit the current product and the verified Use Scene field.",
+    "A person/model appears only if actual product use needs a human action; if present, the product remains the hero subject.",
     "No added overlay text; product use must look natural, clean, and Amazon-ready.",
   ].join(" "));
 }
 
-function plantTieWhiteBackgroundStyle(facts) {
+function genericFiveImageWhiteBackgroundStyle(facts) {
   return [
-    "Pure white Amazon main image: show only the current plant tie product itself, centered and source-accurate.",
-    "No plant, stem, soil, pot, hand, person, tool, trellis, garden scene, props, added title, or added labels.",
+    "Pure white Amazon main image: show only the current product itself, centered and source-accurate.",
+    "No scene props, hand, person, tool, added title, added labels, or category-specific background.",
     "Product occupies about 85% of the frame; preserve true color, material texture, packaging, and authentic non-Chinese markings only.",
     premiumStudioRenderRule(),
-    plantTieIdentityRule(facts),
+    genericFiveImageIdentityRule(facts),
   ].join(" ");
 }
 
-function plantTieMultiSceneStyle(facts, sceneText) {
-  return [
-    multiSceneLifestyleStyleText(facts, sceneText),
-    plantTieIdentityRule(facts),
-    "Every panel must show the plant tie visibly supporting, training, bundling, or organizing real plants without damaging stems.",
-    "Use plant-support scenes first; avoid unrelated household cable management unless explicitly verified.",
-  ].join(" / ");
-}
-
-function plantTieModulePrompt(typeId, facts) {
-  const sceneText = plantTieUseSceneText(facts);
+function genericFiveImageModulePrompt(typeId, facts) {
+  const sceneText = genericFiveImageUseSceneText(facts);
   const sellingPointGroup = sellingPointGroups(facts, 0);
-  const productInfo = plantTieDetailInfo(facts);
+  const productInfo = genericFiveImageDetailInfo(facts);
+  const sharedMultiScene = sceneMultiSceneModule(facts, sceneText);
   const modules = {
     "1": {
-      basic: `1:1 Amazon main scene image, 4K clarity, sharp realistic detail, no added overlay text, ${sceneMainProductScaleRule()} plant support use scene, person/model optional only when product use requires it.`,
+      basic: `1:1 Amazon main scene image, 4K clarity, sharp realistic detail, no added overlay text, ${sceneMainProductScaleRule()} product-first use scene, person/model optional only when product use requires it.`,
       details: sceneProductDetailText(facts, [
-        plantTieIdentityRule(facts),
+        genericFiveImageIdentityRule(facts),
         `Use scene: ${sceneText}`,
         visibleTextureDetails(facts),
       ], 8),
-      style: plantTieMainSceneStyle(facts, sceneText),
+      style: genericFiveImageMainSceneStyle(facts, sceneText),
     },
     "2": {
       basic: "1:1 Amazon white-background product image, 4K clarity, sharp realistic detail, pure white background, no added overlay text, product occupies about 85% of the frame.",
       details: sceneProductDetailText(facts, [
-        plantTieIdentityRule(facts),
+        genericFiveImageIdentityRule(facts),
         visibleTextureDetails(facts),
       ], 7),
-      style: plantTieWhiteBackgroundStyle(facts),
+      style: genericFiveImageWhiteBackgroundStyle(facts),
     },
     "3": {
-      basic: `1:1 Amazon multi-scene usage image, 4K clarity, sharp realistic detail, exactly 4 complete plant-use scenes, equal clean 2x2/four-panel collage. ${multiSceneEqualPanelRule()} ${multiSceneProductScaleRule()}`,
-      details: sceneContextProductDetailText(facts, [
-        plantTieIdentityRule(facts),
-        `Use scenes: ${sceneText}`,
-        "Scene purpose: show different verified plant support, vine training, stem fixing, garden tying, or potted-plant organization uses.",
-      ], 7),
-      style: plantTieMultiSceneStyle(facts, sceneText),
+      ...sharedMultiScene,
+      details: [
+        sharedMultiScene.details,
+        genericFiveImageIdentityRule(facts),
+      ].filter(Boolean).join(" / "),
+      style: [
+        sharedMultiScene.style,
+        genericFiveImageIdentityRule(facts),
+        "For this generic template image, each panel should keep the exact current product visibly involved in the natural use action.",
+      ].filter(Boolean).join(" / "),
     },
     "4": {
       basic: basicImageRequirements("plantTie", "4"),
       details: productDetailText(facts, [
-        plantTieIdentityRule(facts),
+        genericFiveImageIdentityRule(facts),
       ], 7),
       style: sceneOverallStyleText(facts, "4", [
-        plantTieIdentityRule(facts),
-        sellingPointImageTemplateRule(sellingPointGroup, facts, "Plant tie template Image 4"),
-        "Use plant-support visual proof first: show the tie holding stems, training vines, preventing droop, organizing growth, or proving verified material/structure benefits.",
+        genericFiveImageIdentityRule(facts),
+        sellingPointImageTemplateRule(sellingPointGroup, facts, "Generic 5-image template Image 4"),
+        "Use visual proof first: show the verified benefit through product use, structure, material, detail, scale, or scene evidence without inventing category-specific claims.",
       ].join(" ")),
     },
     "5": {
       basic: "1:1 Amazon product detail information image, 4K clarity, sharp realistic detail, verified dimensions/material/structure/specification details only.",
       details: productDetailText(facts, [
-        plantTieIdentityRule(facts),
+        genericFiveImageIdentityRule(facts),
         productInfo,
       ], 9),
       style: overallStyleText(facts, "5", [
@@ -8934,7 +9188,7 @@ function plantTieModulePrompt(typeId, facts) {
 
 function plantTieTemplatePrompt(typeId, sku, data) {
   const facts = promptFacts(sku, data);
-  return plantTieModulePrompt(typeId, facts);
+  return genericFiveImageModulePrompt(typeId, facts);
 }
 
 function referenceLinkGlobalRule(facts, typeId = "") {
@@ -8952,6 +9206,7 @@ function referenceLinkGlobalRule(facts, typeId = "") {
 function referenceLinkModulePrompt(typeId, facts) {
   const blueprint = referenceBlueprintSlot(typeId);
   const blueprintRoute = referenceBlueprintText(typeId);
+  const dimensionLine = dimensionText(facts);
   const mainProduct = compactSpecificPromptItems([
     facts.productName,
     facts.color,
@@ -8997,6 +9252,7 @@ function referenceLinkModulePrompt(typeId, facts) {
       basic: blueprintBasic,
       details: productDetailText(facts, [
         blueprintRoute,
+        dimensionLine && `Verified dimensions: ${dimensionLine}.`,
         `Structure focus: ${structureText}`,
         referenceInsight,
         "If this slot is not a structure slot, use the structure facts only as product-accuracy constraints, not as the main composition.",
@@ -9128,7 +9384,7 @@ function renderProductPromptGrid() {
   const template = selectedTemplate();
   if (!hasExtractedProducts()) {
     promptStore = [];
-    grid.innerHTML = `<p class="empty-state">请选择采购单、1688 HTML 和参考链接资料后点击解析。</p>`;
+    grid.innerHTML = `<p class="empty-state">请选择 Amazon 模板、1688 HTML 或参考链接资料后点击解析。</p>`;
     return;
   }
   const data = currentPromptData(sku);
@@ -9192,7 +9448,6 @@ function renderPrompt() {
 }
 
 function renderAll() {
-  hydrateEmptyFieldInputsFromValues();
   renderProductParameters();
   renderSourceSummary();
   renderFacts();
@@ -9320,6 +9575,7 @@ function init() {
   byId("skuSelect").addEventListener("change", () => {
     renderFields(true);
     renderAll();
+    autoEnrichUseScenesIfNeeded();
   });
   byId("templateSelect").addEventListener("change", renderAll);
   byId("extractSources").addEventListener("click", () => {
@@ -9333,7 +9589,7 @@ function init() {
       byId("extractStatus").textContent = `解析失败：${error.message || "请检查文件格式"}`;
     });
   });
-  ["purchaseFile", "purchaseImageFile", "amazonTemplateFile", "amazonSkuFilter", "supplierFile", "competitorFile"].forEach((id) => {
+  ["amazonTemplateFile", "amazonSkuFilter", "supplierFile", "competitorFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
       clearExtractedSourceState();
@@ -9345,6 +9601,8 @@ function init() {
   byId("resetFields").addEventListener("click", () => {
     const skuId = selectedSku()?.id || "";
     if (skuId) delete appliedSellingPointOverridesBySku[skuId];
+    if (skuId) delete fieldOverridesBySku[skuId];
+    fieldOverrides = {};
     sellingPointDraftDirty = false;
     renderFields(true);
     renderAll();

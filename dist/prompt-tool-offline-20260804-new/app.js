@@ -236,7 +236,7 @@ const manualFields = [
 
 const allFields = [...fields, ...manualFields];
 const manualFieldKeys = new Set(manualFields.map(([key]) => key));
-const multilineFieldKeys = new Set(["feature1", "feature2"]);
+const multilineFieldKeys = new Set(["scene", "feature1", "feature2"]);
 const sellingPointFieldKeys = new Set(["feature1", "feature2"]);
 
 let promptStore = [];
@@ -265,6 +265,7 @@ let fieldOverridesBySku = {};
 let appliedSellingPointOverridesBySku = {};
 let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
+let sceneInputRevision = 0;
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -562,12 +563,18 @@ function renderFields(reset = false) {
     const cleanValue = ["fit", "scene"].includes(key)
       ? sanitizeUseContextFields({ ...values, [key]: cleanFieldDisplayValue(value) })[key]
       : cleanFieldDisplayValue(value);
-    const displayValue = multilineFieldKeys.has(key)
-      ? formatMultilineSellingPoints(cleanValue)
-      : cleanValue;
-    const fieldControl = multilineFieldKeys.has(key)
-      ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
-      : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
+    const displayValue = key === "scene"
+      ? formatUseSceneDisplayValue(cleanValue)
+      : multilineFieldKeys.has(key)
+        ? formatMultilineSellingPoints(cleanValue)
+        : cleanValue;
+    const fieldControl = key === "scene"
+      ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="One English use scene per line">${escapeHtml(displayValue)}</textarea>
+        <button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补全 3–5 个英文场景</button>
+        <p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">保留合适的已有场景，并结合网络资料补充、去重。</p>`
+      : multilineFieldKeys.has(key)
+        ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
+        : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
     return `
       <div>
         <label for="field-${key}">${label}</label>
@@ -588,7 +595,20 @@ function renderFields(reset = false) {
     ["input", "change"].forEach((eventName) => input.addEventListener(eventName, handleFieldInput));
   });
   byId("applySellingPoints")?.addEventListener("click", applySellingPointChanges);
+  byId("enrichUseScenes")?.addEventListener("click", enrichUseScenesOnline);
   updateSellingPointApplyState();
+}
+
+function splitUseSceneText(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split(/\n+|\s+\/\s+|[;；]+/)
+    .map((item) => item.replace(/^[\s,，.。-]+|[\s,，.。-]+$/g, "").trim())
+    .filter(Boolean);
+}
+
+function formatUseSceneDisplayValue(value) {
+  return splitUseSceneText(value).join("\n");
 }
 
 function formatMultilineSellingPoints(value) {
@@ -835,6 +855,10 @@ function readFieldValue(key) {
   return cleanFieldDisplayValue(input ? input.value : scopedOverrides[key] ?? "");
 }
 
+function hasFieldOverride(key) {
+  return Object.prototype.hasOwnProperty.call(fieldOverrides, key);
+}
+
 function captureFieldOverrides() {
   const skuId = selectedSku()?.id || "";
   const nextOverrides = { ...(fieldOverridesBySku[skuId] || {}) };
@@ -853,11 +877,13 @@ function currentFields() {
   const data = {};
   allFields.forEach(([key]) => {
     const value = fieldOverrides[key] ?? readFieldValue(key);
-    data[key] = cleanFieldDisplayValue(value) || (manualFieldKeys.has(key) ? "" : values[key]) || "";
+    data[key] = hasFieldOverride(key)
+      ? cleanFieldDisplayValue(value)
+      : cleanFieldDisplayValue(value) || (manualFieldKeys.has(key) ? "" : values[key]) || "";
   });
   const sanitizedUseContext = sanitizeUseContextFields(data);
   data.fit = "";
-  data.scene = sanitizedUseContext.scene;
+  data.scene = splitUseSceneText(sanitizedUseContext.scene).join(" / ");
   return data;
 }
 
@@ -928,21 +954,27 @@ function applySellingPointChanges() {
 function handleFieldInput(event) {
   const key = event.currentTarget?.dataset?.key;
   const isSellingPointField = sellingPointFieldKeys.has(key);
+  if (key === "scene") sceneInputRevision += 1;
   if (key) {
     fieldOverrides[key] = event.currentTarget.value;
     const skuId = selectedSku()?.id || "";
-    if (skuId && !isSellingPointField) {
+    if (skuId) {
       fieldOverridesBySku[skuId] = {
         ...(fieldOverridesBySku[skuId] || {}),
         [key]: event.currentTarget.value,
       };
+      if (isSellingPointField) {
+        appliedSellingPointOverridesBySku[skuId] = {
+          ...(appliedSellingPointOverridesBySku[skuId] || {}),
+          [key]: cleanFieldDisplayValue(event.currentTarget.value),
+        };
+      }
     }
   }
   fieldSnapshot = currentFieldSignature();
   if (isSellingPointField) {
-    sellingPointDraftDirty = true;
+    sellingPointDraftDirty = false;
     updateSellingPointApplyState();
-    return;
   }
   captureFieldOverrides();
   renderAll();
@@ -1034,12 +1066,9 @@ function buildDimensionListFromFields(data) {
 function currentPromptData(sku) {
   const base = valueMap(sku);
   const fieldsData = currentFields();
-  const nonEmptyFieldsData = Object.fromEntries(
-    Object.entries(fieldsData).filter(([, value]) => cleanFieldDisplayValue(value)),
-  );
   const data = {
     ...base,
-    ...nonEmptyFieldsData,
+    ...fieldsData,
     pack: fieldsData.pack || "",
     cupRange: fieldsData.cupRange || "",
     surfaceFinish: fieldsData.surfaceFinish || "",
@@ -1047,7 +1076,7 @@ function currentPromptData(sku) {
     sideLength: fieldsData.sideLength || "",
     bottomWidth: fieldsData.bottomWidth || "",
     weight: fieldsData.weight || "",
-    detailParameter: fieldsData.detailParameter ?? base.detailParameter,
+    detailParameter: fieldsData.detailParameter || "",
     feature3: "",
   };
   if (sellingPointDraftDirty) {
@@ -6173,6 +6202,7 @@ async function extractSources() {
       ? `多 1688 文件：已按 ${supplierFileProducts.length} 个文件生成 ${supplierFileProducts.length} 个独立产品选项；旧参考链接内容未参与本次提示词。`
       : "";
     byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${ocrStatus}${ocrAvailability}`;
+    autoEnrichUseScenesIfNeeded();
   } finally {
     extractButton.disabled = false;
     extractButton.removeAttribute("aria-busy");
@@ -6651,6 +6681,242 @@ function neutralProductSceneListFallback() {
   return "";
 }
 
+const useSceneCatalogs = {
+  "resistance-band": [
+    ["Home strength workout", ["home workout", "strength", "exercise"]],
+    ["Gym resistance training", ["gym", "resistance training", "fitness"]],
+    ["Physical therapy session", ["physical therapy", "rehabilitation", "therapy"]],
+    ["Pre-workout stretching", ["stretching", "warm-up", "mobility"]],
+    ["Outdoor fitness training", ["outdoor", "travel", "portable"]],
+  ],
+  "flower-wrapping-paper": [
+    ["Florist bouquet wrapping", ["florist", "bouquet", "flower wrapping"]],
+    ["Gift packaging table", ["gift", "packaging", "wrapping"]],
+    ["Wedding floral preparation", ["wedding", "event", "floral"]],
+    ["Flower market counter", ["flower market", "retail", "display"]],
+    ["Craft studio projects", ["craft", "diy", "decor"]],
+  ],
+  "coffee-filter": [
+    ["Home pour-over brewing", ["home", "pour-over", "brewing"]],
+    ["Specialty coffee bar", ["coffee shop", "cafe", "barista"]],
+    ["Office coffee break", ["office", "workplace", "coffee break"]],
+    ["Camping coffee setup", ["camping", "outdoor", "travel"]],
+    ["Morning kitchen routine", ["kitchen", "morning", "daily"]],
+  ],
+  "coffee-metal-accessory": [
+    ["Home espresso station", ["home", "espresso", "coffee station"]],
+    ["Specialty cafe counter", ["cafe", "coffee shop", "barista"]],
+    ["Office coffee bar", ["office", "workplace", "coffee bar"]],
+    ["Barista training session", ["barista", "training", "practice"]],
+    ["Compact travel coffee kit", ["travel", "portable", "compact"]],
+  ],
+  kitchen: [
+    ["Everyday kitchen preparation", ["kitchen", "cooking", "preparation"]],
+    ["Family dining table", ["dining", "family", "table"]],
+    ["Office lunch break", ["office", "lunch", "workplace"]],
+    ["Outdoor picnic", ["picnic", "outdoor", "travel"]],
+    ["Pantry organization", ["pantry", "storage", "organization"]],
+  ],
+  footwear: [
+    ["Everyday home wear", ["home", "indoor", "daily"]],
+    ["Bathroom after shower", ["bathroom", "shower", "water"]],
+    ["Poolside relaxation", ["pool", "poolside", "resort"]],
+    ["Beach vacation", ["beach", "vacation", "sand"]],
+    ["Hotel and spa stay", ["hotel", "spa", "travel"]],
+  ],
+  "yoga-socks": [
+    ["Yoga studio practice", ["yoga", "studio", "practice"]],
+    ["Pilates reformer class", ["pilates", "reformer", "class"]],
+    ["Home mat workout", ["home", "mat", "workout"]],
+    ["Barre fitness class", ["barre", "fitness", "class"]],
+    ["Dance warm-up session", ["dance", "warm-up", "studio"]],
+  ],
+  umbrella: [
+    ["Rainy city commute", ["rain", "commute", "city"]],
+    ["Sunny outdoor shade", ["sun", "shade", "outdoor"]],
+    ["Travel sightseeing", ["travel", "sightseeing", "portable"]],
+    ["School-run rain protection", ["school", "rain", "daily"]],
+    ["Compact handbag carry", ["handbag", "compact", "carry"]],
+  ],
+  generic: [
+    ["Everyday home use", ["home", "daily", "indoor"]],
+    ["Professional workspace", ["professional", "workplace", "studio"]],
+    ["Travel and on-the-go use", ["travel", "portable", "on-the-go"]],
+    ["Outdoor daily activity", ["outdoor", "daily", "activity"]],
+    ["Organized storage area", ["storage", "organization", "compact"]],
+  ],
+};
+
+function normalizedScenePhrase(value) {
+  return String(value || "")
+    .replace(/^(?:scene category|use scenes?|usage scenarios?)\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.。]+$/g, "")
+    .trim();
+}
+
+function isUsableEnglishScene(value) {
+  const clean = normalizedScenePhrase(value);
+  return clean.length >= 6
+    && clean.length <= 70
+    && !/[\u3400-\u9fff]/.test(clean)
+    && /^[\x00-\x7F]+$/.test(clean)
+    && (clean.match(/[a-z]+/gi) || []).length >= 2
+    && !/^(?:scene selection task|do not|because use scene)/i.test(clean);
+}
+
+function currentSceneResearchFacts() {
+  const sku = selectedSku();
+  const values = valueMap(sku || {});
+  const overrides = fieldOverridesBySku[sku?.id || ""] || fieldOverrides;
+  return {
+    ...values,
+    ...Object.fromEntries(Object.entries(overrides).map(([key, value]) => [key, cleanFieldDisplayValue(value)])),
+    selectedSpec: values.singleSpec || sku?.selectedSpec || sku?.size || "",
+  };
+}
+
+function useSceneSearchQuery(facts) {
+  const identity = compactPromptItems([
+    facts.productName,
+    facts.selectedSpec,
+    facts.structure,
+  ], "product", 3);
+  return `${identity} common uses occasions where used`;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function stripResearchMarkup(value) {
+  const container = document.createElement("div");
+  container.innerHTML = String(value || "");
+  return (container.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+async function fetchOnlineUseSceneResearch(facts) {
+  const query = useSceneSearchQuery(facts);
+  const encoded = encodeURIComponent(query);
+  const requests = [
+    fetchJsonWithTimeout(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encoded}&srlimit=8&format=json&origin=*`)
+      .then((data) => ({
+        source: "Wikipedia",
+        text: (data?.query?.search || []).map((item) => `${item.title}. ${stripResearchMarkup(item.snippet)}`).join(" "),
+      })),
+    fetchJsonWithTimeout(`https://api.duckduckgo.com/?q=${encoded}&format=json&no_html=1&skip_disambig=1`)
+      .then((data) => ({
+        source: "DuckDuckGo",
+        text: [
+          data?.Heading,
+          data?.AbstractText,
+          ...(data?.RelatedTopics || []).flatMap((item) => item?.Topics || [item]).map((item) => item?.Text),
+        ].filter(Boolean).join(" "),
+      })),
+  ];
+  const settled = await Promise.allSettled(requests);
+  const useful = settled
+    .filter((result) => result.status === "fulfilled" && result.value.text.length >= 20)
+    .map((result) => result.value);
+  return {
+    query,
+    sources: useful.map((item) => item.source),
+    text: useful.map((item) => item.text).join(" "),
+  };
+}
+
+function suggestedUseSceneItems(facts, research = {}, limit = 5) {
+  const profileId = categoryProfile(identityFactsFromData(facts)).id || "generic";
+  const catalog = useSceneCatalogs[profileId] || useSceneCatalogs.generic;
+  const evidence = `${research.text || ""} ${promptIdentityText(facts)}`.toLowerCase();
+  const ranked = catalog.map(([label, cues], index) => ({
+    label,
+    score: cues.reduce((total, cue) => total + (evidence.includes(cue.toLowerCase()) ? 4 : 0), 0) - index * 0.05,
+  })).sort((left, right) => right.score - left.score);
+  const existing = splitUseSceneText(facts.scene)
+    .flatMap((item) => item.split(/[,，]+/))
+    .map(normalizedScenePhrase)
+    .filter(isUsableEnglishScene)
+    .slice(0, 3);
+  const combined = [...existing, ...ranked.map((item) => item.label)];
+  const seen = new Set();
+  return combined.filter((item) => {
+    const key = comparablePromptItem(item);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, Math.max(3, Math.min(limit, 5)));
+}
+
+async function enrichUseScenesOnline() {
+  const button = byId("enrichUseScenes");
+  const status = byId("sceneEnrichStatus");
+  const input = byId("field-scene");
+  if (!button || !status || !input || !hasExtractedProducts()) return;
+  const requestedSkuId = selectedSku()?.id || "";
+  const requestedSceneRevision = sceneInputRevision;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  status.textContent = "正在联网查阅适合当前产品的使用场景…";
+  try {
+    const facts = currentSceneResearchFacts();
+    const research = await fetchOnlineUseSceneResearch(facts);
+    if ((selectedSku()?.id || "") !== requestedSkuId) return;
+    if (sceneInputRevision !== requestedSceneRevision) {
+      status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
+      return;
+    }
+    const scenes = suggestedUseSceneItems({ ...facts, scene: input.value }, research, 5);
+    input.value = scenes.join("\n");
+    fieldOverrides.scene = input.value;
+    if (requestedSkuId) {
+      fieldOverridesBySku[requestedSkuId] = {
+        ...(fieldOverridesBySku[requestedSkuId] || {}),
+        scene: input.value,
+      };
+    }
+    captureFieldOverrides();
+    fieldSnapshot = currentFieldSignature();
+    renderAll();
+    status.textContent = research.sources.length
+      ? `已结合 ${research.sources.join(" + ")} 补全 ${scenes.length} 个英文场景，可继续手动修改。`
+      : `网络资料暂时不可用，已按当前产品类目补全 ${scenes.length} 个英文场景，可继续手动修改。`;
+  } catch (error) {
+    if ((selectedSku()?.id || "") !== requestedSkuId) return;
+    if (sceneInputRevision !== requestedSceneRevision) {
+      status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
+      return;
+    }
+    const facts = currentSceneResearchFacts();
+    const scenes = suggestedUseSceneItems({ ...facts, scene: input.value }, {}, 5);
+    input.value = scenes.join("\n");
+    captureFieldOverrides();
+    renderAll();
+    status.textContent = `联网失败，已使用产品类目兜底补全 ${scenes.length} 个英文场景。`;
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
+function autoEnrichUseScenesIfNeeded() {
+  const sceneItems = splitUseSceneText(byId("field-scene")?.value || "")
+    .flatMap((item) => item.split(/[,，]+/))
+    .filter(Boolean);
+  if (hasExtractedProducts() && sceneItems.length < 3) enrichUseScenesOnline();
+}
+
 function hasVerifiedUseContext(facts) {
   return Boolean(cleanFieldDisplayValue(facts?.scene || ""));
 }
@@ -6679,7 +6945,7 @@ function recommendedUseSceneText(facts, fallback = neutralProductSceneFallback()
 
 function useSceneText(facts, fallback = neutralProductSceneFallback(), limit = 4) {
   const sceneText = cleanFieldDisplayValue(facts?.scene || "");
-  return sceneText || recommendedUseSceneText(facts, fallback, limit);
+  return (sceneText ? splitUseSceneText(sceneText).join(" / ") : "") || recommendedUseSceneText(facts, fallback, limit);
 }
 
 function verifiedProductDetailFallback() {
@@ -6747,12 +7013,12 @@ function convertLengthUnitsToInches(value) {
 }
 
 function dimensionText(facts) {
-  return compactSpecificPromptItems([
+  return [
     facts.dimension1 && `${dimensionLabelForFacts(facts, 1)}: ${convertLengthUnitsToInches(facts.dimension1)}`,
     facts.dimension2 && `${dimensionLabelForFacts(facts, 2)}: ${convertLengthUnitsToInches(facts.dimension2)}`,
     facts.dimension3 && `${dimensionLabelForFacts(facts, 3)}: ${convertLengthUnitsToInches(facts.dimension3)}`,
     facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
-  ], "", 4);
+  ].filter(Boolean).join(" / ");
 }
 
 function dimensionLabelForFacts(facts, index) {
@@ -8390,11 +8656,13 @@ function sceneMultiAngleStyleText(facts) {
 }
 
 function sceneExplanationDetails(facts, physicalDetails) {
+  const dimensionLine = dimensionText(facts);
   const infoText = [
     "Main title required: Product Information.",
+    dimensionLine && `Verified dimensions: ${dimensionLine}.`,
     "Use 2-3 short English info labels for verified material, structure, texture, size/range, or visible detail only.",
     "Premium text hierarchy: large title plus 2-3 short 3-5 word labels, aligned rows, crisp typography, spacing, no dense paragraphs.",
-  ];
+  ].filter(Boolean);
   if (!isFootwearCategory(facts)) return sceneProductDetailText(facts, [...infoText, physicalDetails, visibleTextureDetails(facts)], 9);
   return sceneProductDetailText(facts, [
     ...infoText,
@@ -8938,6 +9206,7 @@ function referenceLinkGlobalRule(facts, typeId = "") {
 function referenceLinkModulePrompt(typeId, facts) {
   const blueprint = referenceBlueprintSlot(typeId);
   const blueprintRoute = referenceBlueprintText(typeId);
+  const dimensionLine = dimensionText(facts);
   const mainProduct = compactSpecificPromptItems([
     facts.productName,
     facts.color,
@@ -8983,6 +9252,7 @@ function referenceLinkModulePrompt(typeId, facts) {
       basic: blueprintBasic,
       details: productDetailText(facts, [
         blueprintRoute,
+        dimensionLine && `Verified dimensions: ${dimensionLine}.`,
         `Structure focus: ${structureText}`,
         referenceInsight,
         "If this slot is not a structure slot, use the structure facts only as product-accuracy constraints, not as the main composition.",
@@ -9178,7 +9448,6 @@ function renderPrompt() {
 }
 
 function renderAll() {
-  hydrateEmptyFieldInputsFromValues();
   renderProductParameters();
   renderSourceSummary();
   renderFacts();
@@ -9306,6 +9575,7 @@ function init() {
   byId("skuSelect").addEventListener("change", () => {
     renderFields(true);
     renderAll();
+    autoEnrichUseScenesIfNeeded();
   });
   byId("templateSelect").addEventListener("change", renderAll);
   byId("extractSources").addEventListener("click", () => {
@@ -9331,6 +9601,8 @@ function init() {
   byId("resetFields").addEventListener("click", () => {
     const skuId = selectedSku()?.id || "";
     if (skuId) delete appliedSellingPointOverridesBySku[skuId];
+    if (skuId) delete fieldOverridesBySku[skuId];
+    fieldOverrides = {};
     sellingPointDraftDirty = false;
     renderFields(true);
     renderAll();
