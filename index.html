@@ -5,18 +5,45 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>通用产品提示词工具</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="./styles.css?v=20260808-horizon-ui">
+    <script>
+      try {
+        const savedTheme = localStorage.getItem("prompt-tool-theme");
+        document.documentElement.dataset.theme = savedTheme === "light" || savedTheme === "dark" ? savedTheme : "dark";
+      } catch {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
+    <link rel="stylesheet" href="./styles.css?v=20260902-three-page-workflow-20">
   </head>
   <body>
-    <main class="app-shell">
-      <aside class="side-panel">
-        <div class="brand-block">
-          <p class="eyebrow">Prompt Generator</p>
-          <h1>通用产品提示词生成工具</h1>
-          <p>输入供应商资料、Amazon 模板和参考链接，选择模板后生成当前产品图组提示词。</p>
+    <header class="workflow-app-header">
+      <div class="workflow-brand">
+        <span class="workflow-brand-mark" aria-hidden="true">✦</span>
+        <div><p class="eyebrow">Prompt Generator</p><h1>通用产品提示词生成工具</h1></div>
+      </div>
+      <nav id="workflowNav" class="workflow-nav" aria-label="工作页面">
+        <button type="button" class="workflow-nav-item is-active" data-workflow-page="source" aria-selected="true"><b>01</b><span><strong>资料解析</strong><small>资料 ↔ 提取参数</small></span></button>
+        <button type="button" class="workflow-nav-item" data-workflow-page="parameters" aria-selected="false"><b>02</b><span><strong>参数与提示词</strong><small>参数 ↔ 对应提示词</small></span></button>
+        <button type="button" class="workflow-nav-item" data-workflow-page="studio" aria-selected="false"><b>03</b><span><strong>提示词与图组</strong><small>提示词 ↔ 生成图片</small></span></button>
+      </nav>
+      <div class="workflow-header-controls">
+        <div class="workflow-global-selects">
+          <label for="skuSelect">产品 / 款式</label><select id="skuSelect"></select>
+          <label for="templateSelect">模板</label><select id="templateSelect"></select>
         </div>
+        <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="true" aria-label="切换到浅色主题">
+          <span class="theme-toggle-icon" aria-hidden="true">☾</span>
+          <span class="theme-toggle-label">深色模式</span>
+        </button>
+      </div>
+    </header>
 
-        <section class="control-group" aria-labelledby="source-title">
+    <main class="workflow-shell">
+      <section class="workflow-page is-active" data-workflow-panel="source">
+        <div class="workflow-page-heading"><div><p class="eyebrow">Page 01</p><h2>资料解析</h2><p>左侧输入与选择解析路线，右侧同步核对当前 SKU 实际提取出的参数。</p></div><button type="button" class="workflow-next" data-workflow-next="parameters">确认解析参数，下一步 →</button></div>
+        <div class="workflow-columns source-parameter-columns">
+          <div class="workflow-column">
+            <section class="control-group" aria-labelledby="source-title">
           <h2 id="source-title">资料输入</h2>
           <label for="amazonTemplateFile">Amazon 类目模板 Excel</label>
           <input id="amazonTemplateFile" class="source-file" type="file" accept=".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
@@ -27,68 +54,90 @@
           <label for="supplierFile">1688 HTML 文件（可多选）</label>
           <input id="supplierFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
 
+          <label for="supplierImageListFile">1688 采集助手图片清单（可选）</label>
+          <input id="supplierImageListFile" class="source-file" type="file" accept=".txt,.html,.htm,text/plain,text/html" multiple>
+
+          <label for="supplierImageListText">或直接粘贴采集助手图片链接</label>
+          <textarea id="supplierImageListText" class="image-list-paste" rows="5" placeholder="可粘贴一行一个图片链接，也可直接粘贴 &lt;img src=&quot;https://...jpg&quot;/&gt; 清单"></textarea>
+
+          <label for="supplierSkuBinding">当前1688资料对应的 Amazon SKU</label>
+          <select id="supplierSkuBinding">
+            <option value="">自动识别（未指定 SKU）</option>
+          </select>
+          <p class="input-help">多 SKU 时建议明确指定；当前1688 HTML 和图片清单只会绑定到所选 SKU。</p>
+
           <label for="competitorFile">参考链接 HTML 文件（可多选）</label>
           <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
 
           <button id="extractSources" type="button" class="secondary">解析资料并提取产品信息</button>
           <p id="extractStatus" class="status" role="status" aria-live="polite"></p>
-        </section>
+            </section>
 
-        <section class="control-group" aria-labelledby="sku-title">
-          <h2 id="sku-title">产品选择</h2>
-          <label for="skuSelect">选择产品 / 款式</label>
-          <select id="skuSelect"></select>
-
-          <label for="templateSelect">选择模板</label>
-          <select id="templateSelect"></select>
-        </section>
-
-        <section class="control-group" aria-labelledby="product-params-title">
-          <h2 id="product-params-title">产品主参数</h2>
-          <div id="productParamList" class="product-param-list"></div>
-        </section>
-
-        <section class="control-group" aria-labelledby="override-title">
-          <h2 id="override-title">可替换参数</h2>
-          <div id="fieldList" class="field-list"></div>
-        </section>
-
-        <section class="control-group" aria-labelledby="manual-title">
-          <h2 id="manual-title">人工补充参数</h2>
-          <div id="manualFieldList" class="field-list manual-field-list"></div>
-        </section>
-
-        <section class="control-group compact" aria-labelledby="actions-title">
-          <h2 id="actions-title">操作</h2>
-          <button id="copyCurrent" type="button">复制当前产品全部图组</button>
-          <button id="resetFields" type="button" class="ghost">恢复已提取参数</button>
-          <p id="copyStatus" class="status" role="status" aria-live="polite"></p>
-        </section>
-      </aside>
-
-      <section class="workspace">
-        <div class="top-strip">
-          <div>
-            <p class="eyebrow">Source Digest</p>
-            <h2 id="currentTitle">产品资料提炼</h2>
+            <section class="control-group product-structure-route-group" aria-labelledby="product-structure-route-title">
+          <div class="route-heading-row">
+            <h2 id="product-structure-route-title">商品组合路线</h2>
+            <span class="preview-badge">SKU 结构</span>
           </div>
-          <div class="badge-row" id="badges"></div>
+          <p class="route-intro">先确定当前 Amazon SKU 是单品还是包含多个组件的套装，再选择下方的信息提取方式。</p>
+          <div class="product-structure-tabs" role="tablist" aria-label="商品组合路线">
+            <button id="structure-single" class="route-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="productStructureRoutePreview" data-product-structure-route="single">
+              <span>01</span> 单品路线
+            </button>
+            <button id="structure-bundle" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="productStructureRoutePreview" data-product-structure-route="bundle">
+              <span>02</span> 套装路线
+            </button>
+          </div>
+          <article id="productStructureRoutePreview" class="extraction-route-preview product-structure-route-preview" role="tabpanel" aria-live="polite"></article>
+            </section>
+
+            <section class="control-group extraction-route-group" aria-labelledby="extraction-route-title">
+          <div class="route-heading-row">
+            <h2 id="extraction-route-title">信息提取路线</h2>
+            <span class="preview-badge">解析方式</span>
+          </div>
+          <p class="route-intro">先选择路线，再点击上方“解析资料并提取产品信息”。</p>
+          <div class="extraction-route-tabs" role="tablist" aria-label="信息提取路线">
+            <button id="route-local" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="local">
+              <span>01</span> 本地分析
+            </button>
+            <button id="route-vision" class="route-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="extractionRoutePreview" data-extraction-route="vision">
+              <span>02</span> 豆包识图
+            </button>
+            <button id="route-web" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="web">
+              <span>03</span> 联网补充
+            </button>
+          </div>
+          <article id="extractionRoutePreview" class="extraction-route-preview" role="tabpanel" aria-live="polite"></article>
+            </section>
+          </div>
+          <div class="workflow-column">
+            <div class="top-strip workflow-result-title"><div><p class="eyebrow">Extracted Parameters</p><h2 id="currentTitle">产品资料提炼</h2></div><div class="badge-row" id="badges"></div></div>
+            <div id="sourceSummary" class="source-summary" aria-label="资料来源摘要"></div>
+            <section class="control-group extracted-parameter-panel" aria-labelledby="product-params-title"><h2 id="product-params-title">资料提取出的产品参数</h2><p class="workflow-section-note">这里是第 1 页的输出，也是第 2 页生成提示词的输入。</p><div id="productParamList" class="product-param-list"></div></section>
+          </div>
         </div>
-        <div id="sourceSummary" class="source-summary" aria-label="资料来源摘要"></div>
+      </section>
 
-        <section class="product-prompt-panel" aria-labelledby="product-prompts-title">
-          <div class="section-header">
-            <div>
-            <p class="eyebrow">Product Outputs · template-level-specs</p>
-              <h2 id="product-prompts-title">当前产品图组</h2>
-            </div>
-            <p>只展示当前产品与当前模板下的图组；每张图可单独复制。</p>
+      <section class="workflow-page" data-workflow-panel="parameters">
+        <div class="workflow-page-heading"><div><p class="eyebrow">Page 02</p><h2>参数与提示词</h2><p>左侧确认和人工补充参数，右侧逐张检查这些参数生成的提示词。</p></div><button type="button" class="workflow-next" data-workflow-next="studio">确认参数与提示词，进入图组 →</button></div>
+        <div class="workflow-columns parameter-prompt-columns">
+          <div class="workflow-column parameter-editor-column">
+            <section id="bundleEditor" class="control-group bundle-editor" aria-labelledby="bundle-title"></section>
+            <section class="control-group" aria-labelledby="override-title"><h2 id="override-title">已提取 / 可修正参数</h2><div id="fieldList" class="field-list"></div></section>
+            <section class="control-group" aria-labelledby="manual-title"><h2 id="manual-title">人工补充参数</h2><p class="workflow-section-note">修改后立即更新右侧整套提示词。</p><div id="manualFieldList" class="field-list manual-field-list"></div></section>
+            <button id="resetFields" type="button" class="ghost workflow-reset">恢复已提取参数</button>
           </div>
-          <div id="productPromptGrid" class="product-prompt-grid"></div>
-        </section>
+          <div class="workflow-column"><section class="product-prompt-panel parameter-prompt-panel" aria-labelledby="parameter-prompts-title"><div class="section-header"><div><p class="eyebrow">Parameter Outputs</p><h2 id="parameter-prompts-title">参数生成的对应提示词</h2></div><p>选择任意图组任务，查看完整提示词。</p></div><div id="parameterPromptGrid"></div></section></div>
+        </div>
+      </section>
+
+      <section class="workflow-page" data-workflow-panel="studio">
+        <div class="workflow-page-heading studio-heading"><div><p class="eyebrow">Page 03</p><h2>提示词与图组</h2><p>每个图片任务保持提示词、参考图和生成结果一一对应。</p></div><div class="studio-global-actions"><button id="copyCurrent" type="button" class="secondary">复制全部提示词</button><button id="generateAllImages" type="button">一键生成全部图片</button><button id="saveGeneratedSet" type="button" class="secondary">保存套组图片</button></div></div>
+        <p id="bulkGenerationStatus" class="status studio-status" role="status" aria-live="polite"></p><p id="saveGeneratedSetStatus" class="status studio-status" role="status" aria-live="polite"></p><p id="copyStatus" class="status studio-status" role="status" aria-live="polite"></p>
+        <section class="product-prompt-panel studio-prompt-panel" aria-labelledby="product-prompts-title"><div class="section-header"><div><p class="eyebrow">Prompt ↔ Image Set</p><h2 id="product-prompts-title">当前产品图组</h2></div><p>左侧为当前提示词，右侧为其参考图和生成结果。</p></div><div id="productPromptGrid" class="product-prompt-grid"></div></section>
       </section>
     </main>
 
-    <script src="./app.js?v=20260808-field-sync-audit-3-online-scenes"></script>
+    <script src="./app.js?v=20260902-three-page-workflow-20"></script>
   </body>
 </html>

@@ -1,142 +1,27 @@
 const sourceNotes = {
   purchase: "采购单口径：确认已采购的产品款式；不把下单数量当作产品参数。",
-  amazonTemplate: "Amazon listing 主口径：优先提取标题、五点、描述、类目、Child SKU 与变体字段。",
-  alibaba: "1688 补充口径：仅补 Amazon listing 未填写的材质、结构、适配、场景、尺寸和卖点。",
+  amazonTemplate: "Amazon SKU 口径：按当前子 SKU 标题优先提取款式、数量与明确 item 字段。",
+  alibaba: "1688 事实口径：详情图、页面属性、本地 OCR 与豆包确认结果优先；缺失字段留空。",
   amazon: "参考链接口径：提取图组结构、构图任务与卖点分配，不补写未确认参数。",
 };
 
-const productGroups = {
-  v02: {
-    name: "V02 V形滤纸",
-    promptName: "V02 cone coffee filter",
-    purchaseVariants: "V02 100片/盒、V02 200片/盒",
-    productCountNote: "采购单计 2 个 SKU；基础产品计 1 款",
-    alibabaPack: "V02，100片/盒，约 138g/盒，外盒约 130 x 200 x 17 mm，1-4人份",
-    specs: ["V02", "1-4人份", "100片/盒 / 200片/盒", "自然棕色原色木浆纸", "侧边压纹与底部折边"],
-    promptSpecs: ["V02", "1-4 cups", "100 pcs box / 200 pcs box", "natural unbleached wood pulp paper", "pressed side seam and bottom fold"],
-    dimensions: ["Top Width: 16 cm", "Side Length: 12 cm / 11.6 cm", "Weight: 1.12 g/sheet"],
-    evidenceNote: "只使用 1688 图中可见规格；100/200 仅作为包装数量。",
-  },
-  u02: {
-    name: "扇形02 / U02 滤纸",
-    promptName: "fan-shaped 02 / U02 coffee filter",
-    purchaseVariants: "扇形02 100片/盒、扇形U02 200片/盒",
-    productCountNote: "采购单计 2 个 SKU；基础产品计 1 款",
-    alibabaPack: "#02 / U102，100片/盒，约 142g/盒，外盒约 170 x 200 x 17 mm，2-6人份",
-    specs: ["#02 / U102", "2-6人份", "100片/盒 / 200片/盒", "自然棕色原色木浆纸", "侧边压纹与底部折边"],
-    promptSpecs: ["#02 / U102", "2-6 cups", "100 pcs box / 200 pcs box", "natural unbleached wood pulp paper", "pressed side seam and bottom fold"],
-    dimensions: ["Top Width: 16.5 cm", "Side Length: 9 cm / 9.5 cm", "Bottom Width: 5 cm", "Weight: 1.15 g/sheet"],
-    evidenceNote: "采购单中的“扇形02”和“扇形U02”按同一基础规格处理，包装数量分开。",
-  },
-  u04: {
-    name: "扇形04 滤纸",
-    promptName: "fan-shaped 04 coffee filter",
-    purchaseVariants: "扇形04 100片/盒、扇形04 200片/盒",
-    productCountNote: "采购单计 2 个 SKU；基础产品计 1 款",
-    alibabaPack: "#04，100片/盒，约 185g/盒，外盒约 230 x 200 x 17 mm，8-12 cups",
-    specs: ["#04", "8-12 cups", "100片/盒 / 200片/盒", "自然棕色原色木浆纸", "侧边压纹与底部折边"],
-    promptSpecs: ["#04", "8-12 cups", "100 pcs box / 200 pcs box", "natural unbleached wood pulp paper", "pressed side seam and bottom fold"],
-    dimensions: [],
-    evidenceNote: "资料未明确单片尺寸，不借鉴、不补写；只展示已提取到的规格与包装信息。",
-  },
-};
+let bundleStateBySku = {};
+let supplierSourceFileNames = [];
 
-const verifiedDimensions = {
-  v02: {
-    topWidth: "16 cm",
-    sideLength: "12 cm / 11.6 cm",
-    bottomWidth: "",
-    weight: "1.12 g/sheet",
-    cupRange: "1-4 cup pour-over brewing",
-    source: "1688 详情图可见单片规格",
-  },
-  u02: {
-    topWidth: "16.5 cm",
-    sideLength: "9 cm / 9.5 cm",
-    bottomWidth: "5 cm",
-    weight: "1.15 g/sheet",
-    cupRange: "2-6 cup drip or pour-over brewing",
-    source: "1688 详情图可见单片规格",
-  },
-  u04: {
-    topWidth: "",
-    sideLength: "",
-    bottomWidth: "",
-    weight: "",
-    cupRange: "8-12 cup drip coffee maker",
-    source: "资料未明确单片尺寸",
-  },
-};
+const productGroups = {};
 
 const skus = [
   {
-    id: "KFLZ-SV02-200",
-    label: "KFLZ-SV02-200 | V02 盒装 200 片",
-    sourceName: "亚马逊定制V形02盒装200片",
-    shape: "V-shaped cone coffee filter, size 02",
-    pack: "200 pcs box",
-    sizeCode: "V02",
-    groupKey: "v02",
-    dims: verifiedDimensions.v02,
-    fit: "V60-02 style cone dripper and 1-4 cup pour-over brewer",
-  },
-  {
-    id: "KFLZ-SU02-200",
-    label: "KFLZ-SU02-200 | 扇形 U02 盒装 200 片",
-    sourceName: "亚马逊定制扇形U02盒装200片",
-    shape: "fan-shaped trapezoid coffee filter, size 02",
-    pack: "200 pcs box",
-    sizeCode: "U02 / 02",
-    groupKey: "u02",
-    dims: verifiedDimensions.u02,
-    fit: "#2 fan-shaped dripper, trapezoid filter cup, small drip coffee maker",
-  },
-  {
-    id: "KFLZ-SV02-100",
-    label: "KFLZ-SV02-100 | V02 盒装 100 片",
-    sourceName: "亚马逊定制V02盒装100片",
-    shape: "V-shaped cone coffee filter, size 02",
-    pack: "100 pcs box",
-    sizeCode: "V02",
-    groupKey: "v02",
-    dims: verifiedDimensions.v02,
-    fit: "V60-02 style cone dripper and 1-4 cup pour-over brewer",
-  },
-  {
-    id: "KFLZ-SU04-100",
-    label: "KFLZ-SU04-100 | 扇形 04 盒装 100 片",
-    sourceName: "亚马逊定制扇形04盒装100片",
-    shape: "fan-shaped trapezoid coffee filter, size 04",
-    pack: "100 pcs box",
-    sizeCode: "#4 / 04",
-    groupKey: "u04",
-    dims: verifiedDimensions.u04,
-    fit: "#4 cone or fan-shaped drip coffee maker, 8-12 cup brewer",
-  },
-  {
-    id: "KFLZ-SU04-200",
-    label: "KFLZ-SU04-200 | 扇形 04 盒装 200 片",
-    sourceName: "亚马逊定制扇形04盒装200片",
-    shape: "fan-shaped trapezoid coffee filter, size 04",
-    pack: "200 pcs box",
-    sizeCode: "#4 / 04",
-    groupKey: "u04",
-    dims: verifiedDimensions.u04,
-    fit: "#4 cone or fan-shaped drip coffee maker, 8-12 cup brewer",
-  },
-  {
-    id: "KFLZ-SU02-100",
-    label: "KFLZ-SU02-100 | 扇形 02 盒装 100 片",
-    sourceName: "亚马逊定制扇形02盒装100片",
-    shape: "fan-shaped trapezoid coffee filter, size 02",
-    pack: "100 pcs box",
-    sizeCode: "#2 / 02",
-    groupKey: "u02",
-    dims: verifiedDimensions.u02,
-    fit: "#2 fan-shaped dripper, trapezoid filter cup, small drip coffee maker",
+    id: "EMPTY-SOURCE",
+    label: "请先解析当前产品资料",
+    productName: "",
+    shape: "",
+    pack: "",
+    sizeCode: "",
+    dims: {},
+    fit: "",
   },
 ];
-
 const imageTypes = [
   { id: "1", name: "1. 单款参数 + 场景主图", promptName: "1. Single Specification Hero Image" },
   { id: "2", name: "2. 生活场景图 1", promptName: "2. Lifestyle Image" },
@@ -213,6 +98,8 @@ const templates = [
   },
 ];
 
+const DEFAULT_TEMPLATE_ID = "scene";
+
 const fields = [
   ["productName", "Product Name", "[PRODUCT_NAME]"],
   ["material", "Material", ""],
@@ -236,10 +123,21 @@ const manualFields = [
 
 const allFields = [...fields, ...manualFields];
 const manualFieldKeys = new Set(manualFields.map(([key]) => key));
+const extractedManualFieldKeys = new Set(["topWidth", "sideLength", "bottomWidth", "weight"]);
 const multilineFieldKeys = new Set(["scene", "feature1", "feature2"]);
 const sellingPointFieldKeys = new Set(["feature1", "feature2"]);
+const NO_REFERENCE_SCENE_MESSAGE = "没有参考场景信息";
+const NO_REFERENCE_SELLING_POINT_MESSAGE = "没有参考卖点信息";
 
 let promptStore = [];
+let imageGenerationByCard = {};
+let lastReferenceSelectionCardKey = "";
+let activePromptCardKey = "";
+let activeWorkflowPage = "source";
+let bulkImageGenerationRunning = false;
+let generatedSetSaving = false;
+let availableReferenceImageUrls = [];
+let referenceImagesBySku = {};
 let promptLanguageByCard = {};
 let extractedProducts = [];
 let hasUserSourceAttempt = false;
@@ -265,9 +163,21 @@ let fieldOverridesBySku = {};
 let appliedSellingPointOverridesBySku = {};
 let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
+let sellingPointInputRevision = 0;
+let sellingPointResearchAttemptedBySku = new Set();
 let sceneInputRevision = 0;
+let selectedExtractionRoute = "vision";
+let selectedProductStructureRoute = "single";
+let productStructureRouteManuallySelected = false;
+let extractionGeneration = 0;
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
+const COLLECTOR_MAIN_LATE_LIMIT = 10;
+const COLLECTOR_MAIN_MIDDLE_LIMIT = 10;
+const COLLECTOR_DETAIL_TAIL_LIMIT = 12;
+const MAX_REFERENCE_CANDIDATES = 16;
+const MAX_SELECTED_REFERENCES = 6;
+const REFERENCE_CLASSIFIER_BATCH_SIZE = 12;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
 const PDFJS_SCRIPT_URL = "./vendor/pdfjs/pdf.min.js";
 const PDFJS_WORKER_URL = "./vendor/pdfjs/pdf.worker.min.js";
@@ -281,6 +191,26 @@ const scriptLoadPromises = {};
 
 function byId(id) {
   return document.getElementById(id);
+}
+
+function showWorkflowPage(pageName) {
+  const available = new Set(["source", "parameters", "studio"]);
+  activeWorkflowPage = available.has(pageName) ? pageName : "source";
+  document.querySelectorAll("[data-workflow-page]").forEach((button) => {
+    const selected = button.dataset.workflowPage === activeWorkflowPage;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  document.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.workflowPanel === activeWorkflowPage);
+  });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function initWorkflowNavigation() {
+  document.querySelectorAll("[data-workflow-page]").forEach((button) => button.addEventListener("click", () => showWorkflowPage(button.dataset.workflowPage)));
+  document.querySelectorAll("[data-workflow-next]").forEach((button) => button.addEventListener("click", () => showWorkflowPage(button.dataset.workflowNext)));
+  showWorkflowPage(activeWorkflowPage);
 }
 
 function loadScriptOnce(src, globalName) {
@@ -322,6 +252,22 @@ function selectedSku() {
   return allProducts.find((sku) => sku.id === byId("skuSelect").value) || allProducts[0];
 }
 
+function populateSupplierSkuBinding(products = []) {
+  const select = byId("supplierSkuBinding");
+  if (!select) return;
+  const previous = select.value;
+  select.innerHTML = `<option value="">自动识别（未指定 SKU）</option>${products.map((sku) => (
+    `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label || sku.displayLabel || sku.model || sku.id)}</option>`
+  )).join("")}`;
+  if (products.some((sku) => sku.id === previous)) select.value = previous;
+  syncProductStructureRouteFromBinding();
+}
+
+function boundSupplierSku(products = []) {
+  const bindingId = byId("supplierSkuBinding")?.value || "";
+  return bindingId ? products.find((sku) => sku.id === bindingId) || null : null;
+}
+
 function currentProducts() {
   if (extractedProducts.length) {
     return extractedProducts;
@@ -334,12 +280,14 @@ function hasExtractedProducts() {
 }
 
 function selectedTemplate() {
-  const selected = templates.find((item) => item.id === byId("templateSelect").value) || templates[0];
-  return selected.disabled ? templates[0] : selected;
+  const defaultTemplate = templates.find((item) => item.id === DEFAULT_TEMPLATE_ID) || templates[0];
+  const selected = templates.find((item) => item.id === byId("templateSelect").value) || defaultTemplate;
+  return selected.disabled ? defaultTemplate : selected;
 }
 
 function defaultProductName(sku) {
-  return promptValue(sku.productName, "")
+  return promptValue(sku.onlineProductKeyword, "")
+    || promptValue(sku.productName, "")
     || promptValue(sku.shape, "")
     || promptValue(sku.sourceName, "")
     || "[PRODUCT_NAME]";
@@ -360,19 +308,17 @@ function dimensionListForSku(sku, group = {}) {
     ...(group.promptSpecs || []),
     sourcePayload.supplier,
   ].filter(Boolean).join("\n");
-  const dimensions = extractDimensions(fallbackText);
+  const dimensions = semanticDimensionItems(extractDimensions(fallbackText), fallbackText);
   return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
 }
 
 function dimensionFieldsFromDimensionList(dimensionList, context = "") {
   const source = cleanTokenValue(dimensionList);
   if (!source) return {};
-  const combined = [context, source].filter(Boolean).join(" ");
-  const isUmbrella = /umbrella|伞|canopy|folded|open diameter|open height|rain|sun shade/i.test(combined);
   return {
-    topWidth: dimensionValueByLabels(source, isUmbrella ? ["Folded Size", "Top Width", "Length", "Diameter"] : ["Top Width", "Length", "Folded Size", "Diameter"]),
-    sideLength: dimensionValueByLabels(source, isUmbrella ? ["Open Diameter", "Side Length", "Width"] : ["Side Length", "Width", "Open Diameter"]),
-    bottomWidth: dimensionValueByLabels(source, isUmbrella ? ["Open Height", "Bottom Width", "Height"] : ["Bottom Width", "Height", "Open Height"]),
+    topWidth: dimensionValueByLabels(source, ["SKU Dimension 1", "Base Diameter", "Diameter", "Top Width", "Length", "Folded Size", "Expanded Width"]),
+    sideLength: dimensionValueByLabels(source, ["SKU Dimension 2", "Front Diameter", "Knob Diameter", "Side Length", "Width", "Open Diameter", "Expanded Length"]),
+    bottomWidth: dimensionValueByLabels(source, ["Projection Depth", "Depth", "Overall Projection", "Bottom Width", "Thickness", "Height", "Open Height"]),
     weight: dimensionValueByLabels(source, ["Weight", "Weight / Capacity", "Capacity", "Volume", "Quantity"]),
   }
 }
@@ -427,12 +373,6 @@ function isFootwearSceneLeakText(value) {
   return /beach,\s*hotel,\s*spa,\s*shower,\s*travel,\s*bathroom/.test(source);
 }
 
-function categorySceneFieldText(profile) {
-  return cleanFieldDisplayValue(String(profile?.scene || "")
-    .replace(/^Scene category:\s*/i, "")
-    .replace(/\s*;\s*/g, ", "));
-}
-
 function identityFactsFromData(data = {}) {
   return {
     productName: data.productName || defaultProductName(data),
@@ -448,43 +388,20 @@ function identityFactsFromData(data = {}) {
 }
 
 function sanitizeUseContextFields(data = {}) {
-  const profile = categoryProfile(identityFactsFromData(data));
-  const isFootwear = profile.id === "footwear";
-  const fit = cleanFieldDisplayValue(data.fit || "");
-  const scene = cleanFieldDisplayValue(data.scene || "");
   return {
-    fit: !isFootwear && isFootwearSceneLeakText(fit) ? "" : fit,
-    scene: !isFootwear && isFootwearSceneLeakText(scene) ? "" : scene,
+    fit: cleanFieldDisplayValue(data.fit || ""),
+    scene: cleanFieldDisplayValue(data.scene || ""),
   };
 }
 
-function categoryIdFromSourceText(text) {
-  const profile = categoryProfile({
-    productName: text,
-    detailParameter: text,
-  });
-  return profile.id || "generic";
-}
-
-function categoryIdFromProduct(product) {
-  return categoryProfile(identityFactsFromData(product)).id || "generic";
-}
-
-function sourceCategoriesConflict(primaryCategoryId, secondaryCategoryId) {
-  if (!primaryCategoryId || !secondaryCategoryId) return false;
-  if (primaryCategoryId === "generic" || secondaryCategoryId === "generic") return false;
-  return primaryCategoryId !== secondaryCategoryId;
-}
-
 function valueMap(sku) {
-  const isExtractedSku = String(sku.id || "").startsWith("EXTRACTED-");
-  const group = productGroups[sku.groupKey] || sku.group || (isExtractedSku ? {} : productGroups.v02);
-  const materialFallback = isExtractedSku ? "" : "[MATERIAL: natural wood pulp paper / unbleached brown paper]";
-  const colorFallback = isExtractedSku ? "" : "[COLOR: natural brown]";
-  const structureFallback = isExtractedSku ? "" : "[STRUCTURE: pressed side seam and bottom fold]";
-  const feature1Fallback = isExtractedSku ? "" : "[SELLING_POINT_1: natural unbleached wood pulp paper]";
-  const feature2Fallback = isExtractedSku ? "" : "[SELLING_POINT_2: reinforced smooth filtration]";
-  const variantFallback = isExtractedSku ? "" : "[VARIANT_LIST: V02 100/200 pcs, fan-shaped 02 or U02 100/200 pcs, fan-shaped 04 100/200 pcs]";
+  const group = productGroups[sku.groupKey] || sku.group || {};
+  const materialFallback = "";
+  const colorFallback = "";
+  const structureFallback = "";
+  const feature1Fallback = "";
+  const feature2Fallback = "";
+  const variantFallback = "";
   const dimensionList = dimensionListForSku(sku, group);
   const dimensionFields = dimensionFieldsFromDimensionList(dimensionList, [
     defaultProductName(sku),
@@ -497,6 +414,7 @@ function valueMap(sku) {
   return {
     productName: cleanFieldDisplayValue(defaultProductName(sku)),
     pack: cleanFieldDisplayValue(sku.pack || ""),
+    packComposition: cleanFieldDisplayValue(sku.packComposition || ""),
     material: cleanFieldDisplayValue(sku.material || materialFallback),
     color: cleanFieldDisplayValue(sku.color || colorFallback),
     structure: cleanFieldDisplayValue(sku.structure || structureFallback),
@@ -526,6 +444,7 @@ function fillSelects() {
     .filter((template) => !template.disabled)
     .map((template) => `<option value="${template.id}">${template.name}</option>`)
     .join("");
+  byId("templateSelect").value = DEFAULT_TEMPLATE_ID;
 }
 
 function renderProductSelect(selectedId = byId("skuSelect")?.value) {
@@ -538,6 +457,180 @@ function renderProductSelect(selectedId = byId("skuSelect")?.value) {
   if (selectedId && products.some((sku) => sku.id === selectedId)) {
     byId("skuSelect").value = selectedId;
   }
+}
+
+function hasBundleIdentityMarker(value = "") {
+  const text = String(value || "");
+  return /套装|组合|礼盒/.test(text)
+    || /\b(?:set|kit|bundle)\b/i.test(text)
+    || /(?:Set|Kit|Bundle)(?:$|[\s|/_-])/.test(text);
+}
+function isLikelyBundleSku(sku = {}) { return hasBundleIdentityMarker([sku.label, sku.displayLabel, sku.model, sku.parentSku].filter(Boolean).join(" ")); }
+function bundleStateForSku(sku = selectedSku()) { const id = sku?.id || ""; if (!id) return { enabled: false, components: [], confirmed: false }; if (!bundleStateBySku[id]) bundleStateBySku[id] = { enabled: isLikelyBundleSku(sku), components: (sku.bundleComponentSeeds || []).map((item) => ({ ...item, sourceFile: bundleSourceFor(item.name) })), confirmed: false }; return bundleStateBySku[id]; }
+function bundleSourceFor(name = "") { if (supplierSourceFileNames.length === 1) return supplierSourceFileNames[0]; if (/(?:dispenser|holder)/i.test(name)) return supplierSourceFileNames.find((file) => /分配器|外壳|收纳包|挂钩/.test(file)) || ""; return supplierSourceFileNames.find((file) => /便便袋|拾便袋|垃圾袋/.test(file) && !/分配器|外壳|收纳包/.test(file)) || supplierSourceFileNames[0] || ""; }
+function bundleComponentPromptText(state = {}) { return state.enabled && state.confirmed ? state.components.map((item) => `${cleanFieldDisplayValue(item.name)} × ${Number(item.quantity) || 0}`).filter((item) => !/× 0$/.test(item)).join("; ") : ""; }
+function renderBundleEditor() {
+  const editor = byId("bundleEditor"); if (!editor) return; const sku = selectedSku();
+  if (!hasExtractedProducts() || !sku) { editor.innerHTML = `<h2 id="bundle-title">套装资料确认</h2><p class="empty-state">${selectedProductStructureRoute === "bundle" ? "已选择套装路线。解析资料后，在这里确认套装主体、配件、数量及其 1688 来源。" : "如当前 SKU 是套装，请先在第 1 页选择“套装路线”。"}</p>`; return; }
+  const state = bundleStateForSku(sku); const options = (value) => (supplierSourceFileNames.length ? supplierSourceFileNames : ["未关联 1688 资料"]).map((file) => `<option value="${escapeHtml(file)}"${file === value ? " selected" : ""}>${escapeHtml(file)}</option>`).join("");
+  const rows = state.components.map((item, index) => `<article class="bundle-component-card"><div class="bundle-component-top"><div><label>组件名称</label><input data-bundle-index="${index}" data-bundle-field="name" value="${escapeHtml(item.name || "")}"></div><div><label>数量</label><input data-bundle-index="${index}" data-bundle-field="quantity" type="number" min="1" value="${escapeHtml(String(item.quantity || 1))}"></div></div><div class="bundle-component-bottom"><div><label>该组件的 1688 来源</label><select data-bundle-index="${index}" data-bundle-field="sourceFile">${options(item.sourceFile)}</select></div><button type="button" class="bundle-remove" data-bundle-remove="${index}">×</button></div></article>`).join("");
+  editor.innerHTML = `<h2 id="bundle-title">套装资料确认</h2><p class="bundle-note">只对当前 SKU 生效。确认后右侧全部图组严格使用这份组件、数量与来源。</p><label class="bundle-editor-toggle"><input id="bundleEnabled" type="checkbox"${state.enabled ? " checked" : ""}>当前 SKU 是套装（主体 + 配套产品）</label>${state.enabled ? `${rows}<button id="addBundleComponent" type="button" class="secondary bundle-add">+ 添加套装组件</button><button id="confirmBundleComponents" type="button">确认套装构成并更新提示词</button>${state.confirmed ? `<p class="bundle-confirmed">✓ 已确认：${escapeHtml(bundleComponentPromptText(state))}</p>` : ""}` : ""}`;
+  byId("bundleEnabled")?.addEventListener("change", (e) => { state.enabled = e.currentTarget.checked; state.confirmed = false; if (state.enabled && !state.components.length) state.components.push({ name: cleanFieldDisplayValue(sku.productName), quantity: 1, sourceFile: supplierSourceFileNames[0] || "" }); renderAll(); });
+  document.querySelectorAll("[data-bundle-field]").forEach((input) => input.addEventListener("change", (e) => { const item = state.components[Number(e.currentTarget.dataset.bundleIndex)]; item[e.currentTarget.dataset.bundleField] = e.currentTarget.value; state.confirmed = false; }));
+  document.querySelectorAll("[data-bundle-remove]").forEach((button) => button.addEventListener("click", () => { state.components.splice(Number(button.dataset.bundleRemove), 1); state.confirmed = false; renderAll(); }));
+  byId("addBundleComponent")?.addEventListener("click", () => { state.components.push({ name: "Included accessory", quantity: 1, sourceFile: supplierSourceFileNames[0] || "" }); state.confirmed = false; renderAll(); });
+  byId("confirmBundleComponents")?.addEventListener("click", () => { state.confirmed = Boolean(bundleComponentPromptText({ ...state, confirmed: true })); renderAll(); });
+}
+
+const productStructureRoutePreviews = {
+  single: {
+    kicker: "SKU Structure 01 · Single",
+    title: "单品路线",
+    summary: "当前 SKU 只代表一种独立商品或同一商品的单一规格，不要求每张图同时展示配套组件。",
+    flow: "当前 SKU + 对应 1688 资料 → 单品参数 → 单品图组",
+    note: "适用于普通单款、单色、单规格或同类多件装。",
+  },
+  bundle: {
+    kicker: "SKU Structure 02 · Bundle",
+    title: "套装路线",
+    summary: "当前 SKU 是主体与配套产品组成的一套商品；解析后必须确认每个组件、数量及其 1688 来源。",
+    flow: "当前套装 SKU + 各组件资料 → 套装构成确认 → 全套组件共同进入提示词与图片",
+    note: "套装确认后，每张生成图都会锁定完整套装，避免漏掉组件、把组件融合或误当成可选款式。",
+  },
+};
+
+function renderProductStructureRoute(routeId = selectedProductStructureRoute) {
+  const preview = byId("productStructureRoutePreview");
+  const route = productStructureRoutePreviews[routeId] || productStructureRoutePreviews.single;
+  selectedProductStructureRoute = productStructureRoutePreviews[routeId] ? routeId : "single";
+  document.querySelectorAll("[data-product-structure-route]").forEach((button) => {
+    const active = button.dataset.productStructureRoute === selectedProductStructureRoute;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  if (!preview) return;
+  preview.innerHTML = `
+    <p class="route-preview-kicker">${escapeHtml(route.kicker)}</p>
+    <h3 class="route-preview-title">${escapeHtml(route.title)}</h3>
+    <p class="route-preview-summary">${escapeHtml(route.summary)}</p>
+    <div class="route-flow">${escapeHtml(route.flow)}</div>
+    <p class="route-preview-note">${escapeHtml(route.note)} 已选择此路线；点击解析按钮后生效。</p>
+  `;
+  renderBundleEditor();
+}
+
+function supplierBindingLooksLikeBundle() {
+  const select = byId("supplierSkuBinding");
+  const option = select?.selectedOptions?.[0];
+  return hasBundleIdentityMarker([select?.value, option?.textContent].filter(Boolean).join(" "));
+}
+
+function syncProductStructureRouteFromBinding(force = false) {
+  if (productStructureRouteManuallySelected && !force) {
+    renderProductStructureRoute(selectedProductStructureRoute);
+    return;
+  }
+  renderProductStructureRoute(supplierBindingLooksLikeBundle() ? "bundle" : "single");
+}
+
+function initProductStructureRoute() {
+  renderProductStructureRoute(selectedProductStructureRoute);
+  document.querySelectorAll("[data-product-structure-route]").forEach((button) => {
+    button.addEventListener("click", () => {
+      productStructureRouteManuallySelected = true;
+      renderProductStructureRoute(button.dataset.productStructureRoute);
+      if (hasExtractedProducts()) {
+        applyProductStructureRoute(extractedProducts);
+        imageGenerationByCard = {};
+        renderAll();
+      }
+    });
+  });
+}
+
+function applyProductStructureRoute(products = []) {
+  const target = boundSupplierSku(products) || (products.length === 1 ? products[0] : null);
+  if (!target) return;
+  const existing = bundleStateBySku[target.id];
+  const components = existing?.components?.length
+    ? existing.components
+    : (target.bundleComponentSeeds || []).map((item) => ({ ...item, sourceFile: bundleSourceFor(item.name) }));
+  if (selectedProductStructureRoute === "bundle" && !components.length) {
+    components.push({ name: cleanFieldDisplayValue(target.productName) || "Main product", quantity: 1, sourceFile: supplierSourceFileNames[0] || "" });
+  }
+  bundleStateBySku[target.id] = {
+    enabled: selectedProductStructureRoute === "bundle",
+    components,
+    confirmed: false,
+  };
+}
+
+const extractionRoutePreviews = {
+  local: {
+    kicker: "Route 01 · Local",
+    title: "本地分析",
+    summary: "不调用豆包。优先解析当前 1688 页面文字、结构化属性和本地 OCR 识别结果。",
+    flow: "1688 HTML + 详情图 → 本地规则 / OCR → 左侧参数栏",
+    fills: "商品名、款式、页面明确材质、尺寸、工艺、数量与卖点",
+    boundary: "未识别到的内容保持为空；不联网、不推测、不使用包装尺寸",
+    note: "适合需要快速核对本地规则结果、且明确不调用豆包的情况。",
+  },
+  vision: {
+    kicker: "Route 02 · Doubao Vision",
+    title: "豆包识图整理",
+    summary: "把筛选后的 1688 参数图、功能图和材质图交给豆包，整理当前商品的可见信息。",
+    flow: "筛选详情图 + 页面属性 → 豆包视觉识别 → 证据校验 → 左侧参数栏",
+    fills: "材质、展开尺寸、工艺、结构、图片明确卖点与适用对象",
+    boundary: "只允许读取当前商品资料；没有图片证据就留空，不联网补事实参数",
+    note: "适合关键信息藏在详情图片里的商品；每项结果保留图片来源。",
+  },
+  web: {
+    kicker: "Route 03 · Web Research",
+    title: "豆包联网补充",
+    summary: "先让豆包分析筛选后的 1688 图片并整理当前商品事实，再联网补充仍为空的参考信息。",
+    flow: "筛选详情图 → 豆包视觉识别 → 已确认商品事实 → 英文跨境关键词 → 联网检索补缺",
+    fills: "图片可确认的名称、材质、展开尺寸、工艺与卖点，以及缺失的英文商品名、通用卖点、使用场景和跨境表达",
+    boundary: "视觉阶段只接收当前图片证据；联网阶段禁止猜测精确尺寸、重量、数量、具体材质和当前商品独有配置",
+    note: "图片识别事实与联网参考分开保存；联网内容不会覆盖1688图片已经确认的事实。",
+  },
+};
+
+function renderExtractionRoutePreview(routeId = "vision") {
+  const route = extractionRoutePreviews[routeId] || extractionRoutePreviews.vision;
+  const nextRoute = extractionRoutePreviews[routeId] ? routeId : "vision";
+  if (selectedExtractionRoute !== nextRoute) extractionGeneration += 1;
+  selectedExtractionRoute = nextRoute;
+  const preview = byId("extractionRoutePreview");
+  if (!preview) return;
+  document.querySelectorAll("[data-extraction-route]").forEach((button) => {
+    const active = button.dataset.extractionRoute === routeId;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  preview.innerHTML = `
+    <p class="route-preview-kicker">${escapeHtml(route.kicker)}</p>
+    <h3 class="route-preview-title">${escapeHtml(route.title)}</h3>
+    <p class="route-preview-summary">${escapeHtml(route.summary)}</p>
+    <div class="route-flow">${escapeHtml(route.flow)}</div>
+    <div class="route-preview-grid">
+      <div class="route-preview-block">
+        <strong>可以填写</strong>
+        <p>${escapeHtml(route.fills)}</p>
+      </div>
+      <div class="route-preview-block">
+        <strong>使用边界</strong>
+        <p>${escapeHtml(route.boundary)}</p>
+      </div>
+    </div>
+    <p class="route-preview-note">${escapeHtml(route.note)} 已选择此路线；点击上方解析按钮后生效。</p>
+  `;
+}
+
+function initExtractionRoutePreview() {
+  renderExtractionRoutePreview("vision");
+  document.querySelectorAll("[data-extraction-route]").forEach((button) => {
+    button.addEventListener("click", () => renderExtractionRoutePreview(button.dataset.extractionRoute));
+  });
 }
 
 function renderFields(reset = false) {
@@ -556,10 +649,16 @@ function renderFields(reset = false) {
     return;
   }
   const renderFieldControls = (fieldDefs, useExtractedDefaults) => fieldDefs.map(([key, label, fallback]) => {
+    const shouldUseExtractedDefault = typeof useExtractedDefaults === "function"
+      ? useExtractedDefaults(key)
+      : useExtractedDefaults;
+    const displayLabel = ["topWidth", "sideLength", "bottomWidth"].includes(key)
+      ? dimensionLabelForData({ ...sku, ...values }, { topWidth: 1, sideLength: 2, bottomWidth: 3 }[key])
+      : label;
     const currentValue = reset ? fieldOverrides[key] ?? "" : byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
     const value = reset
-      ? (useExtractedDefaults ? values[key] || fallback : cleanFieldDisplayValue(currentValue))
-      : (cleanFieldDisplayValue(currentValue) || (useExtractedDefaults ? values[key] : "") || fallback);
+      ? (shouldUseExtractedDefault ? values[key] || fallback : cleanFieldDisplayValue(currentValue))
+      : (cleanFieldDisplayValue(currentValue) || (shouldUseExtractedDefault ? values[key] : "") || fallback);
     const cleanValue = ["fit", "scene"].includes(key)
       ? sanitizeUseContextFields({ ...values, [key]: cleanFieldDisplayValue(value) })[key]
       : cleanFieldDisplayValue(value);
@@ -569,21 +668,21 @@ function renderFields(reset = false) {
         ? formatMultilineSellingPoints(cleanValue)
         : cleanValue;
     const fieldControl = key === "scene"
-      ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="One English use scene per line">${escapeHtml(displayValue)}</textarea>
+      ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="${NO_REFERENCE_SCENE_MESSAGE}">${escapeHtml(displayValue)}</textarea>
         <button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补全 3–5 个英文场景</button>
-        <p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">保留合适的已有场景，并结合网络资料补充、去重。</p>`
+        <p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">通过本地服务联网查找；查不到时不使用兜底场景。</p>`
       : multilineFieldKeys.has(key)
         ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
         : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
     return `
       <div>
-        <label for="field-${key}">${label}</label>
+        <label for="field-${key}">${displayLabel}</label>
         ${fieldControl}
       </div>
     `;
   }).join("");
   const fieldControls = renderFieldControls(fields, true);
-  const manualFieldControls = renderFieldControls(manualFields, false);
+  const manualFieldControls = renderFieldControls(manualFields, (key) => extractedManualFieldKeys.has(key));
   fieldList.innerHTML = `${fieldControls}
     <div id="sellingPointApplyWrap" class="selling-point-apply-wrap${sellingPointDraftDirty ? "" : " is-hidden"}">
       <button id="applySellingPoints" type="button" class="ghost selling-point-apply">确认生成卖点图提示词</button>
@@ -632,6 +731,7 @@ function cleanTokenValue(value) {
 
 function cleanFieldDisplayValue(value) {
   const raw = String(value || "").trim();
+  if (raw === NO_REFERENCE_SCENE_MESSAGE) return "";
   if (/^\[[A-Z0-9_ ]+\]$/i.test(raw)) return "";
   const clean = cleanTokenValue(raw);
   return isCodeLikeValue(clean) || isInvalidParameterValue(clean) ? "" : clean;
@@ -695,7 +795,9 @@ function hasTokenContent(value) {
 function productParameterRows() {
   const groups = new Map();
   const selectedId = selectedSku()?.id;
-  currentProducts().forEach((sku) => {
+  // This panel sits below the current SKU selector, so it must never mix
+  // sibling/parent products into the selected product's parameter view.
+  currentProducts().filter((sku) => sku.id === selectedId).forEach((sku) => {
     const isSelected = sku.id === selectedId;
     const values = sku.id === selectedId ? { ...valueMap(sku), ...currentFields() } : valueMap(sku);
     const groupKey = sku.groupKey || sku.sizeCode || sku.shape || sku.id;
@@ -955,6 +1057,7 @@ function handleFieldInput(event) {
   const key = event.currentTarget?.dataset?.key;
   const isSellingPointField = sellingPointFieldKeys.has(key);
   if (key === "scene") sceneInputRevision += 1;
+  if (isSellingPointField) sellingPointInputRevision += 1;
   if (key) {
     fieldOverrides[key] = event.currentTarget.value;
     const skuId = selectedSku()?.id || "";
@@ -1038,19 +1141,7 @@ function renderSourceSummary() {
 }
 
 function dimensionLabelForData(data, index) {
-  const context = [
-    data.productName,
-    data.singleSpec,
-    data.specList,
-    data.dimensionList,
-    data.structure,
-    data.scene,
-    data.detailParameter,
-  ].filter(Boolean).join(" ");
-  if (/umbrella|伞|canopy|folded|open diameter|open height|rain|sun shade/i.test(context)) {
-    return ["", "Folded Size", "Open Diameter", "Open Height"][index] || `Dimension ${index}`;
-  }
-  return ["", "Top Width", "Side Length", "Bottom Width"][index] || `Dimension ${index}`;
+  return `Dimension ${index}`;
 }
 
 function buildDimensionListFromFields(data) {
@@ -1061,6 +1152,17 @@ function buildDimensionListFromFields(data) {
     data.weight && `Weight: ${cleanTokenValue(data.weight)}`,
   ].filter(Boolean);
   return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
+}
+
+function mergeDimensionListsKeepingFieldEdits(fieldList, sourceList, context = "") {
+  const primary = dimensionListItems(fieldList, context);
+  const secondary = dimensionListItems(sourceList, context);
+  const primaryKeys = new Set(primary.map((item) => canonicalDimensionKey(item, context)));
+  const merged = [
+    ...primary,
+    ...secondary.filter((item) => !primaryKeys.has(canonicalDimensionKey(item, context))),
+  ];
+  return merged.length ? `[VERIFIED_DIMENSIONS: ${uniquePromptItems(merged).join("; ")}]` : "";
 }
 
 function currentPromptData(sku) {
@@ -1103,8 +1205,12 @@ function currentPromptData(sku) {
   data.productName = productName;
   data.packagingCount = ensureParameterToken("PRODUCT_COUNT_OR_SET", pack);
   data.singleSpec = `[CURRENT_PRODUCT_OPTION: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
-  data.bundleComponents = base.bundleComponents || sku.bundleComponents || "";
-  data.dimensionList = buildDimensionListFromFields(data);
+  data.bundleComponents = bundleComponentPromptText(bundleStateForSku(sku)) || base.bundleComponents || sku.bundleComponents || "";
+  data.dimensionList = mergeDimensionListsKeepingFieldEdits(
+    buildDimensionListFromFields(data),
+    base.dimensionList || sku.dimensionList || "",
+    [data.productName, data.structure, data.detailParameter].filter(Boolean).join(" "),
+  );
   data.specList = `[SPEC_LIST: ${[productSpec, optionSpec !== productSpec ? optionSpec : "", cupRange, pack, data.material, data.dimensionList].filter(Boolean).join(" / ")}]`;
   return data;
 }
@@ -1137,14 +1243,14 @@ function normalizeImageUrl(value) {
 
 function imageInfoKeywordScore(text) {
   const source = String(text || "");
-  const keywordMatches = source.match(/产品参数|产品信息|产品详情|详细资料|品名|克重|尺码|尺寸|长|宽|高|直径|半径|收纳|折叠|展开|面料|材质|材料|工艺|特殊工艺|厚薄|弹力|拉力|阻力|抗拉|防断|不断裂|不惧断裂|不变形|耐用|全身|针数|柔软|规格|型号|重量|容量|PRODUCT\s*NAME|GRAM\s*WEIGHT|SIZE|MATERIAL|TECHNOLOGY|DETAIL|PARAMETER|diameter|folded|compact|portable|umbrella|stretch|resistance|fracture|tear|durable/gi);
+  const keywordMatches = source.match(/产品参数|产品信息|产品详情|产品说明|详细资料|说明|品名|克重|尺码|尺寸|长|宽|高|直径|半径|收纳|折叠|展开|面料|材质|材料|工艺|特殊工艺|厚薄|弹力|拉力|阻力|抗拉|防断|不断裂|不惧断裂|不变形|耐用|全身|针数|柔软|规格|型号|重量|容量|PRODUCT\s*NAME|GRAM\s*WEIGHT|SIZE|MATERIAL|TECHNOLOGY|DETAIL|PARAMETER|description|specification|diameter|folded|compact|portable|umbrella|stretch|resistance|fracture|tear|durable/gi);
   const largeDetailMatches = source.match(/详情|描述|detail|desc|offer-detail|product-description|商品介绍|产品介绍/gi);
   return (keywordMatches ? keywordMatches.length * 8 : 0) + (largeDetailMatches ? largeDetailMatches.length * 5 : 0);
 }
 
 function productDetailLabelScore(text) {
   const source = String(text || "");
-  const labels = source.match(/品\s*名|PRODUCT\s*NAME|克\s*重|GRAM\s*WEIGHT|尺\s*码|SIZE|尺\s*寸|规\s*格|重\s*量|直\s*径|收\s*纳|折\s*叠|展\s*开|伞\s*面|面\s*料|MATERIAL|工\s*艺|TECHNOLOGY|特\s*殊\s*工\s*艺|厚\s*薄|弹\s*力|拉\s*力|阻\s*力|抗\s*拉|防\s*断|不\s*断\s*裂|不\s*变\s*形|耐\s*用|针\s*数|柔\s*软|产品参数|产品信息|详细资料|规格参数|diameter|folded|compact|portable|stretch|resistance|durable/gi);
+  const labels = source.match(/品\s*名|PRODUCT\s*NAME|克\s*重|GRAM\s*WEIGHT|尺\s*码|SIZE|尺\s*寸|规\s*格|重\s*量|直\s*径|收\s*纳|折\s*叠|展\s*开|伞\s*面|面\s*料|MATERIAL|工\s*艺|TECHNOLOGY|特\s*殊\s*工\s*艺|厚\s*薄|弹\s*力|拉\s*力|阻\s*力|抗\s*拉|防\s*断|不\s*断\s*裂|不\s*变\s*形|耐\s*用|针\s*数|柔\s*软|产品参数|产品信息|产品说明|详细资料|规格参数|description|specification|diameter|folded|compact|portable|stretch|resistance|durable/gi);
   return labels ? labels.length : 0;
 }
 
@@ -1157,12 +1263,18 @@ function isCommerceOrRecommendationText(text) {
 }
 
 function productFeatureTextScore(text) {
-  const matches = String(text || "").match(/防滑|硅胶|点胶|抓地|弹力|拉力|阻力|训练|拉伸|抗拉|防断|断裂|不断裂|不惧断裂|不变形|变形|耐用|全身|需求|高弹|柔软|透气|棉|聚酯|氨纶|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|防晒|遮阳|防雨|防风|伞骨|晴雨|材质|面料|工艺|厚薄|针数|袜|鞋|服装|衣服|裤|裙|箱包|背包|手提包|杯|滤纸|包装纸|包花纸|花束|鲜花包装|花艺|礼品包装|伞|cotton|spandex|polyester|silicone|tpe|resistance|exercise\s+band|workout\s+band|stretch|fracture|tear|durable|grip|anti.?slip|non.?slip|size|material|weight|texture|umbrella|compact|portable|uv|windproof|waterproof|wrapping\s+paper|flower\s+wrapping|bouquet|floral\s+wrap|gift\s+wrap/gi);
+  const matches = String(text || "").match(/防滑|硅胶|点胶|抓地|弹力|拉力|阻力|训练|拉伸|抗拉|防断|断裂|不断裂|不惧断裂|不变形|变形|耐用|全身|需求|高弹|柔软|透气|棉|聚酯|氨纶|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|防晒|遮阳|防雨|防风|伞骨|晴雨|材质|面料|工艺|厚薄|针数|袜|鞋|服装|衣服|裤|裙|箱包|背包|手提包|杯|滤纸|包装纸|包花纸|花束|鲜花包装|花艺|礼品包装|伞|胶带|手胶|吸汗带|龙骨胶|防滑带|羽毛球拍|网球拍|网拍|鱼竿|cotton|spandex|polyester|silicone|tpe|resistance|exercise\s+band|workout\s+band|stretch|fracture|tear|durable|grip|overgrip|handle\s+wrap|anti.?slip|non.?slip|size|material|weight|texture|umbrella|compact|portable|uv|windproof|waterproof|wrapping\s+paper|flower\s+wrapping|bouquet|floral\s+wrap|gift\s+wrap/gi);
   return matches ? matches.length : 0;
 }
 
 function isProductInfoImageText(text) {
   return imageInfoKeywordScore(text) > 0 || productFeatureTextScore(text) > 0;
+}
+
+function isProductParameterImageCandidate(candidate) {
+  const context = typeof candidate === "string" ? "" : candidate?.context || "";
+  if (!context || /开票|发票|invoice|receipt|推荐|热卖|掌柜|店铺|价格|起批/i.test(context)) return false;
+  return /(?:产品|商品|手胶|胶带|吸汗带|龙骨胶|防滑带|grip|tape|overgrip|handle\s+wrap)[\s\S]{0,16}(?:说明|参数|规格|尺寸|详情|info|detail|specification|size)|(?:说明|参数|规格|尺寸|详情|info|detail|specification|size)[\s\S]{0,16}(?:产品|商品|手胶|胶带|吸汗带|龙骨胶|防滑带|grip|tape|overgrip|handle\s+wrap)/i.test(context);
 }
 
 function ocrCompactText(text) {
@@ -1291,6 +1403,128 @@ function extractImageUrlsFromHtml(html, sourceName = "html") {
   return urls;
 }
 
+function extractCollectedImageCandidates(text) {
+  const source = String(text || "");
+  const occurrenceMap = new Map();
+  const urlPattern = /https?:\/\/[^"'<>\s]+/gi;
+  let occurrenceIndex = 0;
+  for (const match of source.matchAll(urlPattern)) {
+    const rawUrl = String(match[0] || "").replace(/[)\]}>.,;]+$/g, "");
+    const normalizedUrl = normalizeImageUrl(rawUrl);
+    let url = normalizedUrl;
+    try {
+      const parsedUrl = new URL(normalizedUrl);
+      parsedUrl.searchParams.delete("__r__");
+      url = parsedUrl.toString();
+    } catch {
+      // Keep the normalized URL when URL parsing is unavailable.
+    }
+    if (!url || !isSupportedProductImageUrl(url, { source: "collector" })) continue;
+    if (isSmallOrThumbnailImageUrl(url)) continue;
+    if (/(?:logo|icon|avatar|sprite|loading|blank|placeholder|qrcode|qr-code)/i.test(url)) continue;
+    const existing = occurrenceMap.get(url);
+    if (existing) {
+      existing.occurrenceCount += 1;
+      existing.lastOccurrenceIndex = occurrenceIndex;
+    } else {
+      occurrenceMap.set(url, {
+        url,
+        source: "collector",
+        context: "",
+        index: occurrenceIndex,
+        firstOccurrenceIndex: occurrenceIndex,
+        lastOccurrenceIndex: occurrenceIndex,
+        occurrenceCount: 1,
+        score: 0,
+      });
+    }
+    occurrenceIndex += 1;
+  }
+  return Array.from(occurrenceMap.values());
+}
+
+function centeredCandidateWindow(candidates, centerRatio, limit) {
+  if (!candidates.length || limit <= 0) return [];
+  const size = Math.min(limit, candidates.length);
+  const center = Math.round((candidates.length - 1) * centerRatio);
+  const start = Math.max(0, Math.min(candidates.length - size, center - Math.floor(size / 2)));
+  return candidates.slice(start, start + size);
+}
+
+function evenlySpacedImageCandidates(candidates, limit = MAX_REFERENCE_CANDIDATES) {
+  const values = uniqueByUrl(candidates);
+  if (values.length <= limit) return values;
+  const selected = [];
+  const selectedIndexes = new Set();
+  for (let slot = 0; slot < limit; slot += 1) {
+    const index = Math.round(slot * (values.length - 1) / Math.max(limit - 1, 1));
+    if (selectedIndexes.has(index)) continue;
+    selectedIndexes.add(index);
+    selected.push(values[index]);
+  }
+  // Rounding can theoretically collide; fill any gap from source order.
+  values.forEach((candidate, index) => {
+    if (selected.length >= limit || selectedIndexes.has(index)) return;
+    selectedIndexes.add(index);
+    selected.push(candidate);
+  });
+  return selected;
+}
+
+function referencePickerImageCandidates(collectedCandidates, fallbackCandidates) {
+  const collected = uniqueByUrl(collectedCandidates)
+    .filter(isLikelyProductDetailImageCandidate)
+    .sort((left, right) => (left.firstOccurrenceIndex || 0) - (right.firstOccurrenceIndex || 0));
+  const sourcePool = collected.length ? collected : uniqueByUrl(fallbackCandidates);
+  return evenlySpacedImageCandidates(sourcePool, MAX_REFERENCE_CANDIDATES);
+}
+
+function collectedImageCandidatesForLocalOcr(collectedCandidates, ...fallbackGroups) {
+  const collected = uniqueByUrl(collectedCandidates)
+    .filter(isLikelyProductDetailImageCandidate)
+    .sort((left, right) => (left.firstOccurrenceIndex || 0) - (right.firstOccurrenceIndex || 0));
+  if (!collected.length) return uniqueImageCandidates(...fallbackGroups);
+
+  const repeatedMain = collected.filter((candidate) => (candidate.occurrenceCount || 1) > 1);
+  const lastMainFirstIndex = repeatedMain.reduce(
+    (maximum, candidate) => Math.max(maximum, candidate.firstOccurrenceIndex || 0),
+    -1,
+  );
+  const detailPool = collected
+    .filter((candidate) => (candidate.occurrenceCount || 1) === 1 && (candidate.firstOccurrenceIndex || 0) > lastMainFirstIndex);
+  const detailTail = detailPool.slice(-COLLECTOR_DETAIL_TAIL_LIMIT);
+  const mainPool = repeatedMain.length >= 12 ? repeatedMain : collected.slice(0, Math.ceil(collected.length * 0.65));
+  const mainLate = mainPool.slice(-COLLECTOR_MAIN_LATE_LIMIT);
+  const mainMiddle = centeredCandidateWindow(mainPool, 0.58, COLLECTOR_MAIN_MIDDLE_LIMIT);
+  const fallback = uniqueImageCandidates(...fallbackGroups);
+
+  return uniqueByUrl([
+    ...mainLate.map((candidate, index) => ({ ...candidate, collectorSection: "main-late", collectorSectionIndex: index })),
+    ...mainMiddle.map((candidate, index) => ({ ...candidate, collectorSection: "main-middle", collectorSectionIndex: index })),
+    ...detailTail.map((candidate, index) => ({ ...candidate, collectorSection: "detail-tail", collectorSectionIndex: index })),
+    ...fallback,
+    ...collected,
+  ]).slice(0, OCR_IMAGE_LIMIT);
+}
+
+function balancedVisionImageCandidates(candidates) {
+  const values = uniqueByUrl(candidates);
+  const mainLate = values.filter((candidate) => candidate?.collectorSection === "main-late").slice(0, 3);
+  const mainMiddlePool = values.filter((candidate) => candidate?.collectorSection === "main-middle");
+  const mainMiddle = mainMiddlePool.slice(Math.min(1, Math.max(0, mainMiddlePool.length - 3)), 4);
+  const detailTail = values.filter((candidate) => candidate?.collectorSection === "detail-tail").slice(0, 6);
+  const parameterImages = values.filter(isProductParameterImageCandidate);
+  const detailImages = values.filter((candidate) => candidate?.source === "detail");
+  return uniqueByUrl([
+    ...mainLate,
+    ...mainMiddle,
+    ...detailTail,
+    ...parameterImages,
+    ...detailImages,
+    ...values,
+  ]).slice(0, 12);
+}
+
 function extractDetailUrlsFromHtml(html) {
   const urls = [];
   const seen = new Set();
@@ -1324,7 +1558,7 @@ async function fetchDetailHtml(detailUrls, onProgress) {
     const fetchStartedAt = performance.now();
     onProgress?.(`正在读取 1688 详情描述片段... ${index + 1}/${detailUrls.length}`);
     try {
-      const response = await withTimeout(fetch(url, { credentials: "omit" }), DETAIL_FETCH_TIMEOUT_MS, "Detail fetch timed out");
+      const response = await withTimeout(fetch(sourceProxyUrl(url), { credentials: "omit" }), DETAIL_FETCH_TIMEOUT_MS, "Detail fetch timed out");
       if (!response.ok) {
         onProgress?.(`1688 详情描述片段 ${index + 1}/${detailUrls.length} 读取失败：HTTP ${response.status}，耗时 ${elapsedText(fetchStartedAt)}。`);
         continue;
@@ -1345,7 +1579,7 @@ function imageCandidateUrl(candidate) {
 
 function imageCandidateScore(candidate, fallbackIndex = 0) {
   if (typeof candidate === "string") return fallbackIndex;
-  const sourceScore = candidate.source === "detail" ? 100 : candidate.source === "html" ? 10 : 0;
+  const sourceScore = candidate.source === "detail" ? 100 : candidate.source === "collector" ? 25 : candidate.source === "html" ? 10 : 0;
   const context = candidate.context || "";
   const productInfoBoost = productDetailLabelScore(context) * 20 + (isProductInfoImageText(context) ? 12 : 0);
   const factoryPenalty = isFactoryOrServiceImageText(context) ? 80 : 0;
@@ -1365,6 +1599,9 @@ function uniqueImageCandidates(...groups) {
     seen.add(normalized);
     candidates.push({ ...normalizedCandidate, score: imageCandidateScore(normalizedCandidate, index) });
   });
+  const parameterCandidates = candidates
+    .filter(isProductParameterImageCandidate)
+    .sort((left, right) => right.score - left.score);
   const detailCandidates = candidates
     .filter((candidate) => candidate.source === "detail")
     .sort((left, right) => right.score - left.score);
@@ -1376,9 +1613,11 @@ function uniqueImageCandidates(...groups) {
     .sort((left, right) => right.score - left.score)
     .slice(0, OCR_FALLBACK_IMAGE_LIMIT);
   return uniqueByUrl([
-    ...detailCandidates,
+    ...parameterCandidates,
+    ...detailCandidates.slice(0, 4),
     ...keywordCandidates,
     ...fallbackCandidates,
+    ...detailCandidates.slice(4),
   ]).slice(0, OCR_IMAGE_LIMIT);
 }
 
@@ -1429,6 +1668,11 @@ function isUsefulOcrText(text, meta = {}) {
 function hasEnoughProductDetail(text) {
   const attrs = extractProductDetailAttributes(text);
   return productDetailLabelScore(text) >= 3 || Boolean(attrs.Material && (attrs.Size || attrs.Weight || attrs.Technology || attrs.SpecialCraft));
+}
+
+function hasExplicitProductDimensionEvidence(text) {
+  const source = String(text || "");
+  return /(?:产\s*品\s*规\s*格|规\s*格|产\s*品\s*尺\s*寸|尺\s*寸|product\s*(?:size|dimensions?)|dimensions?)\s*[:：]?[^\n]{0,24}\d+(?:\.\d+)?\s*[x×*]\s*\d+(?:\.\d+)?(?:\s*[x×*]\s*\d+(?:\.\d+)?)?\s*[（(]?\s*(?:mm|cm|in|毫米|厘米|英寸)\s*[）)]?/i.test(source);
 }
 
 function compactOcrKeyText(text) {
@@ -2305,11 +2549,11 @@ function descriptiveYogaSockProductName(value, context = "") {
 }
 
 function translateProductTitleWords(value, context = "") {
-  const descriptiveName = descriptiveYogaSockProductName(value, context);
-  if (descriptiveName) return descriptiveName;
   let text = normalizeSourceProductTitle(value);
   if (!text) return "";
   const phraseMap = [
+    [/双色打孔龙骨手胶|打孔龙骨手胶|龙骨手胶|龙骨胶/gi, " perforated ribbed racket overgrip "],
+    [/羽毛球拍手胶|网球拍手胶|羽毛球手胶|网球手胶|吸汗带|手胶/gi, " racket overgrip "],
     [/滴漏式手冲咖啡挂耳|手冲咖啡滤纸|咖啡滤纸|滤纸/gi, " coffee filter "],
     [/接粉环|磁吸接粉环/gi, " dosing funnel "],
     [/粉碗/gi, " filter basket "],
@@ -2419,20 +2663,10 @@ function extractSupplierSkuOptions(text) {
   const packInfoPattern = /\{[^{}]*(?:"sku2"\s*:\s*"([^"]*)"[^{}]*)?"sku1"\s*:\s*"([^"]*)"[^{}]*"length"\s*:\s*([0-9.]+)[^{}]*"width"\s*:\s*([0-9.]+)[^{}]*"weight"\s*:\s*([0-9.]+)[^{}]*"height"\s*:\s*([0-9.]+)/gi;
   for (const match of decoded.matchAll(packInfoPattern)) {
     const parsed = parseSupplierSkuText(match[2]);
-    const length = Number(match[3]);
-    const width = Number(match[4]);
-    const weight = Number(match[5]);
-    const height = Number(match[6]);
     addSupplierSkuOption(options, seen, {
       ...parsed,
       size: match[1] || parsed.size || "",
-      dims: {
-        topWidth: parsed.dims?.topWidth || (length ? `${length} cm` : ""),
-        sideLength: parsed.dims?.sideLength || (width ? `${width} cm` : ""),
-        bottomWidth: parsed.dims?.bottomWidth || (height ? `${height} cm` : ""),
-        weight: weight ? `${weight} g` : "",
-        source: parsed.dims?.source || "1688 SKU package information",
-      },
+      dims: parsed.dims || {},
     });
   }
 
@@ -2500,6 +2734,13 @@ function loadImageMeta(url) {
   });
 }
 
+function sourceProxyUrl(url) {
+  const source = String(url || "").trim();
+  return /^https?:\/\//i.test(source)
+    ? `/api/source-proxy?url=${encodeURIComponent(source)}`
+    : source;
+}
+
 function loadImageForCanvas(url) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -2511,24 +2752,25 @@ function loadImageForCanvas(url) {
 }
 
 async function imageUrlToOcrInput(url) {
+  const readableUrl = sourceProxyUrl(url);
   try {
-    const image = await loadImageForCanvas(url);
+    const image = await loadImageForCanvas(readableUrl);
     const width = image.naturalWidth || image.width || 0;
     const height = image.naturalHeight || image.height || 0;
-    if (!imageHasEnoughReadableSize({ width, height })) return { input: url, size: { ok: false, width, height } };
+    if (!imageHasEnoughReadableSize({ width, height })) return { input: readableUrl, size: { ok: false, width, height } };
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d");
-    if (!context) return { input: url, size: { ok: true, width, height } };
+    if (!context) return { input: readableUrl, size: { ok: true, width, height } };
     context.drawImage(image, 0, 0, width, height);
     return {
       input: canvas.toDataURL("image/png"),
       size: { ok: true, width, height },
     };
   } catch {
-    const size = await loadImageMeta(url);
-    return { input: url, size };
+    const size = await loadImageMeta(readableUrl);
+    return { input: readableUrl, size };
   }
 }
 
@@ -2568,7 +2810,7 @@ async function ocrImageUrls(imageUrls, onProgress) {
     const url = imageCandidateUrl(candidate);
     if (!url) continue;
     attemptedCount += 1;
-    const sourceLabel = candidate.source === "detail" ? "详情描述图" : "页面图片";
+    const sourceLabel = candidate.source === "detail" ? "详情描述图" : candidate.source === "collector" ? "采集清单图片" : "页面图片";
     const progressPrefix = `正在识别 1688 ${sourceLabel}文字... ${index + 1}/${imageUrls.length}`;
     let loadStartedAt = performance.now();
     let loadElapsed = "";
@@ -2595,7 +2837,11 @@ async function ocrImageUrls(imageUrls, onProgress) {
         texts.push(text);
         if (isProductSellingPointText(text)) sellingPointCount += 1;
         onProgress?.(`${progressPrefix}，图片加载 ${loadElapsed} / OCR ${ocrElapsed}，已提取有效文字。`);
-        if (candidate.source !== "detail" && hasEnoughProductDetail(texts.join("\n"))) break;
+        const combinedOcrText = texts.join("\n");
+        const collectorDetailCovered = candidate.source !== "collector"
+          || (candidate.collectorSection === "detail-tail" && (candidate.collectorSectionIndex || 0) >= 5);
+        if (collectorDetailCovered && hasExplicitProductDimensionEvidence(combinedOcrText) && sellingPointCount >= 2) break;
+        if (collectorDetailCovered && texts.length >= 8 && hasEnoughProductDetail(combinedOcrText)) break;
       } else {
         onProgress?.(`${progressPrefix}，图片加载 ${loadElapsed} / OCR ${ocrElapsed}，未提取到有效产品文字。`);
       }
@@ -2661,8 +2907,263 @@ function productAttributeLinesFromSource(attributeSource) {
   ));
 }
 
-async function extractSupplierSourceText(html, onProgress) {
-  if (!html) {
+function productTitleFromSupplierHtml(html, fallbackText = "") {
+  const title = cleanHtmlText((String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "");
+  return title || extractFirstMatch(fallbackText, [/PRODUCT_TITLE:\s*([^\n]+)/i]) || "";
+}
+
+async function fetchLocalProductDimensionsProxy(facts, imageCandidates, onProgress, timeoutMs = 55000) {
+  const imageUrls = uniqueByUrl(imageCandidates)
+    .map(imageCandidateUrl)
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!imageUrls.length) return null;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  onProgress?.("OCR 未读到明确商品尺寸，正在用本地豆包视觉代理读取参数图...");
+  try {
+    const response = await fetch("/api/product-dimensions", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        productName: facts.productName || "",
+        selectedSpec: facts.selectedSpec || "",
+        material: facts.material || "",
+        structure: facts.structure || "",
+        detailParameter: facts.detailParameter || "",
+        imageUrls,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch {
+    onProgress?.("本地豆包视觉代理未返回可用商品尺寸，尺寸字段保持为空。");
+    return null;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function fetchLocalProductAnalysisProxy(facts, imageCandidates, onProgress, timeoutMs = 120000) {
+  const imageUrls = uniqueByUrl(imageCandidates)
+    .map(imageCandidateUrl)
+    .filter(Boolean)
+    .slice(0, 12);
+  if (!imageUrls.length) return null;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  onProgress?.("正在用豆包识图整理当前商品的材质、展开尺寸、工艺和卖点...");
+  try {
+    const response = await fetch("/api/product-analysis", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        productName: facts.productName || "",
+        selectedSpec: facts.selectedSpec || "",
+        material: facts.material || "",
+        structure: facts.structure || "",
+        detailParameter: facts.detailParameter || "",
+        localEvidence: facts.localEvidence || "",
+        imageUrls,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    const evidenceCount = (result?.product_name?.value ? 1 : 0)
+      + (Array.isArray(result?.attributes) ? result.attributes.length : 0)
+      + (Array.isArray(result?.dimensions) ? result.dimensions.length : 0)
+      + (Array.isArray(result?.selling_points) ? result.selling_points.length : 0)
+      + (Array.isArray(result?.use_scenes) ? result.use_scenes.length : 0);
+    onProgress?.(evidenceCount
+      ? `豆包识图完成：整理出 ${evidenceCount} 项有图片证据的商品信息。`
+      : (result?.message || "豆包没有从当前详情图中读到可确认的补充信息，未填写空缺字段。"));
+    return result;
+  } catch (error) {
+    onProgress?.(`豆包识图未返回可用结果：${error.message || "请求失败"}。已保留本地分析结果。`);
+    return null;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function fetchSkuReferenceImageMapping(products, imageUrls, onProgress, timeoutMs = 150000) {
+  const urls = Array.from(new Set((imageUrls || []).filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES);
+  if (!products.length || !urls.length) return { mappings: {}, unmatched: urls, errors: ["No SKU or image candidates"] };
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const skuPayload = products.map((sku) => ({
+    id: sku.id,
+    productName: sku.productName || sku.baseProductName || sku.label || "",
+    option: sku.outputSizeCode || sku.sizeCode || sku.shape || sku.label || "",
+    color: sku.colorEnglish || sku.color || sku.displayColor || "",
+    pack: sku.packComposition || sku.pack || sku.productUnitCount || "",
+    structure: sku.structure || "",
+  }));
+  const batches = [];
+  for (let index = 0; index < urls.length; index += REFERENCE_CLASSIFIER_BATCH_SIZE) {
+    batches.push(urls.slice(index, index + REFERENCE_CLASSIFIER_BATCH_SIZE));
+  }
+  onProgress?.(`正在让豆包按商品身份筛选 ${urls.length} 张参考图（${batches.length} 批）...`);
+  try {
+    const mappings = Object.fromEntries(products.map((sku) => [sku.id, []]));
+    const unmatched = [];
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+      onProgress?.(`正在按商品身份筛选参考图... ${batchIndex + 1}/${batches.length}`);
+      const response = await fetch("/api/reference-image-map", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ skus: skuPayload, imageUrls: batches[batchIndex] }),
+        signal: controller.signal,
+      });
+      const result = await response.json();
+      const batchMatchedCount = Object.values(result?.mappings || {}).reduce(
+        (sum, values) => sum + (Array.isArray(values) ? values.length : 0),
+        0,
+      );
+      if (!response.ok || (result?.errors?.length && !batchMatchedCount)) {
+        throw new Error((result?.errors || []).join("；") || `HTTP ${response.status}`);
+      }
+      products.forEach((sku) => {
+        const mapped = Array.isArray(result?.mappings?.[sku.id]) ? result.mappings[sku.id] : [];
+        mappings[sku.id].push(...mapped);
+      });
+      if (Array.isArray(result?.unmatched)) unmatched.push(...result.unmatched);
+    }
+    Object.keys(mappings).forEach((skuId) => {
+      mappings[skuId] = Array.from(new Set(mappings[skuId])).slice(0, MAX_REFERENCE_CANDIDATES);
+    });
+    const matchedCount = Object.values(mappings).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0);
+    onProgress?.(`SKU 参考图筛选完成：保留 ${matchedCount} 个同款/同类匹配，${unmatched.length} 张明显无关图片已排除。`);
+    return { mappings, unmatched: Array.from(new Set(unmatched)), errors: [] };
+  } catch (error) {
+    onProgress?.(`SKU 参考图匹配失败：${error?.message || "请求失败"}。为防止错配，本次不自动分配参考图。`);
+    return { mappings: {}, unmatched: urls, errors: [error?.message || "Reference image mapping failed"] };
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function productDimensionEvidenceText(result, context = "") {
+  const dimensions = Array.isArray(result?.dimensions)
+    ? result.dimensions.map((item) => cleanTokenValue(item)).filter(Boolean)
+    : [];
+  const semantic = semanticDimensionItems(dimensions, context);
+  return semantic.length ? `[VERIFIED_DIMENSIONS: ${semantic.join("; ")}]` : "";
+}
+
+function productAnalysisEvidenceText(result, context = "") {
+  if (!result) return "";
+  const productName = cleanTokenValue(result?.product_name?.value);
+  const attributeLines = (Array.isArray(result.attributes) ? result.attributes : [])
+    .map((item) => {
+      const field = cleanTokenValue(item?.field);
+      const value = cleanTokenValue(item?.value);
+      return field && value ? `PRODUCT_ATTRIBUTE: ${field}=${value}` : "";
+    })
+    .filter(Boolean);
+  const visionAttributeLines = (Array.isArray(result.attributes) ? result.attributes : [])
+    .map((item) => {
+      const field = cleanTokenValue(item?.field);
+      const value = cleanTokenValue(item?.value);
+      return field && value ? `DOUBAO_VISION_ATTRIBUTE: ${field}=${value}` : "";
+    })
+    .filter(Boolean);
+  const visionDimensionLines = (Array.isArray(result.dimensions) ? result.dimensions : [])
+    .map((item) => cleanTokenValue(item))
+    .filter(Boolean)
+    .map((dimension) => `DOUBAO_VISION_DIMENSION: ${dimension}`);
+  const sellingPointLines = (Array.isArray(result.selling_points) ? result.selling_points : [])
+    .map((item) => cleanTokenValue(typeof item === "string" ? item : item?.claim))
+    .filter(Boolean)
+    .map((claim) => `DOUBAO_VISION_SELLING_POINT: ${claim}`);
+  const sceneLines = (Array.isArray(result.use_scenes) ? result.use_scenes : [])
+    .map((item) => cleanTokenValue(typeof item === "string" ? item : item?.scene))
+    .filter(Boolean)
+    .map((scene) => `DOUBAO_VISION_USE_SCENE: ${scene}`);
+  const hasEvidence = Boolean(productName || attributeLines.length || sellingPointLines.length || sceneLines.length || result.dimensions?.length);
+  return [
+    hasEvidence ? "DOUBAO_VISION_VERIFIED: true" : "",
+    productName ? `DOUBAO_VISION_PRODUCT_NAME: ${productName}` : "",
+    ...attributeLines,
+    ...visionAttributeLines,
+    productDimensionEvidenceText(result, context),
+    ...visionDimensionLines,
+    ...sellingPointLines,
+    ...sceneLines,
+  ].filter(Boolean).join("\n");
+}
+
+function productAnalysisSellingPointVisualEvidence(result) {
+  const points = Array.isArray(result?.selling_points) ? result.selling_points : [];
+  return points.map((item) => ({
+    claim: cleanFieldDisplayValue(item?.claim || ""),
+    evidence: cleanFieldDisplayValue(item?.evidence || ""),
+    imageUrl: cleanFieldDisplayValue(item?.image_url || ""),
+  })).filter((item) => item.claim && item.evidence && /^https?:\/\//i.test(item.imageUrl));
+}
+
+function sellingPointEvidenceSubject(value) {
+  const text = String(value || "").toLowerCase();
+  if (/(?:dispenser|holder|container|case|lid|cap|twist|lock|loop|carabiner|挂钩|旋转|开合|顶盖|防松|分配器|外壳)/i.test(text)) return "dispenser";
+  if (/(?:poop\s*bags?|pet\s*waste\s*bags?|refill|roll|leak|tear|thick|bag\s*film|垃圾袋|拾便袋|袋卷|加厚|不漏|不破|易撕)/i.test(text)) return "bags";
+  return "";
+}
+
+function amazonSkuEvidenceSubject(sku = {}) {
+  const text = [sku.amazonTitle, sku.productName, sku.baseProductName, sku.shape, sku.label, sku.model]
+    .filter(Boolean).join(" ");
+  if (/(?:set|bundle|kit|套装|组合)/i.test(text)) return "bundle";
+  return sellingPointEvidenceSubject(text);
+}
+
+function applyVisualEvidenceToMatchingAmazonSkus(products, evidenceItems) {
+  const evidence = Array.isArray(evidenceItems) ? evidenceItems : [];
+  if (!evidence.length) return products;
+  return products.map((product) => {
+    const subject = amazonSkuEvidenceSubject(product);
+    // Unknown is intentionally left empty: source facts must not leak into a
+    // SKU merely because it lives in the same supplier page.
+    const matches = subject === "bundle"
+      ? evidence
+      : subject
+        ? evidence.filter((item) => sellingPointEvidenceSubject(`${item.claim} ${item.evidence}`) === subject)
+        : [];
+    if (!matches.length) return product;
+    const claims = uniqueSellingPoints(matches.map((item) => item.claim), 4);
+    const groups = distributedSellingPointGroups(claims, 0, 2, 4);
+    return {
+      ...product,
+      sellingPointVisualEvidence: matches,
+      feature1: product.feature1 || sellingPointGroupText(groups),
+      feature2: product.feature2 || sellingPointGroupText(distributedSellingPointGroups(claims, 1, 2, 4)),
+    };
+  });
+}
+
+function applyVisualEvidenceToBoundSku(products, evidenceItems, boundSkuId) {
+  const evidence = Array.isArray(evidenceItems) ? evidenceItems : [];
+  const claims = uniqueSellingPoints(evidence.map((item) => item.claim), 4);
+  return products.map((product) => {
+    if (product.id !== boundSkuId) return { ...product, sellingPointVisualEvidence: [] };
+    return {
+      ...product,
+      sellingPointVisualEvidence: evidence,
+      feature1: product.feature1 || sellingPointGroupText(distributedSellingPointGroups(claims, 0, 2, 4)),
+      feature2: product.feature2 || sellingPointGroupText(distributedSellingPointGroups(claims, 1, 2, 4)),
+    };
+  });
+}
+
+async function extractSupplierSourceText(html, onProgress, routeId = selectedExtractionRoute, collectedImageText = "") {
+  if (!html && !collectedImageText) {
     return { text: "", imageCount: 0, candidateCount: 0, scannedCount: 0, failedCount: 0, ocrAvailable: false };
   }
 
@@ -2672,26 +3173,57 @@ async function extractSupplierSourceText(html, onProgress) {
   const detailHtml = detailUrls.length ? await fetchDetailHtml(detailUrls, onProgress) : "";
   const htmlImageCandidates = extractImageUrlsFromHtml(html, "html");
   const detailImageCandidates = detailHtml ? extractImageUrlsFromHtml(detailHtml, "detail") : [];
-  const allImageCandidates = [...htmlImageCandidates, ...detailImageCandidates];
-  const imageUrls = uniqueImageCandidates(detailImageCandidates, htmlImageCandidates);
+  const collectedImageCandidates = extractCollectedImageCandidates(collectedImageText);
+  const allImageCandidates = [...collectedImageCandidates, ...htmlImageCandidates, ...detailImageCandidates];
+  const imageUrls = collectedImageCandidates.length
+    ? collectedImageCandidatesForLocalOcr(collectedImageCandidates, detailImageCandidates, htmlImageCandidates)
+    : uniqueImageCandidates(detailImageCandidates, htmlImageCandidates);
   if (!imageUrls.length) {
     const attributeSource = productAttributeSourceText(structuredText);
     const detailAttrLines = productAttributeLinesFromSource(attributeSource);
     return { text: [baseText, structuredText, ...detailAttrLines].filter(Boolean).join("\n"), imageCount: 0, candidateCount: allImageCandidates.length, scannedCount: 0, failedCount: 0, ocrAvailable: false };
   }
 
-  onProgress?.(`已找到 ${allImageCandidates.length} 张 1688 图片，全局筛选后优先识别 ${imageUrls.length} 张疑似产品详情/参数图...`);
+  const collectorStatus = collectedImageCandidates.length ? `采集清单去重后 ${collectedImageCandidates.length} 张，` : "";
+  onProgress?.(`已找到 ${allImageCandidates.length} 条 1688 图片候选，${collectorStatus}直接筛选后识别 ${imageUrls.length} 张参数/卖点重点图...`);
   const ocr = await ocrImageUrls(imageUrls, onProgress);
   const attributeSource = productAttributeSourceText(structuredText, ocr.text);
   const detailAttrLines = productAttributeLinesFromSource(attributeSource);
+  const combinedBeforeVision = [baseText, structuredText, ...detailAttrLines, attributeSource].filter(Boolean).join("\n");
+  const visionImageCandidates = balancedVisionImageCandidates(imageUrls);
+  const pickerImageCandidates = referencePickerImageCandidates(collectedImageCandidates, imageUrls);
+  const analysisResult = routeId === "vision" || routeId === "web"
+    ? await fetchLocalProductAnalysisProxy({
+      productName: productTitleFromSupplierHtml(html, baseText),
+      material: extractProductDetailAttributes(attributeSource).Material || "",
+      structure: extractProductDetailAttributes(attributeSource).Structure || "",
+      detailParameter: extractProductDetailAttributes(attributeSource).DetailFeatures || "",
+      localEvidence: [detailAttrLines.join("\n"), attributeSource].filter(Boolean).join("\n").slice(0, 12000),
+    }, visionImageCandidates, onProgress)
+    : null;
+  const analysisEvidence = productAnalysisEvidenceText(analysisResult, combinedBeforeVision);
   return {
-    text: [baseText, structuredText, ...detailAttrLines, attributeSource && `1688 image OCR text: ${attributeSource}`].filter(Boolean).join("\n"),
+    text: [baseText, structuredText, ...detailAttrLines, analysisEvidence, attributeSource && `1688 image OCR text: ${attributeSource}`].filter(Boolean).join("\n"),
     imageCount: imageUrls.length,
     candidateCount: allImageCandidates.length,
+    collectorCandidateCount: collectedImageCandidates.length,
     scannedCount: ocr.scannedCount,
     failedCount: ocr.failedCount,
     acceptedCount: ocr.acceptedCount,
     sellingPointCount: ocr.sellingPointCount,
+    visionEvidenceCount: (analysisResult?.product_name?.value ? 1 : 0)
+      + (Array.isArray(analysisResult?.attributes) ? analysisResult.attributes.length : 0)
+      + (Array.isArray(analysisResult?.dimensions) ? analysisResult.dimensions.length : 0)
+      + (Array.isArray(analysisResult?.selling_points) ? analysisResult.selling_points.length : 0)
+      + (Array.isArray(analysisResult?.use_scenes) ? analysisResult.use_scenes.length : 0),
+    visionMessage: cleanFieldDisplayValue(analysisResult?.message || ""),
+    visionErrors: Array.isArray(analysisResult?.errors) ? analysisResult.errors.map((error) => cleanFieldDisplayValue(error)).filter(Boolean) : [],
+    sellingPointVisualEvidence: productAnalysisSellingPointVisualEvidence(analysisResult),
+    // Vision deliberately inspects a balanced sample of at most 12 images,
+    // but the human reference picker must retain the full validated source
+    // pool. Otherwise late/early variant photos can disappear merely because
+    // they were not selected for model analysis.
+    referenceImageUrls: pickerImageCandidates.map(imageCandidateUrl).filter(Boolean).slice(0, MAX_REFERENCE_CANDIDATES),
     ocrAvailable: ocr.available,
   };
 }
@@ -2731,12 +3263,12 @@ async function readTextFiles(files, onProgress) {
   return texts.join("\n");
 }
 
-async function readNamedTextFiles(files, onProgress) {
+async function readNamedTextFiles(files, onProgress, kindLabel = "HTML 文件") {
   const fileList = Array.from(files || []);
   const entries = [];
   for (let index = 0; index < fileList.length; index += 1) {
     const file = fileList[index];
-    onProgress?.(`正在读取 HTML 文件... ${index + 1}/${fileList.length}：${file.name}`);
+    onProgress?.(`正在读取${kindLabel}... ${index + 1}/${fileList.length}：${file.name}`);
     const text = await readFileAsText(file);
     if (text) entries.push({ name: file.name, text });
   }
@@ -2761,16 +3293,23 @@ function mergeSupplierSourceResults(results) {
     failedCount: values.reduce((sum, item) => sum + (item.failedCount || 0), 0),
     acceptedCount: values.reduce((sum, item) => sum + (item.acceptedCount || 0), 0),
     sellingPointCount: values.reduce((sum, item) => sum + (item.sellingPointCount || 0), 0),
+    collectorCandidateCount: values.reduce((sum, item) => sum + (item.collectorCandidateCount || 0), 0),
+    visionEvidenceCount: values.reduce((sum, item) => sum + (item.visionEvidenceCount || 0), 0),
+    visionMessage: values.map((item) => cleanFieldDisplayValue(item.visionMessage || "")).filter(Boolean).join("；"),
+    visionErrors: values.flatMap((item) => Array.isArray(item.visionErrors) ? item.visionErrors : []).filter(Boolean),
+    sellingPointVisualEvidence: values.flatMap((item) => Array.isArray(item.sellingPointVisualEvidence) ? item.sellingPointVisualEvidence : []),
+    referenceImageUrls: Array.from(new Set(values.flatMap((item) => Array.isArray(item.referenceImageUrls) ? item.referenceImageUrls : []))).slice(0, MAX_REFERENCE_CANDIDATES),
     ocrAvailable: values.some((item) => item.ocrAvailable),
   };
 }
 
-async function extractSupplierSourcesByFile(entries, onProgress) {
+async function extractSupplierSourcesByFile(entries, onProgress, routeId = selectedExtractionRoute, imageListEntries = []) {
   const results = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
+    const matchingImageList = imageListEntries.length === entries.length ? imageListEntries[index]?.text || "" : "";
     onProgress?.(`正在解析第 ${index + 1}/${entries.length} 个 1688 文件：${entry.name}`);
-    const source = await extractSupplierSourceText(namedHtmlEntryText(entry), onProgress);
+    const source = await extractSupplierSourceText(namedHtmlEntryText(entry), onProgress, routeId, matchingImageList);
     results.push({
       name: entry.name,
       ...source,
@@ -2809,6 +3348,7 @@ function productsFromSupplierFileSources(fileSources) {
       shape: cleanProductDisplayName(product.shape || product.outputSpec || product.spec, productName),
       rawSpec: product.supplierOption?.rawSpec || rawSpecName,
       sourceFile: source.name,
+      sellingPointVisualEvidence: Array.isArray(source.sellingPointVisualEvidence) ? source.sellingPointVisualEvidence : [],
     };
   }).filter(Boolean);
 }
@@ -3180,96 +3720,150 @@ function extractFirstMatch(text, patterns) {
   return "";
 }
 
-function extractDimensions(text) {
-  if (hasUmbrellaDimensionSignal(text)) {
-    return extractUmbrellaDimensions(text);
+function isPackagingDimensionContext(text, index = 0) {
+  const source = String(text || "");
+  const nearby = source.slice(Math.max(0, index - 80), Math.min(source.length, index + 40));
+  return /productPackInfo|pieceWeightScale|商品件重尺|包装(?:尺寸|规格|长|宽|高|重量)|外箱|箱规|物流|package(?:d|\s+dimensions?|\s+length|\s+width|\s+height|\s+weight)|shipping\s+(?:size|dimensions?|weight)|carton/i.test(nearby);
+}
+
+function extractFirstNonPackagingMatch(text, patterns) {
+  const source = String(text || "");
+  for (const pattern of patterns) {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    const matcher = new RegExp(pattern.source, flags);
+    for (const match of source.matchAll(matcher)) {
+      if (!match?.[1] || isPackagingDimensionContext(source, match.index || 0)) continue;
+      return match[1].trim();
+    }
   }
-  const dimensions = [];
+  return "";
+}
+
+function explicitProductSpecificationDimensions(text) {
+  const source = String(text || "");
+  const pattern = /(?:产\s*品\s*规\s*格|规\s*格|产\s*品\s*尺\s*寸|尺\s*寸|product\s*(?:size|dimensions?)|dimensions?)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*[x×*]\s*([0-9]+(?:\.[0-9]+)?)(?:\s*[x×*]\s*([0-9]+(?:\.[0-9]+)?))?\s*[（(]?\s*(mm|cm|in|m|ft|yd|毫米|厘米|公分|英寸|米)\s*[）)]?/gi;
+  for (const match of source.matchAll(pattern)) {
+    if (isPackagingDimensionContext(source, match.index || 0)) continue;
+    const unit = normalizeDimensionUnit(match[4]);
+    const values = [match[1], match[2], match[3]].filter(Boolean);
+    if (values.length < 2 || !unit) continue;
+    return [
+      `Length: ${normalizeDimensionUnit(`${values[0]} ${unit}`)}`,
+      `Width: ${normalizeDimensionUnit(`${values[1]} ${unit}`)}`,
+      values[2] ? `Thickness: ${normalizeDimensionUnit(`${values[2]} ${unit}`)}` : "",
+    ].filter(Boolean);
+  }
+  return [];
+}
+
+function extractDimensions(text) {
+  const explicitDimensions = explicitProductSpecificationDimensions(text);
+  const wallMountedDimensions = extractWallMountedDimensions(text);
+  const dimensions = [...explicitDimensions, ...wallMountedDimensions];
   const sizePatterns = [
-    /(?:Top Width|top width|顶部宽度|上宽|Length|length|长(?:度)?|直径|Diameter|diameter)[:：]?\s*([0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米)(?:\s*\/\s*[0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米))?)/i,
-    /(?:Side Length|side length|Width|width|宽(?:度)?|高度|侧边)[:：]?\s*([0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米)(?:\s*\/\s*[0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米))?)/i,
-    /(?:Bottom Width|bottom width|Height|height|高(?:度)?|底部宽度|底宽)[:：]?\s*([0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米))/i,
-    /(?:Weight|weight|单片重量|克重|重量|净重|约重)[:：]?\s*([0-9.]+\s*(?:g\/sheet|g|kg|克\/片|克|千克))/i,
+    /(?:Expanded Length|Top Width|top width|顶部宽度|上宽|Length|length|长(?:度)?|直径|Diameter|diameter)[:：]?\s*([0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码)(?:\s*\/\s*[0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码))?)/i,
+    /(?:Expanded Width|Side Length|side length|Width|width|宽(?:度)?|高度|侧边)[:：]?\s*([0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码)(?:\s*\/\s*[0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码))?)/i,
+    /(?:Thickness|thickness|厚(?:度)?|Bottom Width|bottom width|Height|height|高(?:度)?|底部宽度|底宽)[:：]?\s*([0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|um|μm|厘米|公分|毫米|米|英寸|英尺|码|微米))/i,
+    /(?:Weight|weight|单片重量|克重|重量|净重|约重)[:：]?\s*([0-9.]+\s*(?:g\/sheet|g|kg|lb|lbs|oz|克\/片|克|千克|磅))/i,
     /(?:Capacity|capacity|Volume|volume|容量|容积)[:：]?\s*([0-9.]+\s*(?:ml|mL|l|L|oz|毫升|升))/i,
   ];
-  const labels = ["Length", "Width", "Height", "Weight", "Capacity"];
+  const labels = ["Length", "Width", "Thickness", "Weight", "Capacity"];
   sizePatterns.forEach((pattern, index) => {
-    const value = normalizeDimensionUnit(extractFirstMatch(text, [pattern]));
-    if (value) dimensions.push(`${labels[index]}: ${value}`);
+    if (index < 3 && explicitDimensions.length) return;
+    if (index < 3 && wallMountedDimensions.length) return;
+    const value = normalizeDimensionUnit(extractFirstNonPackagingMatch(text, [pattern]));
+    if (value && !dimensions.some((item) => item.toLowerCase().startsWith(`${labels[index].toLowerCase()}:`))) {
+      dimensions.push(`${labels[index]}: ${value}`);
+    }
   });
-  const composite = normalizeDimensionUnit(extractFirstMatch(text, [
-    /(?:尺寸|规格|size|dimensions?|product size)[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米)?\s*[x×*]\s*[0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米)?(?:\s*[x×*]\s*[0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米)?)?)/i,
+  const directionalWidthLength = String(text || "").match(
+    /([0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码))\s*(?:宽|width)\s*[x×*]?\s*([0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码))\s*(?:长|length)/i
+  );
+  if (directionalWidthLength) {
+    const width = normalizeDimensionUnit(directionalWidthLength[1]);
+    const length = normalizeDimensionUnit(directionalWidthLength[2]);
+    if (width) dimensions.push(`Width: ${width}`);
+    if (length) dimensions.push(`Length: ${length}`);
+  }
+  const composite = normalizeDimensionUnit(extractFirstNonPackagingMatch(text, [
+    /(?:尺\s*寸|规\s*格|size|dimensions?|product size)[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码)?\s*[x×*]\s*[0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码)?(?:\s*[x×*]\s*[0-9.]+\s*(?:cm|mm|in|m|ft|feet|foot|yd|厘米|公分|毫米|米|英寸|英尺|码)?)?)/i,
   ]));
   if (composite) {
-    const unit = composite.match(/\b(cm|mm|in)\b/i)?.[1] || "cm";
+    const unit = composite.match(/\b(cm|mm|in|m|ft|feet|foot|yd)\b/i)?.[1] || "";
     const parts = composite.match(/[0-9.]+/g) || [];
-    if (parts[0] && !dimensions.some((item) => /^Length:/i.test(item))) dimensions.push(`Length: ${parts[0]} ${unit}`);
-    if (parts[1] && !dimensions.some((item) => /^Width:/i.test(item))) dimensions.push(`Width: ${parts[1]} ${unit}`);
-    if (parts[2] && !dimensions.some((item) => /^Height:/i.test(item))) dimensions.push(`Height: ${parts[2]} ${unit}`);
+    if (unit && parts[0] && !dimensions.some((item) => /^Length:/i.test(item))) dimensions.push(`Length: ${parts[0]} ${unit}`);
+    if (unit && parts[1] && !dimensions.some((item) => /^Width:/i.test(item))) dimensions.push(`Width: ${parts[1]} ${unit}`);
+    if (unit && parts[2] && !dimensions.some((item) => /^(?:Thickness|Height):/i.test(item))) dimensions.push(`Thickness: ${parts[2]} ${unit}`);
   }
-  dimensions.push(...extractUmbrellaDimensions(text));
   return uniquePromptItems(dimensions);
+}
+
+function isWallMountedProjectionContext(value) {
+  return /wall[\s-]*(?:mounted\s*)?(?:hook|hanger)|suction[\s-]*(?:cup\s*)?(?:hook|hanger)|挂钩|衣钩|粘钩|吸盘钩|吸盘挂|免打孔/i.test(String(value || ""));
+}
+
+function extractWallMountedDimensions(text) {
+  const source = String(text || "");
+  if (!isWallMountedProjectionContext(source)) return [];
+  const candidates = [
+    ["Base Diameter", [
+      /(?:底座|底盘|吸盘|背板|大圆)(?:外)?直径[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米|英寸))/i,
+      /(?:base|suction\s*cup|backplate)\s*diameter[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in))/i,
+    ]],
+    ["Front Diameter", [
+      /(?:前端|旋钮|挂钩|小圆)(?:外)?直径[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米|英寸))/i,
+      /(?:front|knob|hook)\s*diameter[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in))/i,
+    ]],
+    ["Projection Depth", [
+      /(?:总\s*出\s*墙(?:高\s*度)?|出\s*墙(?:高\s*度|深\s*度|距\s*离)?|离\s*墙(?:距\s*离)?|安\s*装\s*后(?:总)?高\s*度)[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in|厘米|公分|毫米|英寸))/i,
+      /(?:overall\s*)?(?:wall\s*)?(?:projection|projection\s*depth|distance\s*from\s*wall)[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in))/i,
+    ]],
+  ];
+  return candidates.flatMap(([label, patterns]) => {
+    const value = normalizeDimensionUnit(extractFirstNonPackagingMatch(source, patterns));
+    return value ? [`${label}: ${value}`] : [];
+  });
+}
+
+function isRollDimensionContext(value) {
+  return /adhesive[\s-]*tapes?|warning tape|caution tape|glow tape|grip tape|overgrip|handle wrap|胶带|手胶|吸汗带|龙骨胶|防滑带|roll form|tape roll/i.test(String(value || ""));
+}
+
+function semanticDimensionItems(items, context = "") {
+  return uniquePromptItems(items || []);
 }
 
 function normalizeDimensionUnit(value) {
   return String(value || "")
     .replace(/\s+/g, " ")
+    .replace(/\b(inches?|inch)\b/gi, " in")
+    .replace(/\b(pounds?|pound)\b/gi, " lb")
+    .replace(/\b(feet|foot)\b/gi, " ft")
     .replace(/厘米|公分/gi, " cm")
     .replace(/毫米/gi, " mm")
+    .replace(/英寸/gi, " in")
+    .replace(/英尺/gi, " ft")
+    .replace(/微米|μm/gi, " um")
+    .replace(/米/gi, " m")
+    .replace(/码/gi, " yd")
+    .replace(/千克/gi, " kg")
     .replace(/克/gi, " g")
     .replace(/毫升/gi, " ml")
     .replace(/升/gi, " L")
-    .replace(/千克/gi, " kg")
-    .replace(/\s*(cm|mm|in|g|kg|ml|mL|L|oz)\b/gi, " $1")
+    .replace(/磅/gi, " lb")
+    .replace(/\s*(cm|mm|in|m|ft|feet|foot|yd|um|g|kg|lb|lbs|ml|mL|L|oz)\b/gi, " $1")
     .trim();
 }
 
-function extractUmbrellaDimensions(text) {
-  const source = String(text || "");
-  if (!hasUmbrellaDimensionSignal(source)) return [];
-  const candidates = [
-    ["Folded Size", [
-      /(?:收纳后|收纳|折叠后|折后|合拢后|折叠尺寸|收纳尺寸)[^\d]{0,12}([0-9.]+\s*(?:cm|厘米|公分|mm|毫米|in)(?:\s*[x×*]\s*[0-9.]+\s*(?:cm|厘米|公分|mm|毫米|in)){0,2})/i,
-      /(?:folded|closed|compact)\s*(?:size|length)?[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in)(?:\s*[x×*]\s*[0-9.]+\s*(?:cm|mm|in)){0,2})/i,
-    ]],
-    ["Open Diameter", [
-      /(?:伞面直径|打开直径|展开直径|展开后直径|直径)[^\d]{0,12}([0-9.]+\s*(?:cm|厘米|公分|mm|毫米|in))/i,
-      /(?:open|opened|canopy)\s*(?:diameter|width)?[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in))/i,
-    ]],
-    ["Open Height", [
-      /(?:伞高|打开高度|展开高度|总高)[^\d]{0,12}([0-9.]+\s*(?:cm|厘米|公分|mm|毫米|in))/i,
-      /(?:open|opened)\s*(?:height|length)[^\d]{0,12}([0-9.]+\s*(?:cm|mm|in))/i,
-    ]],
-    ["Weight", [
-      /(?:重量|净重|约重|克重)[^\d]{0,12}([0-9.]+\s*(?:g|克))/i,
-      /(?:weight|net weight)[^\d]{0,12}([0-9.]+\s*g)/i,
-    ]],
-  ];
-  const seen = new Set();
-  const dimensions = [];
-  candidates.forEach(([label, patterns]) => {
-    const value = normalizeDimensionUnit(extractFirstMatch(source, patterns));
-    if (!value) return;
-    const key = `${label}:${value}`.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    dimensions.push(`${label}: ${value}`);
-  });
-  return dimensions;
-}
-
-function hasUmbrellaDimensionSignal(text) {
-  return /伞|umbrella|收纳尺寸|折叠尺寸|折叠后|折后|合拢后|伞面直径|打开直径|展开直径|展开后直径|展开高度|打开高度|伞高|folded size|closed size|compact size|open diameter|canopy diameter|open height|opened height/i.test(String(text || ""));
-}
-
 function inferProductName(text) {
+  const visionName = extractFirstMatch(text, [/DOUBAO_VISION_PRODUCT_NAME:\s*([^\n]+)/i]);
+  if (visionName && !isMachineProductText(visionName)) return cleanFieldDisplayValue(visionName);
   const supplierTitle = extractFirstMatch(text, [/PRODUCT_TITLE:\s*([^\n]+)/i]);
   if (supplierTitle && !isMachineProductText(supplierTitle)) return translateProductTitleWords(supplierTitle) || supplierTitle;
   const rawSpecName = readableNameFromRawSpec(extractFirstMatch(text, [/rawSpec\s*=\s*([^;\n|]+)/i, /SKU_OPTION\s*[:;]+([^\n]+)/i]));
   if (rawSpecName) return rawSpecName;
   const explicit = extractFirstMatch(text, [
     /(?:Product Name|产品名称|品名|商品名称)[:：]\s*([^。；;.\n|]{2,80})/i,
-    /(?:Coffee Filters?|coffee filter paper|filter paper)/i,
   ]);
   const translatedExplicit = translateProductTitleWords(explicit);
   if (translatedExplicit) return translatedExplicit;
@@ -3279,14 +3873,11 @@ function inferProductName(text) {
   return "";
 }
 
-function isFlowerWrappingPaperText(text) {
-  return /flower\s+wrapping\s+paper|floral\s+wrapping\s+paper|bouquet\s+wrapping|bouquet\s+wrap|floral\s+wrap|gift\s+wrap(?:ping)?\s+paper|wrapping\s+paper|tissue\s+paper|cellophane|包装纸|包花纸|花束包装|鲜花包装|花艺包装|礼品包装纸|花纸|花束纸|雪梨纸|欧雅纸|雾面纸|玻璃纸/i.test(String(text || ""));
-}
-
 function inferUseScene(text) {
   const source = String(text || "");
   const explicit = [];
   [
+    /DOUBAO_VISION_USE_SCENE:\s*([^\n]+)/gi,
     /(?:Use Scene|Usage Scenario|Use Occasion|Occasion|Recommended Uses? For Product|Scene|场景|使用场景|适用场景|用途场景)[:：]\s*([^\n。；;|]{2,120})/gi,
     /(?:适用于|适合用于|可用于)\s*([^\n。；;|]{2,80})/gi,
   ].forEach((pattern) => {
@@ -3298,124 +3889,24 @@ function inferUseScene(text) {
   return uniquePromptItems(explicit).slice(0, 4).join(" / ");
 }
 
-function umbrellaCompatibleUseText(text) {
-  return "";
-}
-
-function umbrellaStructureText(text) {
-  if (!/伞|umbrella/i.test(text)) return "";
-  const parts = [];
-  if (/扁|flat/i.test(text)) parts.push("flat compact folded profile");
-  if (/([1-9]\d?)骨|rib/i.test(text)) parts.push("reinforced rib frame");
-  if (/六折|6-fold|six-fold/i.test(text)) parts.push("six-fold compact construction");
-  if (/伞骨|加固|reinforced|windproof|防风/i.test(text)) parts.push("reinforced wind-resistant ribs");
-  return compactPromptItems(parts, "compact folding umbrella construction", 4);
-}
-
-function genericStructureText(text) {
+function inferInstallationSteps(text) {
   const source = String(text || "");
-  const parts = [];
-  if (/拉力带|拉力片|弹力带|阻力带|resistance\s+band|exercise\s+band/i.test(source)) {
-    parts.push("flat resistance band sheet");
-  }
-  if (/片状|sheet|flat/i.test(source)) parts.push("flat sheet form");
-  if (/带状|strap|band/i.test(source)) parts.push("strap-like band form");
-  if (/加固|reinforced/i.test(source)) parts.push("reinforced construction");
-  if (/一体|integrated|one[-\s]?piece/i.test(source)) parts.push("one-piece construction");
-  return compactPromptItems(parts, "", 4);
+  const explicit = cleanFieldDisplayValue(extractFirstMatch(source, [
+    /(?:DOUBAO_VISION_ATTRIBUTE|PRODUCT_ATTRIBUTE):\s*InstallationSteps\s*=\s*([^\n]+)/i,
+  ]));
+  if (explicit) return explicit;
+  const hasInstructionEvidence = /安装(?:步骤|方法|完成)|简单\s*4\s*步|擦拭干净|撕开?吸盘背膜|顺时针旋转|installation steps?|how to install/i.test(source);
+  if (!hasInstructionEvidence) return "";
+  const steps = [];
+  if (/擦拭(?:墙面)?干净|清洁(?:并擦干)?墙面|clean(?: and dry)? (?:the )?(?:wall|surface)/i.test(source)) steps.push("Clean and dry the wall");
+  if (/(?:撕开?吸盘背膜|撕掉?背膜|揭开?保护膜)/i.test(source) || /(?:remove|peel)[^\n]{0,30}(?:film|backing)/i.test(source)) steps.push("Peel off the suction backing film");
+  if (/顺时针旋转|旋转吸附|旋转锁紧|clockwise|twist[-\s]?(?:to[-\s]?)?lock|rotate/i.test(source)) steps.push("Press flat and twist clockwise to lock");
+  if (/安装完成|完成安装|installation complete|ready to use/i.test(source)) steps.push("Confirm the hook is securely installed");
+  return steps.length >= 2 ? steps.slice(0, 4).join(" > ") : "";
 }
 
-function umbrellaDetailText(text, dimensionList = "") {
-  if (!/伞|umbrella/i.test(text)) return "";
-  const details = [
-    dimensionList && cleanTokenValue(dimensionList),
-    /小巧|便携|收纳|compact|portable/i.test(text) && "compact folded body for small-bag storage",
-    /防晒|遮阳|UV|UPF|紫外线/i.test(text) && "sun-shade canopy surface",
-    /防雨|晴雨|waterproof|rain/i.test(text) && "rain-ready canopy with water-beading surface",
-    /伞骨|加固|防风|reinforced|windproof/i.test(text) && "reinforced rib detail",
-  ];
-  return compactPromptItems(details, "", 5);
-}
-
-function sockSellingPointCandidates(text, material, attrs = {}) {
-  const source = [
-    text,
-    material,
-    attrs.Function,
-    attrs.Material,
-    attrs.Technology,
-    attrs.SpecialCraft,
-    attrs["Sock Height"],
-    attrs.Seam,
-    attrs.Weaving,
-  ].filter(Boolean).join(" ");
-  const candidates = [];
-  const add = (key, value, priority) => {
-    if (value) candidates.push({ key, value, priority });
-  };
-
-  if (hasCrossStrapDesign(source) && hasFiveToeDesign(source)) {
-    add("design", "3D cross-strap and five-toe separated design", 10);
-  } else {
-    if (hasCrossStrapDesign(source)) add("cross-strap", "3D cross-strap design", 10);
-    if (hasFiveToeDesign(source)) add("five-toe", "five-toe separated design", 9);
-  }
-  if (/精\s*梳\s*棉|combed\s+cotton/i.test(source)) {
-    add("material", "premium combed cotton comfort", 8);
-  } else if (/棉|cotton/i.test(source)) {
-    add("material", "breathable cotton comfort", 5);
-  }
-  if (/防滑|硅胶|点胶|胶印|anti.?slip|non[-\s]?slip|grip|printed?\s+grip/i.test(source)) {
-    add("grip", "anti-slip grip sole", 7);
-  }
-  if (/中筒|mid[-\s]?calf/i.test(source)) add("coverage", "mid-calf coverage", 6);
-  if (/长筒|高筒|long sock|knee|over[-\s]?the[-\s]?calf/i.test(source)) add("coverage", "long sock coverage", 6);
-  if (/无骨|手工无骨|seamless|hand[-\s]?linked/i.test(source)) add("seam", "seamless hand-linked toe comfort", 6);
-  if (/吸汗|sweat|moisture/i.test(source)) add("sweat", "sweat-absorbing workout comfort", 4);
-  if (/防摩擦|anti[-\s]?friction|friction/i.test(source)) add("friction", "anti-friction comfort", 4);
-  if (/单针|single[-\s]?needle/i.test(source)) add("knit", "single-needle knit texture", 3);
-  if (/elastic|高弹|橡筋/i.test(attrs.SpecialCraft || source)) add("elastic", "high-elastic comfortable cuff", 4);
-  if (/soft|柔软|细腻/i.test(attrs.SpecialCraft || source)) add("soft", "soft and delicate fabric texture", 3);
-  if (/antibacterial|deodorizing|阻菌|抗菌|防臭/i.test(attrs.SpecialCraft || source)) add("deodorizing", "antibacterial deodorizing comfort", 2);
-
-  const selected = [];
-  const usedKeys = new Set();
-  candidates
-    .sort((left, right) => right.priority - left.priority)
-    .forEach((candidate) => {
-      const key = sellingPointKey(candidate.value) || candidate.key;
-      if (usedKeys.has(key)) return;
-      if (selected.some((item) => promptItemsOverlap(item.value, candidate.value))) return;
-      selected.push(candidate);
-      usedKeys.add(key);
-    });
-  return selected.map((candidate) => candidate.value);
-}
-
-function umbrellaSellingPointCandidates(text, attrs = {}) {
-  const source = [text, attrs.Function, attrs.Technology, attrs.SpecialCraft, attrs.Size].filter(Boolean).join(" ");
-  const candidates = [];
-  const add = (key, value, priority) => {
-    if (value) candidates.push({ key, value, priority });
-  };
-  if (/收纳|折叠|小巧|迷你|口袋|便携|随身|轻便|轻巧|compact|portable|pocket|travel/i.test(source)) {
-    add("compact", "compact portable folded size", 10);
-  }
-  if (/轻量|轻便|轻巧|重量|净重|约重|lightweight/i.test(source)) {
-    add("lightweight", "lightweight carry design", 9);
-  }
-  if (/防晒|遮阳|防紫外|紫外线|UPF|UV|black胶|黑胶|隔热/i.test(source)) {
-    add("uv", "sun and UV protection canopy", 8);
-  }
-  if (/防雨|雨伞|晴雨|拒水|防水|waterproof|rain/i.test(source)) {
-    add("rain", "rain-ready waterproof canopy", 7);
-  }
-  if (/防风|抗风|加固|伞骨|骨架|windproof|reinforced|ribs?/i.test(source)) {
-    add("windproof", "reinforced wind-resistant ribs", 6);
-  }
-  return candidates
-    .sort((left, right) => right.priority - left.priority)
-    .map((candidate) => candidate.value);
+function hasExplicitSweatEvidence(text) {
+  return /吸汗|排汗|汗液|sweat(?:[-\s]?(?:absorb|wick|control))?|perspiration|moisture[-\s]?wick/i.test(String(text || ""));
 }
 
 function genericDetailSellingPointCandidates(text) {
@@ -3424,6 +3915,9 @@ function genericDetailSellingPointCandidates(text) {
   const add = (pattern, value) => {
     if (pattern.test(source)) candidates.push(value);
   };
+  add(/夜光|自发光|蓄光|光致发光|glow[\s-]*in[\s-]*the[\s-]*dark|photoluminescen(?:t|ce)|illuminates? after dark|stores? daylight/i, "daylight-charged glow-in-the-dark visibility");
+  add(/防水|防雨|waterproof|water.?resistant/i, "water-resistant surface");
+  add(/万圣节[^\n]{0,30}装饰|装饰[^\n]{0,30}胶带|halloween[^\n]{0,30}decor|decorative[^\n]{0,30}(?:warning|caution|tape)/i, "Halloween warning decoration");
   add(/9\s*M|9米|9\s*米/i, "9 m stretch range");
   add(/不惧断裂|不断裂|防断|抗拉防断|抗拉|fracture|break|tear/i, "break-resistant performance");
   add(/均匀拉伸|不变形|deformation/i, "even stretch without deformation");
@@ -3432,12 +3926,11 @@ function genericDetailSellingPointCandidates(text) {
   add(/安全更耐用|耐用|durable/i, "durable everyday use");
   add(/便携|轻便|轻巧|小巧|收纳|portable|lightweight|compact/i, "portable compact design");
   add(/防滑|止滑|抓地|anti.?slip|non.?slip|grip/i, "anti-slip grip");
-  add(/防水|防雨|waterproof|water.?resistant/i, "water-resistant protection");
   add(/防晒|遮阳|紫外线|UV|UPF/i, "sun and UV protection");
   add(/防风|抗风|加固|reinforced|windproof/i, "reinforced stable construction");
   add(/柔软|soft/i, "soft hand feel");
   add(/透气|breathable/i, "breathable comfort");
-  add(/吸汗|sweat|moisture/i, "sweat-absorbing comfort");
+  add(/吸汗|排汗|汗液|sweat(?:[-\s]?(?:absorb|wick|control))?|perspiration|moisture[-\s]?wick/i, "sweat-absorbing comfort");
   add(/抗菌|防臭|antibacterial|deodor/i, "antibacterial deodorizing comfort");
   add(/高弹|弹力|elastic|stretch/i, "high elasticity");
   add(/易清洁|可水洗|easy.?clean|washable/i, "easy-clean washable design");
@@ -3446,53 +3939,32 @@ function genericDetailSellingPointCandidates(text) {
   return uniqueSellingPoints(candidates, 8);
 }
 
-function isResistanceBandText(text) {
-  return /拉力带|拉力片|弹力带|阻力带|resistance\s+band|exercise\s+band|workout\s+band/i.test(String(text || ""));
-}
-
-function resistanceBandSellingPointCandidates(text, material) {
-  const source = [text, material].filter(Boolean).join(" ");
-  const candidates = [];
-  if (/TPE|tpe|热塑性弹性体/i.test(source)) {
-    candidates.push("TPE thermoplastic elastomer material");
-  }
-  if (/拉伸|阻力|拉力|弹力|stretch|resistance/i.test(source)) {
-    candidates.push("stretching and resistance training use");
-  }
-  if (/训练|健身|workout|exercise|home\s+gym|strength|therapy|康复|理疗/i.test(source)) {
-    candidates.push("fitness and home training use");
-  }
-  return uniqueSellingPoints(candidates, 6);
-}
-
-function categorySpecificSellingPointCandidates(text, material, attrs = {}) {
-  return uniqueSellingPoints([
-    ...(isSockFamilyText(text) ? sockSellingPointCandidates(text, material, attrs) : []),
-    ...(/伞|umbrella/i.test(text) ? umbrellaSellingPointCandidates(text, attrs) : []),
-    ...(isResistanceBandText(text) ? resistanceBandSellingPointCandidates(text, material) : []),
-  ], 10);
+function visionSellingPointCandidates(text) {
+  return uniqueSellingPoints(
+    Array.from(String(text || "").matchAll(/DOUBAO_VISION_SELLING_POINT:\s*([^\n]+)/gi))
+      .map((match) => cleanFieldDisplayValue(match[1]))
+      .filter(Boolean),
+    6,
+  );
 }
 
 function inferSellingPoints(text, material, limit = 2) {
-  const attrs = supplierAttributeMap(text);
   const genericDetailPoints = genericDetailSellingPointCandidates(text);
-  const categoryPoints = categorySpecificSellingPointCandidates(text, material, attrs);
-  const feature1 = /wood pulp|原木浆|unbleached|未漂白|natural/i.test(text)
-    ? "natural unbleached material"
-    : cleanFieldDisplayValue(material) || "";
-  const feature2 = /filter|过滤|smooth|均匀|flow|brewing|萃取/i.test(text) ? "smooth filtration performance" : "";
   const points = uniqueSellingPoints([
+    ...visionSellingPointCandidates(text),
     ...genericDetailPoints,
-    ...categoryPoints,
-    feature1,
-    feature2,
-    material,
-  ], limit);
+  ], Math.max(limit, 8)).filter((point) => sellingPointSupportedByCurrentEvidence(point, text)).slice(0, limit);
   return {
-    feature1: points[0] || feature1,
-    feature2: points[1] || feature2,
+    feature1: points[0] || "",
+    feature2: points[1] || "",
     points,
   };
+}
+
+function sellingPointSupportedByCurrentEvidence(point, evidenceText) {
+  const key = sellingPointKey(point);
+  if (key === "sweat") return hasExplicitSweatEvidence(evidenceText);
+  return true;
 }
 
 function normalizeSkuText(text) {
@@ -3568,36 +4040,6 @@ function inferCupRangeForSpec(text, item) {
   return item.cupRange || "";
 }
 
-function fallbackDimensionsForSpec(item, combinedText) {
-  if (!/coffee filters|咖啡滤纸|V02|扇形|U02|#04/i.test(combinedText)) {
-    return {};
-  }
-
-  const normalizedKey = item.key || productSpecForToken(item.sizeCode || item.spec || "").key;
-  if (normalizedKey === "v02") {
-    return {
-      topWidth: "16 cm",
-      sideLength: "12 cm / 11.6 cm",
-      bottomWidth: "",
-      weight: "1.12 g/sheet",
-      dimensionList: "[VERIFIED_DIMENSIONS: Top Width: 16 cm; Side Length: 12 cm / 11.6 cm; Weight: 1.12 g/sheet]",
-      source: "1688 detail image confirmed single-filter dimensions",
-    };
-  }
-  if (normalizedKey === "u02") {
-    return {
-      topWidth: "16.5 cm",
-      sideLength: "9 cm / 9.5 cm",
-      bottomWidth: "5 cm",
-      weight: "1.15 g/sheet",
-      dimensionList: "[VERIFIED_DIMENSIONS: Top Width: 16.5 cm; Side Length: 9 cm / 9.5 cm; Bottom Width: 5 cm; Weight: 1.15 g/sheet]",
-      source: "1688 detail image confirmed single-filter dimensions",
-    };
-  }
-
-  return {};
-}
-
 function dimensionValueByLabels(dimensionsText, labels) {
   const source = String(dimensionsText || "");
   for (const label of labels) {
@@ -3633,7 +4075,7 @@ function supplierAttributeMap(text) {
     if (!attrs[key] || shouldReplaceAttributeValue(key, attrs[key], value)) attrs[key] = value;
   }
   const productDetailText = productAttributeSourceText(
-    ...Array.from(source.matchAll(/1688 image OCR text:\s*([\s\S]*?)(?=\n(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|SKU_OPTION|Source HTML file|Purchase order image OCR text|1688 image OCR text)\s*:|$)/gi)).map((match) => match[1]),
+    ...Array.from(source.matchAll(/1688 image OCR text:\s*([\s\S]*?)(?=\n(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|SKU_OPTION|Source HTML file|Purchase order image OCR text|1688 image OCR text|DOUBAO_VISION_[A-Z_]+)\s*:|$)/gi)).map((match) => match[1]),
   );
   Object.entries(extractProductDetailAttributes(productDetailText)).forEach(([key, value]) => {
     if (value && (!attrs[key] || shouldReplaceAttributeValue(key, attrs[key], value))) attrs[key] = value;
@@ -3649,13 +4091,48 @@ function supplierAttributeMap(text) {
 function stripInternalExtractionLines(text) {
   return String(text || "")
     .split(/\n+/)
-    .filter((line) => !/^\s*(?:PRODUCT_ATTRIBUTE|SKU_OPTION|PRODUCT_TITLE|Source HTML file|Purchase order image OCR text)\s*:/i.test(line))
+    .filter((line) => !/^\s*(?:PRODUCT_ATTRIBUTE|SKU_OPTION|PRODUCT_TITLE|DOUBAO_VISION_[A-Z_]+|Source HTML file|Purchase order image OCR text)\s*:/i.test(line))
     .join("\n");
+}
+
+function doubaoVisionEvidenceProfile(text) {
+  const source = String(text || "");
+  const attributes = new Set();
+  const attributeValues = {};
+  for (const match of source.matchAll(/DOUBAO_VISION_ATTRIBUTE:\s*([^=\n]+)=([^\n]+)/gi)) {
+    const rawField = cleanFieldDisplayValue(match[1]);
+    const field = rawField.toLowerCase().replace(/[^a-z]+/g, "");
+    const canonicalField = {
+      detailfeatures: "DetailFeatures",
+      productcount: "ProductCount",
+      material: "Material",
+      color: "Color",
+      technology: "Technology",
+      structure: "Structure",
+      fit: "Fit",
+      installationsteps: "InstallationSteps",
+    }[field] || rawField;
+    const value = cleanFieldDisplayValue(match[2]);
+    if (field) attributes.add(field);
+    if (canonicalField && value) attributeValues[canonicalField] = value;
+  }
+  const dimensions = Array.from(source.matchAll(/DOUBAO_VISION_DIMENSION:\s*([^\n]+)/gi))
+    .map((match) => cleanTokenValue(match[1]))
+    .filter(Boolean);
+  return {
+    verified: /DOUBAO_VISION_VERIFIED:\s*true/i.test(source),
+    productName: /DOUBAO_VISION_PRODUCT_NAME:\s*[^\n]+/i.test(source),
+    attributes: Array.from(attributes),
+    attributeValues,
+    dimensions,
+    sellingPoints: /DOUBAO_VISION_SELLING_POINT:\s*[^\n]+/i.test(source),
+    useScenes: /DOUBAO_VISION_USE_SCENE:\s*[^\n]+/i.test(source),
+  };
 }
 
 function stripImageOcrBlocks(text) {
   return String(text || "")
-    .replace(/\n?1688 image OCR text:\s*[\s\S]*?(?=\n(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|SKU_OPTION|Source HTML file|Purchase order image OCR text|1688 image OCR text)\s*:|$)/gi, "\n")
+    .replace(/\n?1688 image OCR text:\s*[\s\S]*?(?=\n(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|SKU_OPTION|Source HTML file|Purchase order image OCR text|1688 image OCR text|DOUBAO_VISION_[A-Z_]+)\s*:|$)/gi, "\n")
     .trim();
 }
 
@@ -3664,6 +4141,32 @@ function productIdentitySourceText(purchaseText, supplierText) {
     purchaseText,
     stripImageOcrBlocks(supplierText),
   ].filter(Boolean).join(" ");
+}
+
+function supplierSellingPointEvidenceText(supplierText) {
+  const source = String(supplierText || "");
+  const directLines = source
+    .split(/\n+/)
+    .filter((line) => /^\s*(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|DOUBAO_VISION_(?:SELLING_POINT|PRODUCT_NAME|USE_SCENE|VERIFIED))\s*:/i.test(line));
+  const ocrBlocks = Array.from(source.matchAll(
+    /1688 image OCR text:\s*([\s\S]*?)(?=\n(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|SKU_OPTION|Source HTML file|Purchase order image OCR text|1688 image OCR text|DOUBAO_VISION_[A-Z_]+)\s*:|$)/gi,
+  )).map((match) => match[1]);
+  return [...directLines, ...ocrBlocks].filter(Boolean).join("\n");
+}
+
+function currentSourceFingerprint() {
+  const source = [
+    sourcePayload.purchase,
+    sourcePayload.amazonTemplate,
+    sourcePayload.supplier,
+    sourcePayload.competitor,
+  ].filter(Boolean).join("\n");
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `source-${(hash >>> 0).toString(16)}-${source.length}`;
 }
 
 function productAttributeSourceText(...parts) {
@@ -3701,10 +4204,6 @@ function shouldReplaceAttributeValue(key, current, next) {
 }
 
 function genericProductSpecForModel(model, combinedText) {
-  const isYogaSock = isYogaSockText(combinedText);
-  const isSock = isSockFamilyText(combinedText);
-  if (isYogaSock) return `${model} five-toe yoga grip socks`;
-  if (isSock) return `${model} socks`;
   return `${model} product`;
 }
 
@@ -4502,9 +5001,6 @@ function extractPurchaseRowStyle(row) {
     if (/接粉环/.test(compactRowText)) return "";
     return clean || "粉碗";
   }
-  if (/伞/.test(compactRowText)) {
-    return umbrellaStyleFromPurchaseRow(row);
-  }
   const bracket = extractFirstMatch(source, [/【([^】]{1,30})】/]);
   const afterColor = cleanPurchaseOptionText(extractFirstMatch(source, [
     /颜色\s*[:：]\s*([^;；,，]+?)(?=\s*(?:尺码|尺寸|规格|数量|单价|$))/i,
@@ -4519,10 +5015,6 @@ function extractPurchaseRowStyle(row) {
     .replace(/^(?:均码|one size|free size)$/i, "")
     .trim();
   if (withoutGenericSize !== withoutColor && !withoutGenericSize) return "";
-  if (isSockFamilyText(compactRowText)) {
-    const styleNumber = withoutColor.replace(/^[;；,，\s/-]+|[;；,，\s/-]+$/g, "").trim();
-    if (/^[1-9]\d?$/.test(styleNumber) && (!row.quantity || styleNumber === cleanFieldDisplayValue(row.quantity))) return "";
-  }
   if (hasExplicitColorOrSize && !withoutColor) return "";
   if (hasExplicitColorOrSize && !/[\u4e00-\u9fff]/.test(withoutColor) && /^[A-Za-z0-9+/=_-]{2,24}$/i.test(withoutColor)) return "";
   if (!/[\u4e00-\u9fff]/.test(withoutColor) && /=/.test(withoutColor)) return "";
@@ -4976,15 +5468,16 @@ function displayProductName(productName, context = "") {
   const combined = [productName, context].filter(Boolean).join(" ");
   const rawSpecName = readableNameFromRawSpec(combined);
   if (rawSpecName) return rawSpecName;
-  if (isYogaSockText(combined)) return "五指瑜伽袜";
-  if (/船袜|短袜|隐形袜|浅口袜|no[-\s]?show/i.test(combined)) return "船袜";
-  if (isSockFamilyText(combined)) return "袜子";
   return cleanProductDisplayName(productName, "");
 }
 
 function crossBorderProductName(productName, context = "") {
   const rawSpecName = readableNameFromRawSpec([productName, context].filter(Boolean).join(" "));
-  if (rawSpecName) return rawSpecName;
+  if (rawSpecName) {
+    const translatedRawSpecName = translateProductTitleWords(rawSpecName, context);
+    if (translatedRawSpecName) return translatedRawSpecName;
+    if (!/[\u3400-\u9fff]/.test(rawSpecName)) return rawSpecName;
+  }
   const translated = translateProductTitleWords(productName, context);
   const translatedFromContext = translateProductTitleWords(extractFirstMatch(context, [/PRODUCT_TITLE:\s*([^\n]+)/i]), context);
   const coreTitle = compactCoreProductTitle(translated || productName, translatedFromContext || context);
@@ -4992,6 +5485,12 @@ function crossBorderProductName(productName, context = "") {
   if (translated) return translated;
   if (translatedFromContext) return translatedFromContext;
   return toCrossBorderProductName(productName, "") || stripSupplierModelCodes(cleanFieldDisplayValue(productName));
+}
+
+function englishOnlyProductName(productName, context = "") {
+  const translated = cleanFieldDisplayValue(crossBorderProductName(productName, context));
+  if (!translated || /[\u3400-\u9fff]/.test(translated) || !/^[\x00-\x7F]+$/.test(translated)) return "";
+  return (translated.match(/[A-Za-z]+/g) || []).length >= 2 ? translated : "";
 }
 
 function crossBorderColorName(item) {
@@ -5012,47 +5511,17 @@ function compactEnglishWords(value, maxWords = 6) {
 }
 
 function compactCoreProductTitle(value, source = "") {
-  const descriptiveName = descriptiveYogaSockProductName(value, source);
-  if (descriptiveName) return descriptiveName;
   const text = compactEnglishWords(value, 12);
-  const combined = `${text} ${compactEnglishWords(source, 12)}`;
-  if (!text && !combined.trim()) return "";
-  if (/round/.test(combined) && /coffee\s+filter/.test(combined)) return "round coffee filter";
-  if (/coffee\s+filter/.test(combined)) return "coffee filter";
-  if (/filter\s+basket/.test(combined)) return "filter basket";
-  if (/dosing\s+funnel/.test(combined)) return "dosing funnel";
-  if (/pet\s+bandana|bandana|bib/.test(combined)) return "pet bandana";
-  if (/cat\s+collar|collar/.test(combined)) return "cat collar";
-  if (/cat\s+toy|matatabi/.test(combined)) return "cat toy";
-  if (/resistance\s+band/.test(combined)) return "resistance band";
-  if (/yoga\s+ball|pilates\s+ball/.test(combined)) return "yoga ball";
-  if (/folding\s+umbrella|umbrella/.test(combined)) return "folding umbrella";
-  if (/incense\s+sticks|incense/.test(combined)) return "incense sticks";
-  if (/\byoga\b/.test(combined) && /\bsocks?\b/.test(combined)) return "yoga socks";
-  if (/no\s+show/.test(combined) && /\bsocks?\b/.test(combined)) return "no-show socks";
-  if (/\btoe\b/.test(combined) && /\bsocks?\b/.test(combined)) return "toe socks";
-  if (/\bgrip\b/.test(combined) && /\bsocks?\b/.test(combined)) return "grip socks";
-  if (/\bsocks?\b/.test(combined)) return "socks";
+  if (!text) return "";
   const featureWords = new Set(["grip", "non", "slip", "cotton", "soft", "professional", "special", "dedicated", "solid", "color"]);
   const words = text.split(/\s+/).filter((word) => word && !featureWords.has(word));
   return uniquePromptItems(words).slice(0, 6).join(" ") || text;
 }
 
 function shortCrossBorderBaseName(productName, context = "") {
-  const combined = [productName, context].filter(Boolean).join(" ");
-  const coreTitle = compactCoreProductTitle(productName, context);
+  const coreTitle = compactCoreProductTitle(productName, "");
   if (coreTitle) return coreTitle;
-  if (/round coffee filter|圆形咖啡滤纸/i.test(combined)) return "round coffee filter";
-  if (/coffee filters?|咖啡滤纸|filter paper/i.test(combined)) return "coffee filter";
-  if (/espresso filter basket|咖啡粉碗|粉碗/i.test(combined)) return "filter basket";
-  if (/magnetic dosing funnel|接粉环/i.test(combined)) return "dosing funnel";
-  if (/bandana|bib|围兜|口水巾/i.test(combined)) return "pet bandana";
-  if (/collar|项圈/i.test(combined)) return "cat collar";
-  if (/matatabi|cat toy|猫玩具|木天蓼/i.test(combined)) return "cat toy";
-  if (/resistance band|拉力|弹力/i.test(combined)) return "resistance band";
-  if (/umbrella|伞/i.test(combined)) return "folding umbrella";
-  if (/incense|线香/i.test(combined)) return "incense sticks";
-  return compactEnglishWords(crossBorderProductName(productName, context) || productName || "product", 6);
+  return compactEnglishWords(crossBorderProductName(productName, "") || productName || "product", 6);
 }
 
 function shortCrossBorderOptionLabel(baseName, item, fallback = "product option") {
@@ -5117,9 +5586,7 @@ function optionStyleForSkuLabel(item) {
   const style = compactEnglishWords(item?.variantStyle || "", 2);
   if (!style) return "";
   const quantity = cleanFieldDisplayValue(item?.quantity || "");
-  const itemContext = [item?.productName, item?.outputProductName, item?.spec, item?.outputSpec, item?.label].filter(Boolean).join(" ");
   if (/^[1-9]\d?$/.test(style) && quantity && style === quantity) return "";
-  if (/^[1-9]\d?$/.test(style) && isSockFamilyText(itemContext)) return "";
   return style;
 }
 
@@ -5128,8 +5595,6 @@ function optionSizeForSkuLabel(item) {
   if (!size) return "";
   const quantity = cleanFieldDisplayValue(item?.quantity || "");
   if (/^[1-9]\d*$/.test(size) && quantity && size === quantity) return "";
-  const itemContext = [item?.productName, item?.outputProductName, item?.spec, item?.outputSpec, item?.label].filter(Boolean).join(" ");
-  if (/^[1-9]\d?$/.test(size) && isSockFamilyText(itemContext)) return "";
   return size;
 }
 
@@ -5230,49 +5695,7 @@ function dedupeExtractedVariants(items) {
 }
 
 function normalizedColorVariantItems(items, purchaseText, combinedText) {
-  if (!isSockFamilyText(combinedText)) return items;
-  const purchaseColors = colorsFromPurchaseText(purchaseText);
-  const colorItems = (items || []).filter((item) => isKnownColorValue(item.color || item.colorEnglish || item.displayColor || item.label || item.outputLabel || ""));
-  if (!purchaseColors.length && !colorItems.length) return items;
-
-  const baseItem = colorItems[0] || (items || []).find((item) => item?.model) || (items || [])[0] || {};
-  const byColor = new Map();
-  colorItems.forEach((item) => {
-    const color = item.color || item.colorEnglish || item.displayColor || item.label || item.outputLabel || "";
-    const key = canonicalColorKey(color);
-    if (key && !byColor.has(key)) byColor.set(key, item);
-  });
-
-  const orderedColors = purchaseColors.length
-    ? purchaseColors
-    : colorItems.map((item) => item.color || item.colorEnglish || item.displayColor || item.label || item.outputLabel || "");
-  return orderedColors
-    .map((color, index) => {
-      const key = canonicalColorKey(color);
-      const existing = byColor.get(key) || {};
-      const colorEnglish = colorName(color);
-      const displayColor = displayColorName(color, colorEnglish);
-      return {
-        ...baseItem,
-        ...existing,
-        id: existing.id || `EXTRACTED-${index + 1}-${colorEnglish.replace(/[^A-Z0-9]+/gi, "-") || key || "COLOR"}`,
-        label: colorEnglish,
-        outputLabel: colorEnglish,
-        displayLabel: colorEnglish,
-        color,
-        displayColor,
-        colorEnglish,
-        shape: colorEnglish,
-        spec: displayColor || color,
-        outputSpec: colorEnglish,
-        sizeCode: displayColor || color,
-        outputSizeCode: colorEnglish,
-        variantStyle: "",
-        pack: "",
-        productUnitCount: "",
-      };
-    })
-    .filter((item) => isKnownColorValue(item.color || item.colorEnglish));
+  return items;
 }
 
 function normalizeAmazonHeader(value) {
@@ -5460,16 +5883,117 @@ function amazonListingPackText(text, row, columns) {
     .find((value) => value && !/^1$/.test(value)) || "";
 }
 
-function amazonListingDimensionListText(row, columns) {
-  const size = amazonRowValue(row, columns, "Size", "size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
-  const paperSize = amazonRowValue(row, columns, "Paper Size", "paper_size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
-  const paperSizeUnit = amazonRowValue(row, columns, "Paper Size Unit", "paper_size[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.unit");
-  const displayLength = amazonRowValue(row, columns, "Item Display Length", "item_display_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.value");
-  const displayLengthUnit = amazonRowValue(row, columns, "Item Display Length Unit", "item_display_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.unit");
+function amazonTitleUnitQuantity(title) {
+  const source = String(title || "");
+  const direct = source.match(/(?:^|[^a-z0-9])([2-9]\d*)\s*[-_x×]?\s*(packs?|sets?|pieces?|pcs?|counts?|units?)(?=$|[^a-z])/i);
+  const reverse = source.match(/(?:^|[^a-z0-9])(pack|set)\s+of\s+([2-9]\d*)(?=$|[^a-z0-9])/i);
+  const count = Number(direct?.[1] || reverse?.[2] || 0);
+  const rawUnit = String(direct?.[2] || reverse?.[1] || "").toLowerCase();
+  if (!Number.isInteger(count) || count < 2 || count > 999 || !rawUnit) return null;
+  const unit = rawUnit.replace(/s$/, "");
+  const label = unit === "pack"
+    ? `${count}-Pack`
+    : unit === "set"
+      ? `${count}-Set`
+      : unit === "count"
+        ? `${count}-Count`
+        : `${count} Pieces`;
+  return { count, label };
+}
+
+// A listing can truthfully say "60 Count" while selling four refill rolls
+// containing 15 bags each.  These are different physical levels: 60 bags is
+// not 60 rolls or 60 separate sale units.  Keep this composition as a
+// structured fact instead of letting the generic title-count parser flatten it.
+function amazonRefillRollComposition(...values) {
+  const source = values.flat().filter(Boolean).join(" ");
+  if (!/(?:poop\s*bags?|pet\s*waste\s*bags?|bag\s*refills?)/i.test(source)) return "";
+  const rolls = Number.parseInt(extractFirstMatch(source, [
+    /(?:includes?|with|contains?)?\s*(\d+)\s+(?:scented\s+)?(?:poop\s*bag\s*)?refill\s*rolls?/i,
+    /(?:^|[^a-z0-9])(\d+)\s+(?:bag\s*)?rolls?(?=$|[^a-z])/i,
+  ]), 10);
+  const bagsPerRoll = Number.parseInt(extractFirstMatch(source, [
+    /(\d+)\s+(?:poop\s*)?bags?\s+per\s+roll/i,
+  ]), 10);
+  const statedTotal = Number.parseInt(extractFirstMatch(source, [
+    /(?:for|=|total(?:ing)?|includes?)\s*(\d+)\s*(?:count|bags?)(?:\s+total)?/i,
+    /(\d+)\s*(?:count|bags?)\s+total/i,
+  ]), 10);
+  if (!Number.isInteger(rolls) || rolls < 2 || !Number.isInteger(bagsPerRoll) || bagsPerRoll < 1) return "";
+  const total = Number.isInteger(statedTotal) && statedTotal > 0 ? statedTotal : rolls * bagsPerRoll;
+  if (total !== rolls * bagsPerRoll) return "";
+  return `${rolls} separate refill rolls, ${bagsPerRoll} bags per roll, ${total} bags total`;
+}
+
+function amazonMeasurementText(row, columns, valueCandidates, unitCandidates) {
+  const value = amazonRowValue(row, columns, ...valueCandidates);
+  if (!value) return "";
+  const unit = amazonRowValue(row, columns, ...unitCandidates);
+  return normalizeDimensionUnit(`${value}${unit ? ` ${unit}` : ""}`);
+}
+
+// The child SKU title is the product-specific Amazon record. When it gives an
+// explicit size (for example "13 by 8.66 in"), that current-SKU value wins
+// over generic spreadsheet Item Length/Width cells, which can be parcel
+// defaults copied across child rows.
+function amazonTitleDimensionList(text = "") {
+  const source = String(text || "");
+  const match = source.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:by|x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:in|inch|inches)\b/i);
+  if (!match) return "";
+  return `[VERIFIED_DIMENSIONS: SKU Dimension 1: ${match[1]} in; SKU Dimension 2: ${match[2]} in]`;
+}
+
+function amazonListingDimensionListText(row, columns, context = "", title = "") {
+  const titleDimensions = amazonTitleDimensionList(title);
+  if (titleDimensions) return titleDimensions;
+  const itemLength = amazonMeasurementText(row, columns, [
+    "Item Length",
+    "Item Length Head to Toe",
+    "item_length[marketplace_id=ATVPDKIKX0DER]#1.value",
+    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.length.value",
+    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.value",
+  ], [
+    "Item Length Unit",
+    "Item length Unit",
+    "item_length[marketplace_id=ATVPDKIKX0DER]#1.unit",
+    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.length.unit",
+    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.unit",
+  ]);
+  const itemWidth = amazonMeasurementText(row, columns, [
+    "Item Width",
+    "Item Width Side To Side",
+    "item_width[marketplace_id=ATVPDKIKX0DER]#1.value",
+    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.width.value",
+    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.width.value",
+  ], [
+    "Width Unit",
+    "Item Width Unit",
+    "item_width[marketplace_id=ATVPDKIKX0DER]#1.unit",
+    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.width.unit",
+    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.width.unit",
+  ]);
+  const itemThickness = amazonMeasurementText(row, columns, [
+    "Item Thickness Decimal Value",
+    "Thickness Floor to Top",
+    "item_thickness[marketplace_id=ATVPDKIKX0DER]#1.decimal_value",
+    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.thickness.value",
+  ], [
+    "Item Thickness Unit",
+    "item_thickness[marketplace_id=ATVPDKIKX0DER]#1.unit",
+    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.thickness.unit",
+  ]);
+  const itemWeight = amazonMeasurementText(row, columns, [
+    "Item Weight",
+    "item_weight[marketplace_id=ATVPDKIKX0DER]#1.value",
+  ], [
+    "Item Weight Unit",
+    "item_weight[marketplace_id=ATVPDKIKX0DER]#1.unit",
+  ]);
   const dimensions = uniquePromptItems([
-    size && `Size: ${size}`,
-    paperSize && `Paper Size: ${paperSize}${paperSizeUnit ? ` ${paperSizeUnit}` : ""}`,
-    displayLength && `Display Length: ${displayLength}${displayLengthUnit ? ` ${displayLengthUnit}` : ""}`,
+    itemWidth && `Width: ${itemWidth}`,
+    itemLength && `Length: ${itemLength}`,
+    itemThickness && `Thickness: ${itemThickness}`,
+    itemWeight && `Weight: ${itemWeight}`,
   ]);
   return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
 }
@@ -5477,7 +6001,11 @@ function amazonListingDimensionListText(row, columns) {
 function amazonFactsWithFallback(primary, fallback) {
   const merged = { ...fallback };
   Object.entries(primary || {}).forEach(([key, value]) => {
-    const hasValue = Array.isArray(value) ? value.length : cleanFieldDisplayValue(value);
+    const hasValue = Array.isArray(value)
+      ? value.length
+      : typeof value === "number"
+        ? value > 0
+        : cleanFieldDisplayValue(value);
     if (hasValue) merged[key] = value;
   });
   return merged;
@@ -5536,6 +6064,32 @@ function compactAmazonTitle(value) {
   if (!clean) return "";
   const firstClause = clean.split(/\s*,\s*/)[0] || clean;
   return compactEnglishWords(firstClause, 8) || clean;
+}
+
+function amazonTitleContainsFieldMetadata(value) {
+  return /\b(?:product\s+attribute|attribute\s+function|product\s+function)\b/i.test(String(value || ""));
+}
+
+function amazonListingBaseProductName(listing = {}) {
+  const titleName = compactAmazonTitle(listing.title || "");
+  if (titleName && !amazonTitleContainsFieldMetadata(titleName)) return titleName;
+
+  const productTypeName = compactEnglishWords(
+    String(listing.readableProductType || listing.productType || "").replace(/[_-]+/g, " "),
+    6,
+  );
+  if (productTypeName) return productTypeName;
+
+  const itemTypeName = compactEnglishWords(
+    String(listing.englishCategory || "").replace(/[_-]+/g, " "),
+    6,
+  );
+  if (itemTypeName) return itemTypeName;
+
+  return compactEnglishWords(
+    titleName.replace(/\b(?:product\s+attribute|attribute\s+function|product\s+function)\b[\s\S]*$/i, " "),
+    6,
+  );
 }
 
 function englishAmazonValue(value) {
@@ -5601,8 +6155,10 @@ function amazonSharedFacts(row, columns, browsePath = "") {
     height,
     heelType,
   });
-  const pack = amazonListingPackText(productText, row, columns);
-  const dimensionList = amazonListingDimensionListText(row, columns);
+  const titleUnitQuantity = amazonTitleUnitQuantity(title);
+  const pack = titleUnitQuantity?.label || amazonListingPackText(productText, row, columns);
+  const packComposition = amazonRefillRollComposition(title, description, bullets, keywords);
+  const dimensionList = amazonListingDimensionListText(row, columns, productText, title);
 
   return {
     title,
@@ -5618,6 +6174,9 @@ function amazonSharedFacts(row, columns, browsePath = "") {
     scene: scenes,
     fit,
     pack,
+    packComposition,
+    skuUnitQuantity: titleUnitQuantity?.count || 0,
+    skuUnitQuantityLabel: titleUnitQuantity?.label || "",
     feature1: bullets[0] || style || "",
     feature2: bullets[1] || bullets[2] || "",
     surfaceFinish: paperFinish,
@@ -5634,6 +6193,13 @@ function amazonSharedFacts(row, columns, browsePath = "") {
       englishCategory,
     ], "", 8),
   };
+}
+
+function amazonBundleComponentSeeds(listing = {}, color = "") {
+  const text = [listing.title, listing.description, ...(listing.bullets || [])].filter(Boolean).join(" ");
+  if (!/(?:poop\s*bag\s*(?:holder|dispenser)|pet\s*waste\s*dispenser)/i.test(text) || !/refill\s*rolls?/i.test(text)) return [];
+  const rolls = Number.parseInt(extractFirstMatch(text, [/(?:and|plus|with)\s+(\d+)\s+(?:scented\s+)?(?:poop\s*bag\s*)?refill\s*rolls?/i, /(\d+)\s+(?:scented\s+)?refill\s*rolls?/i]), 10) || 0;
+  return rolls ? [{ name: `${cleanFieldDisplayValue(color) || "Color-matched"} poop bag dispenser`, quantity: 1 }, { name: `${cleanFieldDisplayValue(color) || "Color-matched"} scented poop bag refill rolls`, quantity: rolls }] : [];
 }
 
 function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
@@ -5681,17 +6247,20 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
     ].filter(Boolean);
     const optionLabel = optionParts.join(" / ") || sku;
     variantLabels.push(optionLabel);
-    const productName = displayVariantText([listing.shortTitle || "Amazon template product", attrs.color, attrs.size].filter(Boolean).join(" - "));
+    const listingBaseName = amazonListingBaseProductName(listing) || "Amazon template product";
+    const productName = listingBaseName;
     const sizeCode = displayVariantText(optionParts.join(" / "));
+    const extractedDimensionFields = dimensionFieldsFromDimensionList(listing.dimensionList, [productName, listing.structure].filter(Boolean).join(" "));
     return {
       id: `EXTRACTED-AMAZON-${index + 1}-${sku.replace(/[^A-Z0-9]+/gi, "-")}`,
       label: `${sku} | ${optionLabel}`,
       displayLabel: `${sku} | ${optionLabel}`,
       productName,
-      baseProductName: listing.shortTitle || "Amazon template product",
+      baseProductName: listingBaseName,
       shape: productName,
       model: sku,
       parentSku,
+      amazonTitle: listing.title || "",
       amazonRowNumber: rowInfo.excelRowNumber,
       color: attrs.color || attrs.colorMap || "",
       displayColor: attrs.color || attrs.colorMap || "",
@@ -5701,24 +6270,33 @@ function amazonRowsToProducts(rows, browsePath = "", skuFilter = "") {
       sizeCode,
       outputSizeCode: sizeCode,
       pack: listing.pack || "",
+      packComposition: listing.packComposition || "",
+      skuUnitQuantity: listing.skuUnitQuantity || 0,
+      skuUnitQuantityLabel: listing.skuUnitQuantityLabel || "",
       material: listing.material,
       structure: listing.structure,
       scene: listing.scene,
-      feature1: listing.feature1,
-      feature2: listing.feature2,
+      feature1: "",
+      feature2: "",
+      amazonFeature1: listing.feature1,
+      amazonFeature2: listing.feature2,
       surfaceFinish: listing.surfaceFinish || "",
       fit: listing.fit,
       detailParameter: listing.detailParameter,
+      bundleComponentSeeds: isLikelyBundleSku({ model: sku, parentSku }) ? amazonBundleComponentSeeds(listing, attrs.color || attrs.colorMap || "") : [],
       groupKey: parentSku || amazonRowValue(parentRow, columns, "SKU", "contribution_sku") || "amazon-template",
       group: {
-        promptName: listing.shortTitle || listing.title || "Amazon template product",
+        promptName: listingBaseName,
         promptSpecs: [listing.readableProductType, listing.englishCategory, theme, listing.pack, listing.material, listing.structure, listing.scene].filter(Boolean),
         dimensions: listing.dimensionList ? extractDimensions(listing.dimensionList) : [],
         evidenceNote: `Amazon 模板：按 Child SKU 提取 ${sourceRowInfos.length} 个采购款式；变体主题 ${theme || "未填写"}。${filter?.hasFilter ? `筛选：${filter.raw}。` : ""}`,
       },
       dims: {
+        ...extractedDimensionFields,
         cupRange: "",
-        source: `Amazon 模板：Child SKU = 款式数量；${theme || "变体"} = 款式属性。`,
+        source: listing.dimensionList
+          ? `Amazon 模板第 ${rowInfo.excelRowNumber} 行：产品展开尺寸属性。`
+          : `Amazon 模板：Child SKU = 款式数量；${theme || "变体"} = 款式属性。`,
       },
       singleSpec: `[CURRENT_PRODUCT_OPTION: ${optionLabel}]`,
       specList: `[SPEC_LIST: ${[listing.shortTitle, optionLabel, listing.pack, listing.material, listing.structure, listing.scene].filter(Boolean).join(" / ")}]`,
@@ -5756,8 +6334,70 @@ async function extractAmazonTemplateProducts(file, skuFilter = "") {
   return { products, sourceText };
 }
 
+function dimensionListItems(value, context = "") {
+  const source = cleanTokenValue(value);
+  if (!source) return [];
+  return semanticDimensionItems(source.split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean), context);
+}
+
+function canonicalDimensionKey(item, context = "") {
+  const label = String(item || "").split(":")[0].trim().toLowerCase();
+  return label.replace(/[^a-z]+/g, "_").replace(/^_|_$/g, "");
+}
+
+function comparableDimensionMeasurement(item) {
+  const match = String(item || "").match(/:\s*([0-9.]+)\s*(mm|cm|m|in|ft|feet|foot|yd|um|g|kg|lb|lbs|oz|ml|l)\b/i);
+  if (!match) return null;
+  const value = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const lengthFactors = { um: 0.001, mm: 1, cm: 10, m: 1000, in: 25.4, ft: 304.8, feet: 304.8, foot: 304.8, yd: 914.4 };
+  const weightFactors = { g: 1, kg: 1000, lb: 453.59237, lbs: 453.59237, oz: 28.349523125 };
+  const capacityFactors = { ml: 1, l: 1000 };
+  if (lengthFactors[unit]) return { family: "length", value: value * lengthFactors[unit] };
+  if (weightFactors[unit]) return { family: "weight", value: value * weightFactors[unit] };
+  if (capacityFactors[unit]) return { family: "capacity", value: value * capacityFactors[unit] };
+  return null;
+}
+
+function dimensionMeasurementsAgree(first, second) {
+  const a = comparableDimensionMeasurement(first);
+  const b = comparableDimensionMeasurement(second);
+  if (!a || !b || a.family !== b.family) return comparablePromptItem(first) === comparablePromptItem(second);
+  const scale = Math.max(Math.abs(a.value), Math.abs(b.value), 0.0001);
+  return Math.abs(a.value - b.value) / scale <= 0.2;
+}
+
+function mergeVerifiedDimensionLists(primaryList, secondaryList, context = "") {
+  const primary = dimensionListItems(primaryList, context);
+  const secondary = dimensionListItems(secondaryList, context);
+  const conflicts = [];
+  const conflictKeys = new Set();
+  const primaryByKey = new Map(primary.map((item) => [canonicalDimensionKey(item, context), item]));
+  secondary.forEach((item) => {
+    const key = canonicalDimensionKey(item, context);
+    const existing = primaryByKey.get(key);
+    if (existing && !dimensionMeasurementsAgree(existing, item)) {
+      conflictKeys.add(key);
+      conflicts.push(`${existing} vs ${item}`);
+    }
+  });
+  const confirmed = primary.filter((item) => !conflictKeys.has(canonicalDimensionKey(item, context)));
+  secondary.forEach((item) => {
+    const key = canonicalDimensionKey(item, context);
+    if (conflictKeys.has(key) || primaryByKey.has(key)) return;
+    confirmed.push(item);
+  });
+  return {
+    dimensionList: confirmed.length ? `[VERIFIED_DIMENSIONS: ${uniquePromptItems(confirmed).join("; ")}]` : "",
+    dimensions: uniquePromptItems(confirmed),
+    conflicts,
+  };
+}
+
 function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, supplierBaseName) {
-  const supplierName = cleanFieldDisplayValue(
+  const visionVerified = Boolean(supplierProduct.visionVerified);
+  const visionEvidence = supplierProduct.visionEvidence || {};
+  const rawSupplierName = cleanFieldDisplayValue(
     supplierProduct.outputProductName
       || supplierProduct.baseProductName
       || supplierProduct.productName
@@ -5765,29 +6405,60 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
       || defaultProductName(supplierProduct)
   );
   const amazonOption = displayVariantText(amazonProduct.sizeCode || amazonProduct.outputSizeCode || cleanTokenValue(amazonProduct.singleSpec) || "");
-  const amazonBaseName = cleanFieldDisplayValue(
+  const rawAmazonBaseName = cleanFieldDisplayValue(
     amazonProduct.baseProductName
       || amazonProduct.productName
       || defaultProductName(amazonProduct)
   );
-  const baseName = amazonBaseName || supplierName;
-  const productName = displayVariantText([
-    baseName,
-    amazonOption && !promptItemsOverlap(baseName, amazonOption) ? amazonOption : "",
-  ].filter(Boolean).join(" - ")) || amazonProduct.productName || supplierName;
+  const productNameContext = [
+    supplierProduct.structure,
+    supplierProduct.detailParameter,
+    supplierProduct.scene,
+    rawSupplierName,
+  ].filter(Boolean).join(" ");
+  const supplierName = englishOnlyProductName(rawSupplierName, productNameContext);
+  const amazonBaseName = englishOnlyProductName(rawAmazonBaseName, productNameContext);
+  const baseName = visionEvidence.productName ? supplierName || amazonBaseName : amazonBaseName || supplierName;
+  const productName = baseName || amazonProduct.baseProductName || supplierName || amazonProduct.productName;
   const supplierGroup = supplierProduct.group || {};
   const amazonGroup = amazonProduct.group || {};
-  const dimensions = (amazonGroup.dimensions || []).length ? amazonGroup.dimensions : (supplierGroup.dimensions || []);
-  const dimensionList = amazonProduct.dimensionList
-    || supplierProduct.dimensionList
-    || (dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "");
-  const material = amazonProduct.material || supplierProduct.material || "";
-  const structure = amazonProduct.structure || supplierProduct.structure || "";
-  const scene = amazonProduct.scene || supplierProduct.scene || "";
-  const feature1 = amazonProduct.feature1 || supplierProduct.feature1 || "";
-  const feature2 = amazonProduct.feature2 || supplierProduct.feature2 || "";
-  const fit = amazonProduct.fit || supplierProduct.fit || "";
-  const detailParameter = amazonProduct.detailParameter || supplierProduct.detailParameter || "";
+  const visionDimensionItems = semanticDimensionItems(visionEvidence.dimensions || [], [supplierName, supplierProduct.structure].filter(Boolean).join(" "));
+  const visionDimensionList = visionDimensionItems.length
+    ? `[VERIFIED_DIMENSIONS: ${visionDimensionItems.join("; ")}]`
+    : "";
+  // A dimension read from the current SKU's supplier detail/OCR is stronger
+  // evidence than an Amazon title or generic spreadsheet cells. Do not mix
+  // conflicting source levels into one product-size chart.
+  const supplierDimensionList = visionDimensionList || supplierProduct.dimensionList || "";
+  const dimensionMerge = mergeVerifiedDimensionLists(
+    supplierDimensionList || amazonProduct.dimensionList,
+    "",
+    [productName, supplierProduct.structure, amazonProduct.structure].filter(Boolean).join(" ")
+  );
+  const dimensions = dimensionMerge.dimensions.length
+    ? dimensionMerge.dimensions
+    : (amazonGroup.dimensions || []).length ? amazonGroup.dimensions : (supplierGroup.dimensions || []);
+  const hasDimensionEvidence = Boolean(visionDimensionList || amazonProduct.dimensionList || supplierProduct.dimensionList);
+  const dimensionList = hasDimensionEvidence
+    ? dimensionMerge.dimensionList
+    : (dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "");
+  const mergedDimensionFields = dimensionFieldsFromDimensionList(dimensionList, [productName, amazonProduct.structure].filter(Boolean).join(" "));
+  const material = supplierProduct.material || amazonProduct.material || "";
+  // The selected Amazon child SKU is authoritative for variant color.
+  // Supplier/Doubao color is only a fallback when the child SKU has no color.
+  const color = amazonProduct.color || supplierProduct.color || "";
+  const structure = supplierProduct.structure || amazonProduct.structure || "";
+  const scene = supplierProduct.scene || amazonProduct.scene || "";
+  const supplierSellingPoints = uniqueSellingPoints([
+    ...splitSellingPointText(supplierProduct.feature1),
+    ...splitSellingPointText(supplierProduct.feature2),
+  ], 6).filter((point) => !isOrdinaryMaterialSellingPoint(point) && sellingPointKey(point) !== "material");
+  const feature1 = sellingPointGroupText(distributedSellingPointGroups(supplierSellingPoints, 0, 2, 4));
+  const feature2 = sellingPointGroupText(distributedSellingPointGroups(supplierSellingPoints, 1, 2, 4));
+  const hasSupplierPropertyEvidence = Boolean(feature1 || feature2);
+  const fit = supplierProduct.fit || amazonProduct.fit || "";
+  const detailParameter = supplierProduct.detailParameter || amazonProduct.detailParameter || "";
+  const titleQuantity = amazonSkuTitleQuantityFacts(amazonProduct);
   const promptSpecs = uniquePromptItems([
     productName,
     amazonOption,
@@ -5797,27 +6468,42 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     scene,
   ]).filter(Boolean);
   const evidenceNote = compactPromptItems([
-    amazonProduct.group?.evidenceNote || "Amazon listing：优先采用模板中的 listing 字段和 Child SKU 款式结构。",
-    "1688 / 采购单：仅补充 Amazon 未填写的材质、结构、场景、卖点、尺寸等参数。",
-  ], "Amazon listing 优先，1688 补缺。", 4);
+    visionVerified ? "豆包识图：已用1688图片与本地OCR交叉整理，并以带图片证据的供应商事实为准。" : amazonProduct.group?.evidenceNote || "Amazon listing：优先采用模板中的 listing 字段和 Child SKU 款式结构。",
+    visionVerified ? "豆包只覆盖其逐项确认的字段；未确认字段继续采用本地解析或 Amazon item 商品字段。" : "1688 / 采购单：补充材质、结构、场景、卖点、尺寸等参数。",
+    hasSupplierPropertyEvidence ? "卖点采用1688标题、属性或详情图中可核验的产品属性。" : "1688未提取到有效卖点，等待豆包联网查证；Amazon 通用 Bullet Point 不作兜底。",
+    dimensionMerge.conflicts.length ? `尺寸冲突，已从提示词排除：${dimensionMerge.conflicts.join("；")}` : "尺寸已按产品语义合并，并保留产品尺寸与包装尺寸边界。",
+  ], visionVerified ? "1688图片证据优先，Amazon模板保留变体。" : "Amazon listing 优先，1688 补缺。", 4);
 
   return {
     ...amazonProduct,
     productName,
-    baseProductName: amazonBaseName || supplierName || productName,
+    baseProductName: visionEvidence.productName ? supplierName || amazonBaseName || productName : amazonBaseName || supplierName || productName,
     shape: productName || amazonProduct.shape || supplierProduct.shape,
-    pack: amazonProduct.pack || supplierProduct.pack || "",
+    amazonTitle: amazonProduct.amazonTitle || "",
+    pack: titleQuantity?.label || supplierProduct.pack || amazonProduct.pack || "",
+    packComposition: amazonProduct.packComposition || supplierProduct.packComposition || "",
+    skuUnitQuantity: titleQuantity?.count || 0,
+    skuUnitQuantityLabel: titleQuantity?.label || "",
     material,
+    color,
     structure,
     scene,
+    installationSteps: supplierProduct.installationSteps || amazonProduct.installationSteps || "",
     feature1,
     feature2,
     feature3: "",
-    surfaceFinish: amazonProduct.surfaceFinish || supplierProduct.surfaceFinish || "",
+    surfaceFinish: supplierProduct.surfaceFinish || amazonProduct.surfaceFinish || "",
     fit,
     detailParameter,
     bundleComponents: amazonProduct.bundleComponents || supplierProduct.bundleComponents || "",
-    dims: amazonProduct.dims || supplierProduct.dims,
+    dims: {
+      ...(!visionDimensionList ? { ...(supplierProduct.dims || {}), ...(amazonProduct.dims || {}) } : (supplierProduct.dims || {})),
+      ...mergedDimensionFields,
+      source: dimensionMerge.conflicts.length
+        ? `尺寸来源存在冲突：${dimensionMerge.conflicts.join("；")}`
+        : [amazonProduct.dims?.source, supplierProduct.dims?.source].filter(Boolean).join(" + ") || "Verified product dimensions",
+    },
+    dimensionConflicts: dimensionMerge.conflicts,
     dimensionList,
     cupRange: amazonProduct.cupRange || amazonProduct.dims?.cupRange || supplierProduct.cupRange || supplierProduct.dims?.cupRange || "",
     group: {
@@ -5874,55 +6560,101 @@ function mergeAmazonProductsWithSupplierFacts(amazonProducts, supplierProducts) 
   ));
 }
 
+function amazonSkuTitleQuantityFacts(product) {
+  // A verified refill-roll composition owns the count semantics.  Do not
+  // restore a generic "60 Count" rule later in the Amazon/supplier merge.
+  if (cleanFieldDisplayValue(product?.packComposition || "")) return null;
+  const parsed = amazonTitleUnitQuantity([
+    product?.amazonTitle,
+    product?.skuUnitQuantityLabel,
+    product?.pack,
+    product?.size,
+    product?.sizeCode,
+    product?.singleSpec,
+  ].filter(Boolean).join(" "));
+  const explicitCount = Number(product?.skuUnitQuantity || 0);
+  const count = Number(parsed?.count || (explicitCount >= 2 ? explicitCount : 0));
+  if (count < 2) return null;
+  return {
+    count,
+    label: parsed?.label || cleanFieldDisplayValue(product?.skuUnitQuantityLabel) || `${count}-Pack`,
+  };
+}
+
+function amazonVariantForSupplierQuantity(supplierProduct, amazonProducts, index, supplierCount) {
+  if (!amazonProducts.length) return null;
+  if (amazonProducts.length === 1) return amazonProducts[0];
+  const supplierText = [
+    supplierProduct?.model,
+    supplierProduct?.color,
+    supplierProduct?.displayColor,
+    supplierProduct?.size,
+    supplierProduct?.sizeCode,
+    supplierProduct?.label,
+  ].filter(Boolean).join(" ");
+  const matched = amazonProducts.find((product) => {
+    const amazonText = [
+      product?.model,
+      product?.color,
+      product?.displayColor,
+      product?.size,
+      product?.sizeCode,
+      product?.label,
+    ].filter(Boolean).join(" ");
+    return supplierText && amazonText && promptItemsOverlap(supplierText, amazonText);
+  });
+  return matched || (supplierCount === amazonProducts.length ? amazonProducts[index] : null);
+}
+
+function applyAmazonSkuTitleQuantities(supplierProducts, amazonProducts) {
+  return (supplierProducts || []).map((product, index) => {
+    const amazonProduct = amazonVariantForSupplierQuantity(product, amazonProducts || [], index, supplierProducts.length);
+    const packComposition = cleanFieldDisplayValue(amazonProduct?.packComposition || product?.packComposition || "");
+    const quantity = amazonSkuTitleQuantityFacts(amazonProduct);
+    if (!quantity && !packComposition) return product;
+    return {
+      ...product,
+      amazonTitle: amazonProduct?.amazonTitle || "",
+      pack: quantity?.label || product.pack || amazonProduct?.pack || "",
+      packComposition,
+      skuUnitQuantity: quantity?.count || 0,
+      skuUnitQuantityLabel: quantity?.label || "",
+      singleSpec: `[CURRENT_PRODUCT_OPTION: ${[
+        cleanTokenValue(product.singleSpec) || product.productName || product.label,
+        quantity?.label || product.pack || amazonProduct?.pack || "",
+      ].filter(Boolean).join(", ")}]`,
+    };
+  });
+}
+
 function inferProductsFromSources(purchaseText, supplierText, competitorText) {
+  const visionEvidence = doubaoVisionEvidenceProfile(supplierText);
+  const visionVerified = visionEvidence.verified;
   const primaryText = productIdentitySourceText(purchaseText, supplierText);
   const attributeText = [primaryText, supplierText].filter(Boolean).join(" ");
   const combined = [attributeText, competitorText].join(" ");
-  const supplierAttrs = supplierAttributeMap(supplierText);
   const identityAttrs = supplierAttributeMap(primaryText);
   const productName = inferProductName(primaryText);
-  const isYogaSockFamily = isYogaSockText(primaryText);
-  const isSockFamily = isSockFamilyText(primaryText);
-  const detailAttributes = supplierAttributeMap(supplierText);
-  const material = detailAttributes.Material
-    || (/wood pulp|原木浆|木浆|unbleached/i.test(primaryText)
-    ? "natural wood pulp paper / unbleached brown paper"
-    : /TPE|tpe|热塑性弹性体/i.test(primaryText)
-      ? "TPE thermoplastic elastomer"
-    : /主面料成分["：:]*棉|棉|cotton/i.test(primaryText) || /棉|cotton/i.test(supplierAttrs.Material || "")
-      ? translateAttributeValue("Material", supplierAttrs.Material) || "cotton blend fabric"
-    : "");
-  const color = isSockFamily ? "" : /brown|本色|原色|natural/i.test(primaryText) ? "natural brown" : "";
-  const isCoffeeFilterFamily = /coffee filters|咖啡滤纸|V02|扇形02|扇形04|U02|#04/i.test(primaryText);
+  const detailAttributes = {
+    ...supplierAttributeMap(supplierText),
+    ...visionEvidence.attributeValues,
+  };
+  const material = cleanFieldDisplayValue(detailAttributes.Material || "");
+  const color = cleanFieldDisplayValue(detailAttributes.Color || "");
   const detailTechnology = identityAttrs.Technology || detailAttributes.Technology || "";
   const detailSpecialCraft = identityAttrs.SpecialCraft || detailAttributes.SpecialCraft || "";
-  const sockStructure = isSockFamily ? compactSpecificPromptItems([
-    hasCrossStrapDesign(primaryText) ? "3D cross-strap design" : "",
-    hasFiveToeDesign(primaryText) ? "five-toe separated design" : "",
-    detailTechnology,
-  ], "", 4) : "";
-  const umbrellaStructure = umbrellaStructureText(attributeText);
-  const genericStructure = genericStructureText(attributeText || primaryText);
-  const structure = isSockFamily
-      ? sockStructure || "sock construction matched to source product"
-    : umbrellaStructure
-      ? umbrellaStructure
-    : genericStructure
-      ? genericStructure
-    : /pressed|压边|压纹|fold|折边/i.test(primaryText) || isCoffeeFilterFamily
-      ? "pressed side seam and bottom fold"
-    : "";
+  const structure = cleanFieldDisplayValue(detailAttributes.Structure || "");
   const scene = inferUseScene(attributeText || primaryText || combined);
-  const sellingPoints = inferSellingPoints(attributeText, material, 6);
-  const extraSellingPointText = remainingSellingPointText(sellingPoints.points || [], 2, 4);
+  const installationSteps = detailAttributes.InstallationSteps || inferInstallationSteps(attributeText || primaryText);
+  const sellingPointEvidence = supplierSellingPointEvidenceText(supplierText);
+  const sellingPoints = inferSellingPoints(sellingPointEvidence, material, 6);
   const extractedSellingPointSet = uniqueSellingPoints(sellingPoints.points || [], 6);
   const globalSellingPoint1 = sellingPointGroupText(distributedSellingPointGroups(extractedSellingPointSet, 0, 2, 4));
   const globalSellingPoint2 = sellingPointGroupText(distributedSellingPointGroups(extractedSellingPointSet, 1, 2, 4));
-  const dimensions = isSockFamily ? [] : extractDimensions(attributeText);
-  const sizeOrRange = detailAttributes.Size
-    || (isCoffeeFilterFamily ? extractFirstMatch(primaryText, [/([0-9]+\s*-\s*[0-9]+\s*(?:cups|人份))/i]) : "");
+  const dimensions = semanticDimensionItems(extractDimensions(attributeText), attributeText);
+  const sizeOrRange = cleanFieldDisplayValue(detailAttributes.Size || "");
   const capacityOrWeight = detailAttributes.Capacity || detailAttributes.Weight || "";
-  const productUnitCount = isSockFamily ? "" : skuRelevantPackValue(extractProductUnitCount(supplierText));
+  const productUnitCount = skuRelevantPackValue(extractProductUnitCount(supplierText));
   const cleanProductName = toCrossBorderProductName(productName, "");
   const displayName = displayProductName(cleanProductName || productName, combined) || cleanProductName;
   const outputName = crossBorderProductName(cleanProductName || productName, combined) || cleanProductName || displayName;
@@ -5938,9 +6670,7 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
       const itemDisplayColor = displayColorName(item.displayColor || item.color, item.colorEnglish);
       const itemForOutput = { ...item, productUnitCount: itemUnitCount };
       const itemDisplayName = displayProductName(item.productName || displayName, combined) || item.productName || displayName;
-      const itemOutputBaseName = isYogaSockFamily
-        ? outputName
-        : item.outputProductName || crossBorderProductName(item.productName || outputName, combined) || outputName;
+      const itemOutputBaseName = item.outputProductName || crossBorderProductName(item.productName || outputName, combined) || outputName;
       const shortBaseName = batchBaseName || shortCrossBorderBaseName(itemOutputBaseName || itemDisplayName || outputName, combined);
       const shortOptionLabel = comparisonOptionLabel(itemForOutput, shortCrossBorderOptionLabel(shortBaseName, itemForOutput, `product ${index + 1}`));
       return {
@@ -6026,30 +6756,25 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   }];
 
   return normalizedVariants.map((item) => {
-    const itemCupRange = isCoffeeFilterFamily
-      ? inferCupRangeForSpec(combined, item) || item.cupRange || sizeOrRange || ""
-      : validSizeRangeValue(sizeOrRange || item.cupRange || item.size || item.outputSizeCode || item.sizeCode || "");
-    const fallbackDimensions = fallbackDimensionsForSpec(item, combined);
+    const itemCupRange = validSizeRangeValue(sizeOrRange || item.cupRange || item.size || item.outputSizeCode || item.sizeCode || "");
     const itemDimensions = [
       item.dims?.topWidth && `Length: ${item.dims.topWidth}`,
       item.dims?.sideLength && `Width: ${item.dims.sideLength}`,
       item.dims?.bottomWidth && `${thirdDimensionLabel([combined, item.spec, item.sizeCode].filter(Boolean).join(" "))}: ${item.dims.bottomWidth}`,
       capacityOrWeight && `${detailAttributes.Capacity ? "Capacity" : "Weight"}: ${capacityOrWeight}`,
-      (!capacityOrWeight && !isSockFamily && item.dims?.weight) && `Weight: ${item.dims.weight}`,
+      (!capacityOrWeight && item.dims?.weight) && `Weight: ${item.dims.weight}`,
     ].filter(Boolean);
     const dimensionList = dimensions.length
       ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]`
       : itemDimensions.length
         ? `[VERIFIED_DIMENSIONS: ${itemDimensions.join("; ")}]`
-        : fallbackDimensions.dimensionList || "";
+        : "";
     const itemDisplayColor = displayColorName(item.displayColor || item.color, item.colorEnglish);
     const itemColor = item.colorEnglish || colorName(item.color) || color;
     const itemMaterial = translateAttributeValue("Material", item.material || "") || material;
     const itemStructure = structure;
     const itemProductName = item.productName || displayProductName(cleanProductName || productName, combined) || toCrossBorderProductName(productName, item.spec);
-    const itemOutputName = isYogaSockFamily
-      ? outputName
-      : item.outputProductName || crossBorderProductName(cleanProductName || productName, combined) || toCrossBorderProductName(productName, item.outputSpec || item.spec);
+    const itemOutputName = item.outputProductName || crossBorderProductName(cleanProductName || productName, combined) || toCrossBorderProductName(productName, item.outputSpec || item.spec);
     const variantProductName = displayVariantText(item.outputSpec || outputVariantNameFromParts(itemOutputName, item)) || itemOutputName;
     const itemShortBaseName = batchBaseName || shortCrossBorderBaseName(itemOutputName || itemProductName, combined);
     const safePack = skuRelevantPackValue(item.productUnitCount || item.pack || productUnitCount);
@@ -6066,10 +6791,12 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
       .join(" | ");
     const displaySizeCode = displayVariantText(item.outputSizeCode || outputSpec || item.sizeCode || item.spec || displaySpec);
     return {
+    visionVerified,
+    visionEvidence,
     id: item.id,
     label: variantProductName || itemOutputName || outputSpec || displayVariantText(item.outputLabel || item.label),
     displayLabel: variantProductName || itemOutputName || outputSpec || displayVariantText(item.outputLabel || item.label),
-    productName: variantProductName || itemOutputName,
+    productName: itemOutputName || outputName || variantProductName,
     baseProductName: itemOutputName,
     shape: variantProductName || outputSpec || displaySpec || item.spec,
     pack: safePack,
@@ -6081,23 +6808,26 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
       dimensions: dimensions.length ? dimensions : itemDimensions,
     },
     dims: {
-      topWidth: dimensionValueByLabels(dimensions.join("; "), ["Folded Size", "Top Width", "Length"]) || item.dims?.topWidth || fallbackDimensions.topWidth || "",
-      sideLength: dimensionValueByLabels(dimensions.join("; "), ["Open Diameter", "Side Length", "Width"]) || item.dims?.sideLength || fallbackDimensions.sideLength || "",
-      bottomWidth: dimensionValueByLabels(dimensions.join("; "), ["Open Height", "Bottom Width", "Height"]) || item.dims?.bottomWidth || fallbackDimensions.bottomWidth || "",
-      weight: dimensionValueByLabels(dimensions.join("; "), ["Weight", "Capacity", "Volume", "Weight / Capacity"]) || capacityOrWeight || (!isSockFamily ? item.dims?.weight : "") || fallbackDimensions.weight || "",
+      topWidth: dimensionValueByLabels(dimensions.join("; "), ["Base Diameter", "Diameter", "Folded Size", "Top Width", "Length"]) || item.dims?.topWidth || "",
+      sideLength: dimensionValueByLabels(dimensions.join("; "), ["Front Diameter", "Knob Diameter", "Open Diameter", "Side Length", "Width"]) || item.dims?.sideLength || "",
+      bottomWidth: dimensionValueByLabels(dimensions.join("; "), ["Projection Depth", "Depth", "Overall Projection", "Open Height", "Bottom Width", "Thickness", "Height"]) || item.dims?.bottomWidth || "",
+      weight: dimensionValueByLabels(dimensions.join("; "), ["Weight", "Capacity", "Volume", "Weight / Capacity"]) || capacityOrWeight || item.dims?.weight || "",
       cupRange: itemCupRange,
-      source: dimensions.length ? "Extracted from uploaded source files" : item.dims?.source || fallbackDimensions.source || "No verified dimensions extracted",
+      source: dimensions.length ? "Extracted from uploaded source files" : item.dims?.source || "No verified dimensions extracted",
     },
     quantity: item.quantity,
     material: itemMaterial,
     color: itemColor,
     structure: itemStructure,
     scene,
+    installationSteps,
     feature1: globalSellingPoint1 || sellingPoints.feature1,
     feature2: globalSellingPoint2 || sellingPoints.feature2,
     surfaceFinish: detailTechnology,
     fit: item.fit || "",
-    detailParameter: compactPromptItems([umbrellaDetailText(attributeText, dimensionList), detailSpecialCraft, extraSellingPointText], "", 6),
+    // Selling-point copy must never become a product parameter. Parameters stay
+    // empty unless the current source explicitly provides a parameter/detail.
+    detailParameter: compactPromptItems([detailAttributes.DetailFeatures, detailSpecialCraft], "", 6),
     singleSpec: `[CURRENT_PRODUCT_OPTION: ${[variantProductName || outputSpec, safePack].filter(Boolean).join(", ")}]`,
     specList: `[SPEC_LIST: ${[variantProductName || outputSpec, itemCupRange, safePack, itemMaterial, itemStructure].filter(Boolean).join(" / ")}]`,
     variantList: variantList ? `[VARIANT_LIST: ${variantList}]` : "",
@@ -6108,20 +6838,38 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
 
 async function extractSources() {
   hasUserSourceAttempt = true;
+  extractionGeneration += 1;
+  const requestedGeneration = extractionGeneration;
+  const routeId = selectedExtractionRoute;
+  const routeName = extractionRoutePreviews[routeId]?.title || extractionRoutePreviews.local.title;
+  const structureRouteName = productStructureRoutePreviews[selectedProductStructureRoute]?.title || productStructureRoutePreviews.single.title;
   const amazonTemplateFile = byId("amazonTemplateFile").files[0];
   const amazonSkuFilter = byId("amazonSkuFilter")?.value || "";
   const supplierFiles = Array.from(byId("supplierFile").files || []);
+  const supplierImageListFiles = Array.from(byId("supplierImageListFile").files || []);
+  const pastedSupplierImageListText = byId("supplierImageListText")?.value.trim() || "";
   const competitorFiles = Array.from(byId("competitorFile").files || []);
   const extractButton = byId("extractSources");
   extractButton.disabled = true;
   extractButton.setAttribute("aria-busy", "true");
-  byId("extractStatus").textContent = "正在解析资料...";
+  document.querySelectorAll("[data-extraction-route]").forEach((button) => { button.disabled = true; });
+  document.querySelectorAll("[data-product-structure-route]").forEach((button) => { button.disabled = true; });
+  byId("extractStatus").textContent = `正在按“${structureRouteName} / ${routeName}”解析资料...`;
 
   try {
+    supplierSourceFileNames = supplierFiles.map((file) => file.name).filter(Boolean);
     const amazonTemplate = await extractAmazonTemplateProducts(amazonTemplateFile, amazonSkuFilter);
+    populateSupplierSkuBinding(amazonTemplate.products);
     const supplierEntries = await readNamedTextFiles(supplierFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
+    const supplierImageListEntries = await readNamedTextFiles(supplierImageListFiles, (message) => {
+      byId("extractStatus").textContent = message;
+    }, "采集助手图片清单");
+    const supplierImageListText = [
+      ...supplierImageListEntries.map((entry) => entry.text),
+      pastedSupplierImageListText,
+    ].filter(Boolean).join("\n");
     const supplierHtml = combinedNamedHtmlEntries(supplierEntries);
     const competitorHtml = await readTextFiles(competitorFiles, (message) => {
       byId("extractStatus").textContent = message;
@@ -6129,15 +6877,18 @@ async function extractSources() {
     const supplierFileExtraction = supplierEntries.length > 1
       ? await extractSupplierSourcesByFile(supplierEntries, (message) => {
         byId("extractStatus").textContent = message;
-      })
+      }, routeId, supplierImageListEntries)
       : null;
     const supplierSource = supplierFileExtraction?.merged || await extractSupplierSourceText(supplierHtml, (message) => {
       byId("extractStatus").textContent = message;
-    });
+    }, routeId, supplierImageListText);
+    // A file/input change invalidates the entire extraction run. Never let a
+    // late result from the previous product commit into the new product state.
+    if (extractionGeneration !== requestedGeneration) return;
     const supplierFileProducts = supplierFileExtraction?.fileSources?.length > 1
       ? productsFromSupplierFileSources(supplierFileExtraction.fileSources)
       : [];
-    const useSupplierFileProducts = supplierFileProducts.length > 1;
+    const useSupplierFileProducts = supplierFileProducts.length > 1 && !amazonTemplate.products.length;
     const competitorSourceText = competitorHtml
       ? [
         `REFERENCE_SOURCE_FILES: ${competitorFiles.map((file) => file.name).join(", ")}`,
@@ -6153,24 +6904,20 @@ async function extractSources() {
     fieldOverrides = {};
     fieldOverridesBySku = {};
     appliedSellingPointOverridesBySku = {};
+    sellingPointResearchAttemptedBySku = new Set();
     sellingPointDraftDirty = false;
     const inferredSourceProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
-    let supplierCategoryId = categoryIdFromProduct(inferredSourceProducts[0] || {});
-    if (supplierCategoryId === "generic") {
-      supplierCategoryId = categoryIdFromSourceText([sourcePayload.purchase, sourcePayload.supplier].filter(Boolean).join(" "));
-    }
-    let amazonCategoryId = categoryIdFromProduct(amazonTemplate.products[0] || {});
-    if (amazonCategoryId === "generic") {
-      amazonCategoryId = categoryIdFromSourceText(amazonTemplate.sourceText);
-    }
-    const amazonSupplierConflict = amazonTemplate.products.length
-      && inferredSourceProducts.length
-      && sourceCategoriesConflict(supplierCategoryId, amazonCategoryId);
-    const mergedAmazonSupplierProducts = amazonTemplate.products.length && inferredSourceProducts.length
+    // Amazon child SKUs are independent products/options. A supplier page may
+    // supplement an Amazon SKU only when there is exactly one SKU and exactly
+    // one supplier product in this run. Never use a color/keyword/index
+    // fallback to broadcast one supplier page's facts or selling points to
+    // other Amazon SKUs (for example, from a dispenser to refill bags).
+    const hasUnambiguousSingleSkuSource = amazonTemplate.products.length === 1 && inferredSourceProducts.length === 1;
+    const mergedAmazonSupplierProducts = hasUnambiguousSingleSkuSource
       ? mergeAmazonProductsWithSupplierFacts(amazonTemplate.products, inferredSourceProducts)
       : [];
     if (useSupplierFileProducts) {
-      extractedProducts = supplierFileProducts;
+      extractedProducts = applyAmazonSkuTitleQuantities(supplierFileProducts, amazonTemplate.products);
     } else if (mergedAmazonSupplierProducts.length) {
       extractedProducts = mergedAmazonSupplierProducts;
     } else if (amazonTemplate.products.length) {
@@ -6178,10 +6925,94 @@ async function extractSources() {
     } else {
       extractedProducts = inferredSourceProducts;
     }
+    // A mixed 1688 page can contain both a dispenser and refill bags. Keep
+    // visual selling-point evidence, but distribute it only to Amazon SKUs
+    // whose own title/identity names the same subject; never broadcast it.
+    const explicitSupplierSku = boundSupplierSku(extractedProducts);
+    if (explicitSupplierSku) {
+      extractedProducts = applyVisualEvidenceToBoundSku(
+        extractedProducts,
+        supplierSource.sellingPointVisualEvidence,
+        explicitSupplierSku.id,
+      );
+    } else if (amazonTemplate.products.length > 1) {
+      extractedProducts = applyVisualEvidenceToMatchingAmazonSkus(
+        extractedProducts,
+        supplierSource.sellingPointVisualEvidence,
+      );
+    }
+    // A single uploaded 1688 page is the current product's explicit source.
+    // Preserve its Doubao-confirmed selling-point image links on that SKU so
+    // downstream selling-point prompts can cite the exact evidence image.
+    // With multiple pages we intentionally do not broadcast evidence across
+    // SKUs; those mappings must remain component/source-specific.
+    if (hasUnambiguousSingleSkuSource && supplierEntries.length === 1 && Array.isArray(supplierSource.sellingPointVisualEvidence)) {
+      extractedProducts = extractedProducts.map((product) => ({
+        ...product,
+        sellingPointVisualEvidence: supplierSource.sellingPointVisualEvidence,
+      }));
+    }
     if (!extractedProducts.length) {
       throw new Error("没有从当前资料中提取到产品 / 款式，请确认 Amazon 模板或 1688 HTML 是否已选择。");
     }
-    renderProductSelect(extractedProducts[0]?.id);
+    applyProductStructureRoute(extractedProducts);
+    availableReferenceImageUrls = Array.from(new Set([
+      ...(Array.isArray(supplierSource.referenceImageUrls) ? supplierSource.referenceImageUrls : []),
+      ...(Array.isArray(supplierSource.sellingPointVisualEvidence)
+        ? supplierSource.sellingPointVisualEvidence.map((item) => item?.imageUrl || item?.image_url).filter(Boolean)
+        : []),
+    ])).filter((url) => /^https?:\/\//i.test(url)).slice(0, MAX_REFERENCE_CANDIDATES);
+    let referenceMappingStatus = "";
+    if (explicitSupplierSku) {
+      const shouldVisionFilterReferences = routeId === "vision" || routeId === "web";
+      const mappingResult = shouldVisionFilterReferences
+        ? await fetchSkuReferenceImageMapping([explicitSupplierSku], availableReferenceImageUrls, (message) => {
+          byId("extractStatus").textContent = message;
+        })
+        : { mappings: { [explicitSupplierSku.id]: availableReferenceImageUrls }, unmatched: [], errors: [] };
+      if (extractionGeneration !== requestedGeneration) return;
+      const allowedUrls = new Set(availableReferenceImageUrls);
+      const intelligentlyMappedUrls = Array.from(new Set(Array.isArray(mappingResult?.mappings?.[explicitSupplierSku.id])
+        ? mappingResult.mappings[explicitSupplierSku.id]
+        : []))
+        .filter((url) => allowedUrls.has(url))
+        .slice(0, MAX_REFERENCE_CANDIDATES);
+      const mappedUrls = mappingResult?.errors?.length
+        ? availableReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES)
+        : intelligentlyMappedUrls;
+      referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [
+        sku.id,
+        sku.id === explicitSupplierSku.id ? mappedUrls : [],
+      ]));
+      const rejectedCount = Array.isArray(mappingResult?.unmatched) ? mappingResult.unmatched.length : 0;
+      referenceMappingStatus = mappingResult?.errors?.length
+        ? `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}；智能候选筛选失败，已保留 ${mappedUrls.length} 张均衡抽样图供人工选择：${mappingResult.errors.slice(0, 1).join("；")}`
+        : `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}：从链接候选中保留 ${mappedUrls.length} 张同款/同类参考图，排除 ${rejectedCount} 张明显无关图片；同款异色允许保留。`;
+    } else if (extractedProducts.length === 1) {
+      referenceImagesBySku = { [extractedProducts[0].id]: availableReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES) };
+      referenceMappingStatus = `单 SKU 资料：保留 ${referenceImagesBySku[extractedProducts[0].id].length} 张当前商品参考图。`;
+    } else if (routeId === "vision" || routeId === "web") {
+      const mappingResult = await fetchSkuReferenceImageMapping(extractedProducts, availableReferenceImageUrls, (message) => {
+        byId("extractStatus").textContent = message;
+      });
+      if (extractionGeneration !== requestedGeneration) return;
+      const allowedUrls = new Set(availableReferenceImageUrls);
+      referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [
+        sku.id,
+        Array.from(new Set(Array.isArray(mappingResult?.mappings?.[sku.id]) ? mappingResult.mappings[sku.id] : []))
+          .filter((url) => allowedUrls.has(url))
+          .slice(0, 12),
+      ]));
+      const assignmentCount = Object.values(referenceImagesBySku).reduce((sum, urls) => sum + urls.length, 0);
+      const unmatchedCount = Array.isArray(mappingResult?.unmatched) ? mappingResult.unmatched.length : 0;
+      referenceMappingStatus = mappingResult?.errors?.length
+        ? `SKU 参考图严格匹配未完成，已停止自动分配：${mappingResult.errors.slice(0, 1).join("；")}`
+        : `SKU 参考图：建立 ${assignmentCount} 个严格匹配，排除 ${unmatchedCount} 张无法确认或存在冲突的图片。`;
+    } else {
+      referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [sku.id, []]));
+      referenceMappingStatus = "本地分析路线不调用豆包进行 SKU 图片匹配；多 SKU 参考图保持为空，可手动拖入。";
+    }
+    renderProductSelect(explicitSupplierSku?.id || extractedProducts[0]?.id);
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
@@ -6194,31 +7025,44 @@ async function extractSources() {
       ? `Amazon 模板：${useSupplierFileProducts
         ? "多 1688 文件模式已改按文件输出产品，未使用模板款式"
         : mergedAmazonSupplierProducts.length
-            ? `${amazonTemplate.products.length} 个子 SKU 款式；listing 参数优先，1688 资料仅补缺${amazonSupplierConflict ? "；检测到类目不一致，请确认文件是否配套" : ""}${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`
+            ? `${amazonTemplate.products.length} 个子 SKU 款式；常规 listing 参数优先，卖点以1688证据优先、无证据时豆包联网补全${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`
             : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
       : "";
-    const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；参考链接 HTML：${competitorFiles.length} 个。`;
+    const pastedListStatus = pastedSupplierImageListText ? "、已粘贴链接清单" : "";
+    const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；采集助手图片清单：${supplierImageListFiles.length} 个文件${pastedListStatus}${supplierSource.collectorCandidateCount ? `、过滤去重后 ${supplierSource.collectorCandidateCount} 张` : ""}；参考链接 HTML：${competitorFiles.length} 个。`;
     const supplierFileStatus = useSupplierFileProducts
       ? `多 1688 文件：已按 ${supplierFileProducts.length} 个文件生成 ${supplierFileProducts.length} 个独立产品选项；旧参考链接内容未参与本次提示词。`
+      : amazonTemplate.products.length > 1
+        ? "多个 Amazon 子 SKU：已保留各 SKU 原始参数与卖点；不会把任一 1688 页面模糊补给其他 SKU。请为每个单品上传其对应 1688 资料；套装组件仍在套装资料确认中指定来源。"
+        : "";
+    const visionEvidenceCount = supplierSource.visionEvidenceCount || 0;
+    const visionErrorText = (supplierSource.visionErrors || []).slice(0, 2).join("；");
+    const visionStatus = routeId === "vision" || routeId === "web"
+      ? visionEvidenceCount
+        ? `豆包识图：已整理 ${visionEvidenceCount} 项带图片证据的信息。`
+        : `豆包识图：未整理出可确认信息。${supplierSource.visionMessage || ""}${visionErrorText ? ` 原因：${visionErrorText}` : ""}`
       : "";
-    byId("extractStatus").textContent = `已提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${ocrStatus}${ocrAvailability}`;
-    autoEnrichUseScenesIfNeeded();
+    const webStatus = routeId === "web" ? "正在根据已确认的图片事实，继续联网补充仍为空的英文名称、卖点和使用场景。" : "";
+    byId("extractStatus").textContent = `已按“${structureRouteName} / ${routeName}”提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}多网页 HTML 与详情图 OCR 已尝试读取。${htmlFileStatus}${ocrStatus}${ocrAvailability}${visionStatus}${referenceMappingStatus}${webStatus}`;
+    if (routeId === "web") {
+      autoEnrichSellingPointsIfNeeded();
+      autoEnrichUseScenesIfNeeded();
+    }
   } finally {
     extractButton.disabled = false;
     extractButton.removeAttribute("aria-busy");
+    document.querySelectorAll("[data-extraction-route]").forEach((button) => { button.disabled = false; });
+    document.querySelectorAll("[data-product-structure-route]").forEach((button) => { button.disabled = false; });
   }
 }
 
 function negativePrompt(facts = null) {
-  const profile = facts ? categoryProfile(facts) : {};
   return compactPromptItems([
     "No wrong product, invented specs, unsupported claims, extra logos, Chinese/source text, dense copy, long labels, bullets, text stacking, blur",
     facts?.bundleComponents ? "No missing bundle component, fused hybrid product, swapped component parameters, or treating bundle components as optional variants" : "",
     "No Asian reference ethnicity; people only European/American if shown",
-    profile.negative,
-    facts ? footwearStructureNegativeText(facts) : "",
     "Keep authentic non-Chinese product markings only",
-  ], "", 7);
+  ], "", 5);
 }
 
 function isPlaceholderName(value) {
@@ -6259,6 +7103,43 @@ function packagingValue(data) {
   return candidates.find((value) => /(?:pcs|pieces?|片|pack|包|pairs?|双|件|只|个|set|套)/i.test(value) && !/cups?|人份/i.test(value)) || "";
 }
 
+// A supplier/Amazon title can call a mixed bundle "5 Pcs" even when the
+// actual contents are, for example, one dispenser plus four refill rolls.
+// That is title shorthand, not a homogeneous SKU quantity and must never
+// become an on-image count instruction.
+function removeGenericPieceCount(value) {
+  return cleanFieldDisplayValue(value)
+    .replace(/(?:^|[\s/,(])\d+\s*(?:pcs?\.?|pieces?)(?=$|[\s/),])/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s*\/\s*$/g, "")
+    .trim();
+}
+
+function bundleQuantityMeaningRule(facts) {
+  if (!facts?.bundleComponents) return "";
+  return "Mixed-component bundle quantity rule: the listed components and their individual quantities are the only count meaning. Treat this as one mixed set, never as a multi-pack of identical units. Do not write, label, or imply a generic “N Pieces” count, five refill rolls, or five identical products.";
+}
+
+function bundleFullSetDisplayRule(facts) {
+  if (!facts?.bundleComponents) return "";
+  return `HIGHEST-PRIORITY BUNDLE VISUAL REQUIREMENT: every generated image must visibly show the complete current set together as separate physical items: ${facts.bundleComponents}. The main dispenser/container is not a standalone product; never show it alone or omit the refill/component items. Keep the listed quantities visibly distinct and source-accurate; do not fuse components or substitute them.`;
+}
+
+function standaloneAccessoryExclusionRule(facts) {
+  if (facts?.bundleComponents) return "";
+  const identity = [facts?.productName, facts?.titleSpec, facts?.selectedSpec, facts?.skuOption].filter(Boolean).join(" ");
+  const isPetWasteBag = /(?:poop\s*bags?|pet\s*waste\s*bags?|waste\s*bag\s*refills?)/i.test(identity);
+  const isDispenserSku = /(?:dispenser|holder|container|case)/i.test(identity);
+  if (!isPetWasteBag || isDispenserSku) return "";
+  return "HIGHEST-PRIORITY STANDALONE-SKU IDENTITY: this selected SKU sells refill poop bags only. Show only the current bag roll(s), bag pack, or individual bags that are actually included. No dispenser, holder, container, carrying case, lid, clip, loop, leash attachment, or other accessory is included or may appear anywhere in the image.";
+}
+
+function refillBagPackCompositionRule(facts) {
+  const composition = cleanFieldDisplayValue(facts?.packComposition || "");
+  if (!composition) return "";
+  return `HIGHEST-PRIORITY VERIFIED PACK COMPOSITION: ${composition}. “${facts.pack || "Total bag count"}” means individual bags only, not rolls or separate product units. If the image shows package quantity, visibly show exactly the listed refill-roll count; never show a wall, stack, or arrangement of ${facts.skuUnitQuantity || "the total bag count"} rolls.`;
+}
+
 function cupTypeValue(value) {
   return cleanTokenValue(value)
     .split(",")
@@ -6269,18 +7150,31 @@ function cupTypeValue(value) {
 
 function promptFacts(sku, data) {
   const group = productGroups[sku.groupKey] || sku.group || {};
-  const productName = promptValue(data.productName, sku.shape || "the product");
-  const selectedSpec = promptValue(data.singleSpec, sku.shape || "selected product specification");
-  const cupType = promptValue(cupTypeValue(group.promptName || sku.shape || selectedSpec), sku.shape || selectedSpec || "selected product specification");
-  const pack = packagingValue(data);
-  const material = promptValue(data.material, "verified product material");
-  const color = promptValue(data.color, "accurate product color");
+  const bundleComponents = promptValue(data.bundleComponents || sku.bundleComponents, "");
+  const isMixedBundle = Boolean(bundleComponents);
+  const rawProductName = promptValue(data.productName, sku.shape || "the product");
+  const rawSelectedSpec = promptValue(data.singleSpec, sku.shape || "");
+  const productName = isMixedBundle ? removeGenericPieceCount(rawProductName) || rawProductName : rawProductName;
+  const selectedSpec = isMixedBundle ? removeGenericPieceCount(rawSelectedSpec) || rawSelectedSpec : rawSelectedSpec;
+  const cupType = promptValue(cupTypeValue(group.promptName || sku.shape || selectedSpec), "");
+  const rawPack = packagingValue(data);
+  const pack = isMixedBundle ? removeGenericPieceCount(rawPack) : rawPack;
+  const packComposition = cleanFieldDisplayValue(sku.packComposition || data.packComposition || "");
+  // Generic title counts (e.g. 5 Pcs) are disabled for confirmed bundles;
+  // their component list is the authoritative quantity source. The same is
+  // true for a sourced refill-roll composition: total bags must not turn into
+  // a count of physical rolls in an image.
+  const hasStructuredPackComposition = Boolean(packComposition);
+  const skuUnitQuantity = isMixedBundle || hasStructuredPackComposition ? 0 : Number(sku.skuUnitQuantity || 0);
+  const skuUnitQuantityLabel = isMixedBundle || hasStructuredPackComposition ? "" : cleanFieldDisplayValue(sku.skuUnitQuantityLabel || "");
+  const material = promptValue(data.material, "");
+  const color = promptValue(data.color, "");
   const fit = "";
   const scene = promptValue(data.scene, "");
   const feature1 = promptValue(data.feature1, "");
   const feature2 = promptValue(data.feature2, "");
   const feature3 = promptValue(data.feature3, "");
-  const variants = promptValue(data.variantList, "available verified product options");
+  const variants = promptValue(data.variantList, "");
   const dimensions = promptValue(data.dimensionList, "");
   const cupRange = promptValue(data.cupRange, "");
   const dimension1 = data.topWidth ? cleanTokenValue(data.topWidth) : "";
@@ -6290,7 +7184,16 @@ function promptFacts(sku, data) {
   const structure = promptValue(data.structure, sku.structure || "");
   const surfaceFinish = promptValue(data.surfaceFinish, "");
   const detailParameter = promptValue(data.detailParameter, "");
-  const bundleComponents = promptValue(data.bundleComponents || sku.bundleComponents, "");
+  const installationSteps = cleanFieldDisplayValue(sku.installationSteps || data.installationSteps || "");
+  const sellingPointVisualEvidence = Array.isArray(sku.sellingPointVisualEvidence)
+    ? sku.sellingPointVisualEvidence
+      .map((item) => ({
+        claim: cleanFieldDisplayValue(item?.claim || ""),
+        evidence: cleanFieldDisplayValue(item?.evidence || ""),
+        imageUrl: cleanFieldDisplayValue(item?.imageUrl || item?.image_url || ""),
+      }))
+      .filter((item) => item.claim && item.evidence && /^https?:\/\//i.test(item.imageUrl))
+    : [];
   const titleSpec = stripRepeatedValue(selectedSpec, pack) || productName || selectedSpec;
   const skuOptionSource = sku.sizeCode && !promptItemsOverlap(productName, sku.sizeCode)
     ? sku.sizeCode
@@ -6298,6 +7201,8 @@ function promptFacts(sku, data) {
   const skuOption = compactSkuOptionText(skuOptionSource, {
     productName,
     pack,
+    skuUnitQuantity,
+    skuUnitQuantityLabel,
     material,
     structure,
     fit,
@@ -6319,6 +7224,9 @@ function promptFacts(sku, data) {
     cupType,
     selectedSpec,
     pack,
+    packComposition,
+    skuUnitQuantity,
+    skuUnitQuantityLabel,
     material,
     color,
     fit,
@@ -6337,6 +7245,8 @@ function promptFacts(sku, data) {
     structure,
     surfaceFinish,
     detailParameter,
+    installationSteps,
+    sellingPointVisualEvidence,
     cupRange,
   };
 }
@@ -6437,192 +7347,6 @@ function promptIdentityText(facts) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
-function categoryProfile(facts) {
-  const identity = promptIdentityText(facts);
-  const isResistanceBand = /resistance\s+band|exercise\s+band|workout\s+band|拉力带|拉力片|弹力带|阻力带/.test(identity);
-  const isFlowerWrappingPaper = isFlowerWrappingPaperText(identity);
-  const isSock = !isResistanceBand && /sock|socks|toe socks|grip socks|瑜伽袜|普拉提袜|五指袜|五趾袜|分趾袜|船袜|短袜|隐形袜|浅口袜|袜子|袜/.test(identity);
-  const isFootwear = !isSock && !isFlowerWrappingPaper && /slipper|slippers|flip\s*flops?|flip-flops?|sandal|sandals|footwear|shoe|shoes|clog|slides?|拖鞋|凉拖|一字拖|人字拖|沙滩鞋|鞋/.test(identity);
-  const isUmbrella = /umbrella|parasol|rain\s*umbrella|sun\s*umbrella|folding\s*umbrella|伞|雨伞|遮阳伞|晴雨伞/.test(identity);
-  const isCoffeeFilter = /coffee\s+filters?|filter\s+paper|pour[-\s]?over\s+filter|drip\s+coffee\s+filter|滤纸|咖啡滤纸|木浆纸|原木浆|dripper|pour-over|pour over/.test(identity);
-  const isCoffeeMetalAccessory = /portafilter|filter\s+basket|espresso\s+basket|dosing\s+funnel|espresso|咖啡粉碗|接粉环|粉碗/.test(identity);
-  const isKitchenware = /kitchenware|kitchen\s+tool|cup|mug|bottle|jar|container|厨房用品|杯子|马克杯|水杯|瓶|罐|收纳盒|保鲜盒/.test(identity);
-  const profiles = [
-    {
-      id: "resistance-band",
-      match: isResistanceBand,
-      apparel: false,
-      background: "Category background: clean fitness, physical therapy, stretching, strength training, or home workout setting with realistic training props.",
-      scene: "Scene category: clean fitness, physical therapy, stretching, strength training, and home workout scenes.",
-      identity: "Resistance band identity lock: preserve flat band sheet shape, selected color, TPE material feel, thickness, width, and length; do not turn into loop bands, tube bands, handles, ropes, fabric bands, socks, straps, or apparel.",
-      negative: "No socks, shoes, clothing, loop bands, tube bands, handles, ropes, fabric straps, wrong color, wrong thickness, invented texture, or extra logo.",
-      proof: {
-        "break-resistant": "show controlled stretch tension without tearing, with visible band continuity and safe distance",
-        "deformation-resistant": "show even stretch and flat band recovery without warping",
-        "stretch-range": "show extended stretch length with simple ruler/arrow guide",
-        "full-body": "show multiple workout poses or body-area icons while band stays accurate",
-        durable: "show close-up of intact edge and material under tension",
-        elastic: "show smooth elastic stretch in a workout scene",
-      },
-      inset: {
-        "break-resistant": "tension stretch close-up with intact edge",
-        "deformation-resistant": "even flat stretch close-up",
-        "stretch-range": "extended length arrow guide",
-        "full-body": "full-body exercise pose icons",
-        durable: "TPE edge/material close-up",
-        elastic: "elastic stretch close-up",
-      },
-    },
-    {
-      id: "flower-wrapping-paper",
-      match: isFlowerWrappingPaper,
-      apparel: false,
-      background: "Category background: elegant florist studio, bouquet wrapping table, gift packaging station, flower market counter, or wedding/event floral prep scene with soft natural light.",
-      scene: "Scene category: florist studio, bouquet wrapping, gift packaging, flower market, and event floral arrangement scenes; the wrapping paper remains the product hero.",
-      identity: "Flower wrapping paper identity lock: preserve sheet/roll/folded paper form, color, translucency or texture, thickness, printed pattern if verified, and packaging count; do not turn it into flowers, bags, shoes, fabric, ribbons, or finished bouquets only.",
-      negative: "No footwear, slippers, flip-flops, shoes, socks, beach/spa/shower footwear scene, unrelated bags, fabric cloth, wallpaper, gift boxes replacing the product, or flowers hiding the wrapping paper.",
-      multiScene: (sceneList) => [
-        `Flower wrapping paper scene choices for ${sceneList}: florist wrapping bouquet, gift packaging table, flower market display, wedding/event floral prep, craft storage, or paper color/texture selection.`,
-        "Show the wrapping paper clearly as sheets, rolls, folded stacks, or being wrapped around flowers; flowers and ribbons are supporting props only.",
-        "Paper benefits should be implied through handling, wrapping, layering, color matching, texture visibility, and clean finished bouquet presentation.",
-      ],
-      proof: {
-        durable: "show paper being folded or wrapped cleanly around a bouquet without tearing",
-        "multi-use": "show bouquet wrapping, gift packaging, craft decor, and floral arrangement use contexts",
-        material: "show paper texture, translucency, thickness, or matte/gloss finish in a florist setup",
-        soft: "show soft flexible sheet handling around delicate flowers",
-        compact: "show neat roll, folded stack, or easy storage on a packaging shelf",
-      },
-      inset: {
-        durable: "folded edge and wrapped bouquet close-up",
-        "multi-use": "bouquet, gift, and craft use mini scenes",
-        material: "paper texture and translucency close-up",
-        soft: "flexible sheet handling close-up",
-        compact: "roll or folded stack storage close-up",
-      },
-    },
-    {
-      id: "coffee-filter",
-      match: isCoffeeFilter,
-      apparel: false,
-      background: "Category background: bright coffee brewing counter or light studio setup with dripper/cup hints; do not copy competitor product scenes.",
-      scene: "Scene category: bright coffee brewing counter or light studio setup with dripper/cup hints.",
-      negative: "Do not turn the product into coffee beans, cups, mugs, drippers, machines, metal baskets, cloth filters, or unrelated kitchen paper.",
-    },
-    {
-      id: "coffee-metal-accessory",
-      match: isCoffeeMetalAccessory,
-      apparel: false,
-      background: "Category background: clean marble coffee bar with espresso-machine and cup props; do not copy competitor product scenes.",
-      scene: "Scene category: clean marble coffee bar with espresso-machine and cup props.",
-      negative: "Do not turn the product into paper filters, coffee beans, mugs, full espresso machines, or unrelated kitchen tools.",
-    },
-    {
-      id: "kitchen",
-      match: isKitchenware,
-      apparel: false,
-      background: "Category background: bright kitchen or studio countertop, subtle matching props, realistic light.",
-      scene: "Scene category: bright kitchen or studio countertop with subtle matching props.",
-      negative: "Do not replace the product with unrelated kitchenware, food, appliances, bottles, jars, mugs, or generic containers.",
-    },
-    {
-      id: "footwear",
-      match: isFootwear,
-      apparel: true,
-      background: "Category background: neutral product-first footwear setting only when no source scene is verified.",
-      scene: "",
-      identity: "Footwear structure lock: preserve the exact source slipper/slide/sandal construction; keep upper band or strap layout/count/width, open or closed toe area as shown, sole outline/thickness, edge profile, fold/hinge if present, material texture, and selected color.",
-      negative: "No changed footwear construction, strap/band layout/count/width, open/closed toe area, sole outline/thickness, fold/hinge, invented heel/back/ankle strap, second parallel strap, two-band upper, decoration, wrong material texture/color, or extra logo.",
-      multiScene: (sceneList) => [
-        `Footwear scene choices must come only from verified extracted scene text: ${sceneList}.`,
-        "Show the exact slippers/slides/sandals while keeping realistic foot scale and true color.",
-        "Do not add footwear benefits, actions, or environments unless they are present in current source fields.",
-      ],
-      proof: {
-        compact: "show only source-verified compact or foldable structure without changing the shoe shape",
-        lightweight: "show only source-verified lightweight handling with realistic scale",
-        grip: "show only source-verified sole texture or anti-slip detail",
-        rain: "show only source-verified water or quick-dry detail",
-        material: "show source-verified footwear material texture in a clean close-up",
-      },
-      inset: {
-        grip: "source-verified sole texture close-up",
-        compact: "source-verified compact or fold detail close-up",
-        lightweight: "source-verified lightweight detail with realistic scale",
-        rain: "source-verified water or quick-dry detail close-up",
-        material: "source-verified footwear material texture close-up",
-        "cross-strap": "upper strap or backstrap structure close-up",
-      },
-    },
-    {
-      id: "yoga-socks",
-      match: isSock,
-      apparel: true,
-      background: "Category background: premium yoga/pilates lifestyle setting, bright studio floor or calm home workout space.",
-      scene: "Scene category: premium yoga or pilates lifestyle setting with soft natural light.",
-      identity: "Sock identity lock: keep the exact sock type, toe/strap/opening structure, fabric texture, grip placement, and selected color; show worn fit only when it helps prove the product.",
-      negative: "No bare feet without socks, slippers, shoes, sandals, stockings, leggings, gloves, wrong toe structure, missing grip pattern, wrong color, invented decoration, or extra brand logo.",
-      proof: {
-        grip: "show real anti-slip grip under floor/mat/surface pressure",
-        "cross-strap": "show worn/angled view that reveals the structure",
-        "five-toe": "show worn/angled view that reveals the structure",
-        elastic: "show snug stretch in use without distortion",
-        cotton: "show relaxed comfort with fabric texture visible",
-        soft: "show relaxed comfort with fabric texture visible",
-      },
-      inset: {
-        grip: "anti-slip sole close-up",
-        "cross-strap": "structure/detail close-up",
-        "five-toe": "structure/detail close-up",
-        cotton: "fabric comfort close-up",
-        soft: "fabric comfort close-up",
-        elastic: "fabric comfort close-up",
-      },
-    },
-    {
-      id: "umbrella",
-      match: isUmbrella,
-      apparel: false,
-      scene: "Scene category: realistic daily commute, travel, rainy sidewalk, and sunny outdoor shade environments with natural scale cues.",
-      negative: "Do not replace the product with parasols of a different structure, tents, raincoats, bags, canopies, unrelated outdoor gear, wrong handle, wrong canopy shape, or invented logos.",
-      proof: {
-        compact: "show folded umbrella beside a hand, pocket, or small bag with a clear size comparison",
-        lightweight: "show easy one-hand carry or bag storage without exaggerating scale",
-        uv: "show sun-shade use with canopy coverage and no unsupported numeric UV claims",
-        rain: "show raindrops beading on the canopy in a realistic rainy scene",
-        windproof: "show reinforced ribs or stable canopy structure in a mild wind context",
-      },
-      inset: {
-        compact: "folded umbrella beside hand, phone, pocket, or small bag",
-        lightweight: "one-hand carry or handbag storage proof",
-        uv: "sun-shade canopy coverage proof",
-        rain: "water-beading canopy close-up",
-        windproof: "reinforced rib frame close-up",
-      },
-    },
-  ];
-  return profiles.find((profile) => profile.match) || {
-    id: "generic",
-    apparel: false,
-    background: "Category background: realistic light category-matched surface and props, uncluttered Amazon listing style.",
-    scene: "Scene category: realistic light category-matched surface, props, and color mood.",
-    negative: "Do not replace the product with a nearby prop, background object, model accessory, or generic category guess.",
-  };
-}
-
-function isApparelCategory(facts) {
-  return categoryProfile(facts).apparel
-    || /apparel|clothing|garment|wear|activewear|sportswear|fashion|legging|shirt|dress|pants|shorts|bra|glove|hat|cap|服装|衣|裤|裙|帽/.test(promptIdentityText(facts));
-}
-
-function isFootwearCategory(facts) {
-  return categoryProfile(facts).id === "footwear";
-}
-
-function isThongFlipFlopFacts(facts) {
-  return isThongFlipFlopText(promptIdentityText(facts));
-}
-
 function mainImageRule() {
   return "Main image: no overlay text; preserve authentic non-Chinese product/packaging markings only; product occupies about 85% of the frame.";
 }
@@ -6643,28 +7367,17 @@ function scenePhraseInterpretationRule() {
   return "Scene phrases are context labels, not literal actions: use only the scenes provided on the left, reinterpret each phrase as a physically plausible environment for the current product, and do not add example scenes or unrelated lifestyle contexts.";
 }
 
-function footwearUsePlausibilityRule() {
-  return "Footwear use must be physically plausible: shoes/slippers stay worn on feet or placed on a stable walking surface; no floating footwear, no feet raised in midair as the main action, no stepping on fruit/food/merchandise/tables/crates/chairs, and no using coffee cups, baskets, produce, or props as support surfaces.";
-}
-
-function footwearMultiSceneUseRule() {
-  return "Footwear multi-scene rule: every panel shows the exact shoes/slippers worn on feet or naturally on stable ground in the user-provided scene; no product-only top-down shots, no flat lays, no basket/bag/storage display, no isolated close-ups, no macro detail panels, and no product placement as decor.";
-}
-
 function isMainImageType(typeId) {
   return typeId === "1" || typeId === "1A" || typeId === "1B";
 }
 
 function shortTextRule() {
-  return "English labels only: selling-point image titles must match the left selling-point count, 1 title group for 1 selling point or 2 title groups for 2 selling points; each group may use soft Title + Explanation text, and each part is max 5 characters; no full sentence captions or explanatory phrases on selling-point images; parameter labels stay 2-4 words max; summary feature labels stay 1-3 words max; no paragraphs, badges, repeated claims, or text stacking.";
+  return "English labels only: selling-point image titles must match the left selling-point count, 1 title group for 1 selling point or 2 title groups for 2 selling points. Use one complete 2-4 word benefit label per selling point, preferring 2-3 words and using the fourth only when needed to preserve a defining mechanism or qualifier such as twist-lock, no-drill, waterproof, load-bearing, removable, or multi-surface. No vague one-word abbreviations, chopped words, full sentence captions, explanations, paragraphs, or secondary subtitles. Parameter labels stay 2-4 words max; summary feature labels stay 1-3 words max; no badges, repeated claims, or text stacking.";
 }
 
 function humanSceneRule(facts) {
-  return isApparelCategory(facts)
-    ? "People optional; use European/American model only when it proves fit/use."
-    : "People optional; product remains the focus.";
+  return "People optional; product remains the focus.";
 }
-
 function sharedVisualRules(facts, typeId = "") {
   return [
     "4K clarity and sharp realistic detail.",
@@ -6674,78 +7387,12 @@ function sharedVisualRules(facts, typeId = "") {
 }
 
 function neutralProductSceneFallback() {
-  return "neutral product-first setting with clean light, realistic scale, simple surface or placement, and no category-specific props or scene unless present in source fields";
+  return "";
 }
 
 function neutralProductSceneListFallback() {
   return "";
 }
-
-const useSceneCatalogs = {
-  "resistance-band": [
-    ["Home strength workout", ["home workout", "strength", "exercise"]],
-    ["Gym resistance training", ["gym", "resistance training", "fitness"]],
-    ["Physical therapy session", ["physical therapy", "rehabilitation", "therapy"]],
-    ["Pre-workout stretching", ["stretching", "warm-up", "mobility"]],
-    ["Outdoor fitness training", ["outdoor", "travel", "portable"]],
-  ],
-  "flower-wrapping-paper": [
-    ["Florist bouquet wrapping", ["florist", "bouquet", "flower wrapping"]],
-    ["Gift packaging table", ["gift", "packaging", "wrapping"]],
-    ["Wedding floral preparation", ["wedding", "event", "floral"]],
-    ["Flower market counter", ["flower market", "retail", "display"]],
-    ["Craft studio projects", ["craft", "diy", "decor"]],
-  ],
-  "coffee-filter": [
-    ["Home pour-over brewing", ["home", "pour-over", "brewing"]],
-    ["Specialty coffee bar", ["coffee shop", "cafe", "barista"]],
-    ["Office coffee break", ["office", "workplace", "coffee break"]],
-    ["Camping coffee setup", ["camping", "outdoor", "travel"]],
-    ["Morning kitchen routine", ["kitchen", "morning", "daily"]],
-  ],
-  "coffee-metal-accessory": [
-    ["Home espresso station", ["home", "espresso", "coffee station"]],
-    ["Specialty cafe counter", ["cafe", "coffee shop", "barista"]],
-    ["Office coffee bar", ["office", "workplace", "coffee bar"]],
-    ["Barista training session", ["barista", "training", "practice"]],
-    ["Compact travel coffee kit", ["travel", "portable", "compact"]],
-  ],
-  kitchen: [
-    ["Everyday kitchen preparation", ["kitchen", "cooking", "preparation"]],
-    ["Family dining table", ["dining", "family", "table"]],
-    ["Office lunch break", ["office", "lunch", "workplace"]],
-    ["Outdoor picnic", ["picnic", "outdoor", "travel"]],
-    ["Pantry organization", ["pantry", "storage", "organization"]],
-  ],
-  footwear: [
-    ["Everyday home wear", ["home", "indoor", "daily"]],
-    ["Bathroom after shower", ["bathroom", "shower", "water"]],
-    ["Poolside relaxation", ["pool", "poolside", "resort"]],
-    ["Beach vacation", ["beach", "vacation", "sand"]],
-    ["Hotel and spa stay", ["hotel", "spa", "travel"]],
-  ],
-  "yoga-socks": [
-    ["Yoga studio practice", ["yoga", "studio", "practice"]],
-    ["Pilates reformer class", ["pilates", "reformer", "class"]],
-    ["Home mat workout", ["home", "mat", "workout"]],
-    ["Barre fitness class", ["barre", "fitness", "class"]],
-    ["Dance warm-up session", ["dance", "warm-up", "studio"]],
-  ],
-  umbrella: [
-    ["Rainy city commute", ["rain", "commute", "city"]],
-    ["Sunny outdoor shade", ["sun", "shade", "outdoor"]],
-    ["Travel sightseeing", ["travel", "sightseeing", "portable"]],
-    ["School-run rain protection", ["school", "rain", "daily"]],
-    ["Compact handbag carry", ["handbag", "compact", "carry"]],
-  ],
-  generic: [
-    ["Everyday home use", ["home", "daily", "indoor"]],
-    ["Professional workspace", ["professional", "workplace", "studio"]],
-    ["Travel and on-the-go use", ["travel", "portable", "on-the-go"]],
-    ["Outdoor daily activity", ["outdoor", "daily", "activity"]],
-    ["Organized storage area", ["storage", "organization", "compact"]],
-  ],
-};
 
 function normalizedScenePhrase(value) {
   return String(value || "")
@@ -6776,6 +7423,22 @@ function currentSceneResearchFacts() {
   };
 }
 
+function applyOnlineProductKeyword(skuId, keyword) {
+  const clean = String(keyword || "").replace(/\s+/g, " ").trim();
+  if (!skuId || !/^[\x00-\x7F]{4,120}$/.test(clean) || (clean.match(/[A-Za-z]+/g) || []).length < 2) return false;
+  const existingOverrides = fieldOverridesBySku[skuId] || {};
+  if (cleanFieldDisplayValue(existingOverrides.productName)) return false;
+  const sku = currentProducts().find((item) => item.id === skuId);
+  if (!sku) return false;
+  sku.onlineProductKeyword = clean;
+  fieldOverrides.productName = clean;
+  fieldOverridesBySku[skuId] = { ...existingOverrides, productName: clean };
+  const input = byId("field-productName");
+  if ((selectedSku()?.id || "") === skuId && input) input.value = clean;
+  renderProductSelect(skuId);
+  return true;
+}
+
 function useSceneSearchQuery(facts) {
   const identity = compactPromptItems([
     facts.productName,
@@ -6785,12 +7448,34 @@ function useSceneSearchQuery(facts) {
   return `${identity} common uses occasions where used`;
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
+function isUsableEnglishSellingPoint(value) {
+  const clean = String(value || "").replace(/\s+/g, " ").trim();
+  const wordCount = (clean.match(/[A-Za-z]+/g) || []).length;
+  return clean.length >= 6
+    && clean.length <= 120
+    && /^[\x00-\x7F]+$/.test(clean)
+    && wordCount >= 3
+    && wordCount <= 12;
+}
+
+async function fetchLocalSellingPointProxy(facts, timeoutMs = 55000) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
-      headers: { Accept: "application/json" },
+    const response = await fetch("/api/selling-points", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        productName: facts.productName || "",
+        selectedSpec: facts.selectedSpec || "",
+        material: facts.material || "",
+        structure: facts.structure || "",
+        detailParameter: facts.detailParameter || "",
+        sourceFingerprint: currentSourceFingerprint(),
+      }),
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -6800,58 +7485,118 @@ async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
   }
 }
 
-function stripResearchMarkup(value) {
-  const container = document.createElement("div");
-  container.innerHTML = String(value || "");
-  return (container.textContent || "").replace(/\s+/g, " ").trim();
+async function enrichSellingPointsOnline() {
+  const sku = selectedSku();
+  const skuId = sku?.id || "";
+  const feature1Input = byId("field-feature1");
+  const feature2Input = byId("field-feature2");
+  if (!skuId || !feature1Input || !feature2Input || !hasExtractedProducts()) return;
+  const requestedRevision = sellingPointInputRevision;
+  const requestedGeneration = extractionGeneration;
+  const status = byId("extractStatus");
+  const statusPrefix = status?.textContent || "";
+  if (status) status.textContent = `${statusPrefix} 1688未提取到有效卖点，正在由豆包联网查证…`;
+  try {
+    const facts = currentSceneResearchFacts();
+    const data = await fetchLocalSellingPointProxy(facts);
+    if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== skuId || sellingPointInputRevision !== requestedRevision) return;
+    applyOnlineProductKeyword(skuId, data?.english_product_keyword);
+    const points = uniqueSellingPoints((Array.isArray(data?.selling_points) ? data.selling_points : [])
+      .map((point) => String(point || "").replace(/\s+/g, " ").trim())
+      .filter(isUsableEnglishSellingPoint), 4);
+    const feature1 = sellingPointGroupText(distributedSellingPointGroups(points, 0, 2, 4));
+    const feature2 = sellingPointGroupText(distributedSellingPointGroups(points, 1, 2, 4));
+    feature1Input.value = feature1;
+    feature2Input.value = feature2;
+    fieldOverrides.feature1 = feature1;
+    fieldOverrides.feature2 = feature2;
+    fieldOverridesBySku[skuId] = {
+      ...(fieldOverridesBySku[skuId] || {}),
+      feature1,
+      feature2,
+    };
+    appliedSellingPointOverridesBySku[skuId] = { feature1, feature2 };
+    sku.sellingPointSource = points.length ? "Doubao Web Search" : NO_REFERENCE_SELLING_POINT_MESSAGE;
+    sellingPointDraftDirty = false;
+    captureFieldOverrides();
+    fieldSnapshot = currentFieldSignature();
+    renderAll();
+    if (status) {
+      status.textContent = points.length && Array.isArray(data?.sources) && data.sources.length
+        ? `${statusPrefix} 1688未提取到有效卖点；豆包已基于网络证据补全 ${points.length} 个英文卖点。`
+        : `${statusPrefix} ${NO_REFERENCE_SELLING_POINT_MESSAGE}`;
+    }
+  } catch {
+    if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== skuId || sellingPointInputRevision !== requestedRevision) return;
+    feature1Input.value = "";
+    feature2Input.value = "";
+    sku.sellingPointSource = NO_REFERENCE_SELLING_POINT_MESSAGE;
+    if (status) status.textContent = `${statusPrefix} ${NO_REFERENCE_SELLING_POINT_MESSAGE}`;
+  }
+}
+
+function autoEnrichSellingPointsIfNeeded() {
+  const skuId = selectedSku()?.id || "";
+  if (!skuId || sellingPointResearchAttemptedBySku.has(skuId)) return;
+  const points = uniqueSellingPoints([
+    ...splitSellingPointText(byId("field-feature1")?.value || ""),
+    ...splitSellingPointText(byId("field-feature2")?.value || ""),
+  ], 4).filter((point) => !isOrdinaryMaterialSellingPoint(point) && sellingPointKey(point) !== "material");
+  if (points.length) {
+    selectedSku().sellingPointSource = "1688 source evidence";
+    return;
+  }
+  sellingPointResearchAttemptedBySku.add(skuId);
+  enrichSellingPointsOnline();
+}
+
+async function fetchLocalUseSceneProxy(facts, timeoutMs = 55000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("/api/use-scenes", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        productName: facts.productName || "",
+        selectedSpec: facts.selectedSpec || "",
+        material: facts.material || "",
+        structure: facts.structure || "",
+        detailParameter: facts.detailParameter || "",
+        feature1: facts.feature1 || "",
+        feature2: facts.feature2 || "",
+        feature3: facts.feature3 || "",
+        sourceFingerprint: currentSourceFingerprint(),
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function fetchOnlineUseSceneResearch(facts) {
-  const query = useSceneSearchQuery(facts);
-  const encoded = encodeURIComponent(query);
-  const requests = [
-    fetchJsonWithTimeout(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encoded}&srlimit=8&format=json&origin=*`)
-      .then((data) => ({
-        source: "Wikipedia",
-        text: (data?.query?.search || []).map((item) => `${item.title}. ${stripResearchMarkup(item.snippet)}`).join(" "),
-      })),
-    fetchJsonWithTimeout(`https://api.duckduckgo.com/?q=${encoded}&format=json&no_html=1&skip_disambig=1`)
-      .then((data) => ({
-        source: "DuckDuckGo",
-        text: [
-          data?.Heading,
-          data?.AbstractText,
-          ...(data?.RelatedTopics || []).flatMap((item) => item?.Topics || [item]).map((item) => item?.Text),
-        ].filter(Boolean).join(" "),
-      })),
-  ];
-  const settled = await Promise.allSettled(requests);
-  const useful = settled
-    .filter((result) => result.status === "fulfilled" && result.value.text.length >= 20)
-    .map((result) => result.value);
+  const data = await fetchLocalUseSceneProxy(facts);
   return {
-    query,
-    sources: useful.map((item) => item.source),
-    text: useful.map((item) => item.text).join(" "),
+    query: String(data?.query || useSceneSearchQuery(facts)),
+    englishProductKeyword: String(data?.english_product_keyword || ""),
+    searchQueries: Array.isArray(data?.search_queries) ? data.search_queries : [],
+    sources: Array.isArray(data?.sources) ? data.sources : [],
+    scenes: Array.isArray(data?.scenes) ? data.scenes : [],
   };
 }
 
 function suggestedUseSceneItems(facts, research = {}, limit = 5) {
-  const profileId = categoryProfile(identityFactsFromData(facts)).id || "generic";
-  const catalog = useSceneCatalogs[profileId] || useSceneCatalogs.generic;
-  const evidence = `${research.text || ""} ${promptIdentityText(facts)}`.toLowerCase();
-  const ranked = catalog.map(([label, cues], index) => ({
-    label,
-    score: cues.reduce((total, cue) => total + (evidence.includes(cue.toLowerCase()) ? 4 : 0), 0) - index * 0.05,
-  })).sort((left, right) => right.score - left.score);
-  const existing = splitUseSceneText(facts.scene)
-    .flatMap((item) => item.split(/[,，]+/))
+  const researched = (research.scenes || [])
     .map(normalizedScenePhrase)
-    .filter(isUsableEnglishScene)
-    .slice(0, 3);
-  const combined = [...existing, ...ranked.map((item) => item.label)];
+    .filter(isUsableEnglishScene);
   const seen = new Set();
-  return combined.filter((item) => {
+  return researched.filter((item) => {
     const key = comparablePromptItem(item);
     if (!key || seen.has(key)) return false;
     seen.add(key);
@@ -6866,17 +7611,19 @@ async function enrichUseScenesOnline() {
   if (!button || !status || !input || !hasExtractedProducts()) return;
   const requestedSkuId = selectedSku()?.id || "";
   const requestedSceneRevision = sceneInputRevision;
+  const requestedGeneration = extractionGeneration;
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   status.textContent = "正在联网查阅适合当前产品的使用场景…";
   try {
     const facts = currentSceneResearchFacts();
     const research = await fetchOnlineUseSceneResearch(facts);
-    if ((selectedSku()?.id || "") !== requestedSkuId) return;
+    if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== requestedSkuId) return;
     if (sceneInputRevision !== requestedSceneRevision) {
       status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
       return;
     }
+    applyOnlineProductKeyword(requestedSkuId, research.englishProductKeyword);
     const scenes = suggestedUseSceneItems({ ...facts, scene: input.value }, research, 5);
     input.value = scenes.join("\n");
     fieldOverrides.scene = input.value;
@@ -6889,21 +7636,19 @@ async function enrichUseScenesOnline() {
     captureFieldOverrides();
     fieldSnapshot = currentFieldSignature();
     renderAll();
-    status.textContent = research.sources.length
-      ? `已结合 ${research.sources.join(" + ")} 补全 ${scenes.length} 个英文场景，可继续手动修改。`
-      : `网络资料暂时不可用，已按当前产品类目补全 ${scenes.length} 个英文场景，可继续手动修改。`;
+    status.textContent = scenes.length && research.sources.length
+      ? `已用跨境关键词“${research.englishProductKeyword}”联网补全 ${scenes.length} 个英文场景，可继续手动修改。`
+      : NO_REFERENCE_SCENE_MESSAGE;
   } catch (error) {
-    if ((selectedSku()?.id || "") !== requestedSkuId) return;
+    if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== requestedSkuId) return;
     if (sceneInputRevision !== requestedSceneRevision) {
       status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
       return;
     }
-    const facts = currentSceneResearchFacts();
-    const scenes = suggestedUseSceneItems({ ...facts, scene: input.value }, {}, 5);
-    input.value = scenes.join("\n");
+    input.value = "";
     captureFieldOverrides();
     renderAll();
-    status.textContent = `联网失败，已使用产品类目兜底补全 ${scenes.length} 个英文场景。`;
+    status.textContent = NO_REFERENCE_SCENE_MESSAGE;
   } finally {
     button.disabled = false;
     button.removeAttribute("aria-busy");
@@ -6922,41 +7667,27 @@ function hasVerifiedUseContext(facts) {
 }
 
 function recommendedUseSceneItems(facts, limit = 4) {
-  if (hasVerifiedUseContext(facts)) return [];
-  const productFacts = compactSpecificPromptItems([
-    facts?.productName && `product name: ${facts.productName}`,
-    facts?.selectedSpec && `current option: ${facts.selectedSpec}`,
-    facts?.material && `material: ${facts.material}`,
-    facts?.structure && `structure: ${facts.structure}`,
-    facts?.feature1 && `selling point: ${facts.feature1}`,
-    facts?.feature2 && `selling point: ${facts.feature2}`,
-  ], "current product facts", 6);
-  const sceneCount = Math.max(3, Math.min(limit, 5));
-  return [
-    `Scene selection task: because Use Scene is empty, choose ${sceneCount} distinct best-fit use scenes from current product facts only (${productFacts}); make them specific, commercially plausible, and visually different.`,
-    "Do not use a hard-coded category scene list, competitor scenes, or scenes from another product; avoid any scene that would change the product identity, structure, material, scale, or verified use.",
-  ];
+  return [];
 }
 
 function recommendedUseSceneText(facts, fallback = neutralProductSceneFallback(), limit = 4) {
-  const scenes = recommendedUseSceneItems(facts, limit);
-  return scenes.length ? scenes.join(" / ") : fallback;
+  return "";
 }
 
 function useSceneText(facts, fallback = neutralProductSceneFallback(), limit = 4) {
   const sceneText = cleanFieldDisplayValue(facts?.scene || "");
-  return (sceneText ? splitUseSceneText(sceneText).join(" / ") : "") || recommendedUseSceneText(facts, fallback, limit);
+  return sceneText ? splitUseSceneText(sceneText).join(" / ") : "";
 }
 
 function verifiedProductDetailFallback() {
-  return "visible product structure, material texture, true color, scale, and verified parameters";
+  return "";
 }
 
-function categoryStyleRule(facts) {
+function evidenceSceneStyleRule(facts) {
   const sceneText = cleanFieldDisplayValue(facts?.scene || "");
   return sceneText
     ? `Verified source scene/background: ${sceneText}.`
-    : `Current-product scene/background selection: ${recommendedUseSceneText(facts)}.`;
+    : "No reference scene information. Do not invent, infer, or add a usage scene.";
 }
 
 function basicImageRequirements(templateId, typeId, extra = "") {
@@ -6967,7 +7698,7 @@ function basicImageRequirements(templateId, typeId, extra = "") {
       parts.push("pure white background", "product occupies about 85% of the frame");
     } else {
       parts.push(sceneMainProductScaleRule());
-      parts.push(`neutral product-first background: ${neutralProductSceneFallback()}`);
+      parts.push("when no verified scene exists, use a plain neutral studio background only; do not invent a usage scene");
     }
   } else {
     parts.push("verified overlay text only when useful");
@@ -7013,19 +7744,28 @@ function convertLengthUnitsToInches(value) {
 }
 
 function dimensionText(facts) {
+  const evidenceItems = dimensionListItems(facts.dimensions, promptContextText(facts));
+  if (evidenceItems.length) {
+    return evidenceItems
+      .map((item) => convertLengthUnitsToInches(item))
+      .join(" / ");
+  }
+  const weightLabel = /(?:\bkg\b|\bg\b|\blb\b|pounds?|千克|克|磅)/i.test(facts.weightOrCapacity || "")
+    ? "Weight"
+    : "Weight / Capacity";
   return [
     facts.dimension1 && `${dimensionLabelForFacts(facts, 1)}: ${convertLengthUnitsToInches(facts.dimension1)}`,
     facts.dimension2 && `${dimensionLabelForFacts(facts, 2)}: ${convertLengthUnitsToInches(facts.dimension2)}`,
     facts.dimension3 && `${dimensionLabelForFacts(facts, 3)}: ${convertLengthUnitsToInches(facts.dimension3)}`,
-    facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
+    facts.weightOrCapacity && `${weightLabel}: ${facts.weightOrCapacity}`,
   ].filter(Boolean).join(" / ");
 }
 
+function referenceImageDimensionRule() {
+  return "Reference-image measurement lock: inspect every attached/source product parameter image and preserve every clearly printed product-dimension value and its measurement meaning, even when the generic structured fields contain fewer rows. The structured dimension list is a minimum, not a limit. Reproduce all verified visible measurements with separate ruler arrows and concise English labels; convert cm/mm to inches for on-image text. Do not omit a visible reference value, merge different measurements into one, or invent a value that is not visible in the references or verified list.";
+}
+
 function dimensionLabelForFacts(facts, index) {
-  const context = promptContextText(facts);
-  if (/umbrella|伞|canopy|folded|open diameter|open height|rain|sun shade/.test(context)) {
-    return ["", "Folded Size", "Open Diameter", "Open Height"][index] || `Dimension ${index}`;
-  }
   return `Dimension ${index}`;
 }
 
@@ -7046,6 +7786,7 @@ function productDetailText(facts, extraItems = [], limit = 8) {
     `Product: ${facts.productName}`,
     option && `Current option: ${option}`,
     facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
+    facts.packComposition && `Verified pack composition: ${facts.packComposition}`,
     color && !extraIncludesColor && `Color: ${color}`,
     referenceColorLockText(),
     ...extraItems,
@@ -7067,7 +7808,7 @@ function productIdentityLockText(facts) {
     "Identity lock: exact source product; no substitute, redesign, or invented detail.",
     facts.bundleComponents && "Bundle identity lock: show every included component as separate physical items in one set; no fused hybrid product, no missing component, no component substitution.",
     facts.bundleComponents && `Included bundle components: ${facts.bundleComponents}`,
-    categoryProfile(facts).identity,
+    bundleQuantityMeaningRule(facts),
     facts.productName && `Exact product type/name: ${facts.productName}`,
     facts.selectedSpec && `Exact option/spec: ${shortOptionText(facts) || facts.selectedSpec}`,
     facts.color && `Exact color: ${facts.color}`,
@@ -7085,20 +7826,17 @@ function productIdentityBasicRule(facts) {
     "Product identity lock comes first: exact selected current product only; no category substitution, no redesign, no invented parts.",
     facts.bundleComponents && "Bundle rule: this is one bundled listing; show all included components together as separate items, not alternative options.",
     facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
+    bundleQuantityMeaningRule(facts),
     facts.productName && `Product: ${facts.productName}`,
     option && `Option: ${option}`,
     facts.color && `Color: ${facts.color}`,
     facts.material && `Material: ${facts.material}`,
     facts.structure && `Structure: ${facts.structure}`,
-    categoryProfile(facts).identity,
   ], "", 7);
 }
 
 function sceneProductDetailText(facts, extraItems = [], limit = 8) {
-  return productDetailText(facts, [
-    categoryProfile(facts).identity,
-    ...extraItems,
-  ], limit);
+  return productDetailText(facts, extraItems, limit);
 }
 
 function sceneContextProductDetailText(facts, extraItems = [], limit = 5) {
@@ -7113,29 +7851,58 @@ function sceneContextProductDetailText(facts, extraItems = [], limit = 5) {
 }
 
 function overallStyleText(facts, typeId, extra = "", options = {}) {
+  const isReferenceControlledSellingPoint = /Selling-point reference priority/i.test(extra);
   return compactPromptItems([
-    categoryStyleRule(facts),
+    isReferenceControlledSellingPoint ? "" : evidenceSceneStyleRule(facts),
     extra,
   ], "", 3);
 }
 
+function isSkuQuantityExplanationImage(templateId, typeId) {
+  const roles = {
+    scene: new Set(["4", "7"]),
+    spec: new Set(["4", "7", "8"]),
+    feature: new Set(["4", "7", "8"]),
+    plantTie: new Set(["5"]),
+    reference: new Set(["3", "6"]),
+  };
+  return Boolean(roles[templateId]?.has(String(typeId || "")));
+}
+
+function skuQuantityExplanationRule(facts, templateId, typeId) {
+  const count = Number(facts?.skuUnitQuantity || 0);
+  if (count < 2 || !isSkuQuantityExplanationImage(templateId, typeId)) return "";
+  const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count}-Pack`;
+  return `HIGHEST-PRIORITY SKU FACT FROM THE CURRENT AMAZON TITLE: ${label}, exactly ${count} individual complete product units in this selected SKU. This title-derived quantity overrides supplier-page count, generic template count, layout defaults, and single-unit presentation defaults. Mandatory quantity proof: add one clear English on-image label “${label}” or “${count} Pieces”, and visibly account for exactly ${count} separate complete product units in the main arrangement or a clearly visible pack-contents inset. A detail close-up may focus on one unit only when the same image also shows all ${count} included complete units. Do not show, label, or imply any other quantity.`;
+}
+
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
+  const skuQuantityRule = skuQuantityExplanationRule(facts, templateId, typeId);
+  const referenceControlledSellingPoint = /Selling-point reference priority/i.test([details, style].filter(Boolean).join(" "));
+  const referenceMode = referenceControlledSellingPoint ? "selling-point" : "";
   const priorityText = compactPromptItems([
+    skuQuantityRule,
+    bundleFullSetDisplayRule(facts),
+    standaloneAccessoryExclusionRule(facts),
+    refillBagPackCompositionRule(facts),
     productIdentityBasicRule(facts),
     basic || basicImageRequirements(templateId, typeId),
   ], "", 8);
   const visualText = promptVisualSubsections(
-    details || productDetailText(facts),
+    [details || productDetailText(facts), skuQuantityRule].filter(Boolean).join(" / "),
     style || overallStyleText(facts, typeId)
   );
   const textRules = compactPromptItems([
     noChineseTextRule(),
-    isMainImageType(typeId) ? "" : shortTextRule(),
-    isMainImageType(typeId) ? "" : visualProofFirstRule(),
+    isMainImageType(typeId) ? "" : typeId === "3B"
+      ? "Installation-step text only: title 2-3 English words; exactly one numbered 2-5 word English action caption per panel; no selling-point labels, paragraphs, badges, or extra copy."
+      : shortTextRule(),
+    isMainImageType(typeId) || referenceControlledSellingPoint ? "" : visualProofFirstRule(),
+    skuQuantityRule ? `Mandatory SKU quantity text: show “${facts.skuUnitQuantityLabel || `${facts.skuUnitQuantity}-Pack`}” clearly once; the visible complete-unit count must equal ${facts.skuUnitQuantity}.` : "",
     humanSceneRule(facts),
     imageMeasurementUnitRule(),
     amazonImageFileSizeRule(),
-    referenceRuleText(),
+    referenceRuleText(referenceMode),
   ], "", 6);
   const sections = [
     promptSection("PRIORITY", priorityText),
@@ -7143,7 +7910,13 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     promptSection("TEXT", textRules),
   ];
   if (includeNegative) {
-    sections.push(promptSection("AVOID", negative || negativePrompt(facts)));
+    sections.push(promptSection("AVOID", compactPromptItems([
+      negative || negativePrompt(facts),
+      standaloneAccessoryExclusionRule(facts) && "No poop-bag dispenser, holder, container, carrying case, lid, clip, loop, leash attachment, or bundled accessory; do not turn refill bags into a dispenser set.",
+      facts.packComposition && "No depiction, label, or implication that the total bag count is a count of refill rolls; no 60-roll stack, grid, wall, or quantity display. Show only the verified refill-roll composition when a count is visible.",
+      referenceControlledSellingPoint ? sellingPointEvidenceAvoidRule() : "",
+      skuQuantityRule ? `No single-unit-only presentation, wrong unit count, missing quantity label, hidden included unit, fused products, partial extra product, or quantity other than ${facts.skuUnitQuantity}.` : "",
+    ], "", 8)));
   }
   return sections.join("\n\n");
 }
@@ -7858,8 +8631,14 @@ function sellingPointKey(value) {
   if (/(?:multi use|versatility|多用途|多场景|不同需求)/i.test(value)) return "multi-use";
   if (/(?:easy clean|washable|易清洁|可水洗)/i.test(value)) return "easy-clean";
   if (/(?:stable|sturdy|support|承重|稳固|牢固|省力)/i.test(value)) return "stable";
+  if (/(?:vacuum|suction|twist.?lock|rotary.?lock|真空|吸附|吸力|旋转锁紧|旋转固定)/i.test(value)) return "suction";
+  if (/(?:no.?drill|drill.?free|quick install|easy install|seconds? to install|免打孔|无需打孔|秒安装|快速安装|轻松安装)/i.test(value)) return "installation";
+  if (/(?:removable|reusable|reposition|可拆卸|自由拆卸|重复使用|反复使用|更换墙面)/i.test(value)) return "reusable";
+  if (/(?:multi.?surface|various surfaces|各种墙面|多种墙面|多墙面|大理石|木板|玻璃|瓷砖|金属)/i.test(value)) return "surface-fit";
   if (/(?:uv|upf|sun|shade|防晒|遮阳|防紫外|紫外线|隔热|黑胶)/i.test(value)) return "uv";
-  if (/(?:rain|waterproof|water resistant|防雨|晴雨|拒水|防水)/i.test(value)) return "rain";
+  if (/(?:rain|waterproof|water.?resistant|防雨|晴雨|拒水|防水)/i.test(value)) return "rain";
+  if (/(?:glow[\s-]*in[\s-]*the[\s-]*dark|photoluminescen(?:t|ce)|after dark|stores? daylight|daylight.?charged|self.?luminous|夜光|自发光|蓄光|光致发光)/i.test(value)) return "glow";
+  if (/(?:halloween warning decoration|decorative warning|decorative caution|万圣节.*装饰|装饰.*警示)/i.test(value)) return "decorative";
   if (/(?:windproof|wind resistant|reinforced|ribs?|防风|抗风|加固|伞骨|骨架)/i.test(value)) return "windproof";
   if (/(?:non slip|anti slip|grip|silicone|printed grip|防滑|点胶|硅胶|胶印|抓地)/i.test(value)) return "grip";
   if (/(?:cross strap|strappy|3d cross|绑带|交叉|立体)/i.test(value)) return "cross-strap";
@@ -7895,13 +8674,14 @@ function uniqueSellingPoints(items, limit = 6) {
 }
 
 function sellingPointCandidates(facts, limit = 6) {
+  // Selling-point slots are an exact reflection of the two editable
+  // Selling Point fields. Product structure, material and parameter details
+  // remain usable as visual facts elsewhere, but must never be promoted into
+  // a made-up extra benefit merely to fill a selling-point image slot.
   return uniqueSellingPoints([
     ...splitSellingPointText(facts.feature1),
     ...splitSellingPointText(facts.feature2),
     ...splitSellingPointText(facts.feature3),
-    facts.structure,
-    facts.surfaceFinish,
-    ...splitSellingPointText(visibleDetailParameter(facts.detailParameter)),
   ].filter((point) => !isOrdinaryMaterialSellingPoint(point)), limit);
 }
 
@@ -7971,12 +8751,26 @@ function sellingPointGroups(facts, groupIndex = 0, groupSize = 2) {
 
 function clampSellingPointTitle(value, fallback = "Info") {
   const clean = String(value || "")
-    .replace(/[^a-z0-9]/gi, "")
+    .replace(/[^a-z0-9\s&-]/gi, " ")
+    .replace(/\s+/g, " ")
     .trim();
-  const fallbackClean = String(fallback || "Info").replace(/[^a-z0-9]/gi, "") || "Info";
+  const fallbackClean = String(fallback || "Info").replace(/[^a-z0-9\s&-]/gi, " ").replace(/\s+/g, " ").trim() || "Info";
   const source = clean || fallbackClean;
-  const clipped = source.slice(0, 5);
-  return clipped.charAt(0).toUpperCase() + clipped.slice(1);
+  return source.split(/\s+/).slice(0, 4).join(" ");
+}
+
+function canonicalSellingPointLabel(point) {
+  const text = comparablePromptItem(point);
+  if (!text) return "";
+  if (/(?:vacuum|suction)/.test(text) && /(?:twist|rotat|lock)/.test(text)) return "Vacuum Twist Lock";
+  if (/(?:quick|fast|easy)/.test(text) && /no drill/.test(text)) return "Quick No-Drill Install";
+  if (/(?:waterproof|water resistant|moisture)/.test(text) && /(?:load|bearing|strong|stable|hold)/.test(text)) return "Strong Waterproof Hold";
+  if (/(?:remov|reuse|reusable)/.test(text) && /(?:multi surface|various surface|wall)/.test(text)) return "Removable Multi-Surface";
+  if (/(?:load bearing|strong hold|stable hold)/.test(text)) return "Strong Load Hold";
+  if (/(?:waterproof|water resistant|moisture)/.test(text)) return "Waterproof Hold";
+  if (/(?:remov|reuse|reusable)/.test(text)) return "Remove & Reuse";
+  if (/(?:multi surface|various surface)/.test(text)) return "Multi-Surface Mount";
+  return "";
 }
 
 function sellingPointWords(point) {
@@ -7990,10 +8784,18 @@ function sellingPointWords(point) {
 }
 
 function sellingPointLabelParts(point, fallback = "Info") {
+  // Selling-point image titles must be a concise, faithful form of the
+  // left-side confirmed claim. Do not substitute an old category shorthand
+  // (for example “Vac Lock” or “Firm Hold”), which can change the meaning.
+  const direct = String(point || "").replace(/\s+/g, " ").trim();
+  if (/(?:rotary|rotation|twist)[\s-]*(?:lock|lid)|(?:twist|rotary)[\s-]*(?:lock|lid)/i.test(direct)) return ["Rotary", "Twist Lock"];
+  if (/(?:easy|quick)[\s-]*(?:hang|carry)|hang.*carry/i.test(direct)) return ["Easy", "Hang Carry"];
+  if (/(?:leakproof|leak resistant|leak proof)/i.test(direct) && /(?:tear|tear resistant|tear-resistant)/i.test(direct)) return ["Leakproof", "Tear Resistant"];
+  if (/(?:zero|no)[\s-]*(?:direct\s*)?contact/i.test(direct)) return ["Zero", "Direct Contact"];
   const labelByKey = {
     compact: ["Pack", "Flat"],
     lightweight: ["Light", "Carry"],
-    "break-resistant": ["Firm", "Hold"],
+    "break-resistant": ["Tear", "Resistant"],
     "deformation-resistant": ["Shape", "Keep"],
     "stretch-range": ["Range", "Pull"],
     "full-body": ["Body", "Train"],
@@ -8001,6 +8803,10 @@ function sellingPointLabelParts(point, fallback = "Info") {
     "multi-use": ["Multi", "Use"],
     "easy-clean": ["Clean", "Wash"],
     stable: ["Firm", "Base"],
+    suction: ["Twist", "Lock"],
+    installation: ["Fast", "Mount"],
+    reusable: ["Move", "Reuse"],
+    "surface-fit": ["Multi", "Wall"],
     uv: ["UV", "Shade"],
     rain: ["Dry", "Water"],
     windproof: ["Wind", "Hold"],
@@ -8036,7 +8842,9 @@ function sellingPointLabelParts(point, fallback = "Info") {
 }
 
 function conciseSellingPointLabel(point, fallback = "Info") {
-  return sellingPointLabelParts(point, fallback).join(" ") || clampSellingPointTitle(fallback, "Info");
+  return canonicalSellingPointLabel(point)
+    || sellingPointLabelParts(point, fallback).join(" ")
+    || clampSellingPointTitle(fallback, "Info");
 }
 
 function sellingPointLabels(points, fallback = "Info") {
@@ -8056,53 +8864,80 @@ function sellingPointDisplayText(points, fallback = "Info") {
 
 function sellingPointHeadlineRule(points) {
   const labels = sellingPointLabels(points);
-  if (!labels.length) return "Use one soft Title + Explanation group only when labeling verified visible product facts; each part max 5 characters.";
-  return `Headline groups: ${labels.join(" + ")}. Match the left selling-point count exactly (${labels.length}); each selling point may use soft Title + Explanation text, each part max 5 characters.`;
+  if (!labels.length) return "Use one complete 2-4 word benefit label for each verified visible product fact, preferring 2-3 words.";
+  return `Required on-image benefit labels: ${labels.join(" + ")}. Show exactly ${labels.length} separate label groups, one for every left-side selling point; keep each complete label at 2-4 English words, prefer 2-3, and do not abbreviate or omit its defining qualifier. No subtitle or explanation line.`;
 }
 
-function sellingPointSceneGuide(points, facts = {}) {
-  const cleanPoints = limitedSellingPoints(points, 2);
-  const guides = cleanPoints.map((point) => {
-    const key = sellingPointKey(point);
-    if (key === "filtration") return "show real filtration flow visually";
-    if (key === "material") return "show material texture visually";
-    return "show the verified benefit through product imagery only";
+function sellingPointEvidenceMatchesClaim(point, evidence) {
+  const claim = cleanFieldDisplayValue(point || "");
+  const evidenceClaim = cleanFieldDisplayValue(evidence?.claim || "");
+  if (!claim || !evidenceClaim) return false;
+  if (promptItemsOverlap(claim, evidenceClaim)) return true;
+  const pointKey = sellingPointKey(claim);
+  const evidenceKey = sellingPointKey(evidenceClaim);
+  return Boolean(pointKey && evidenceKey && pointKey === evidenceKey);
+}
+
+function matchedSellingPointVisualEvidence(points, facts = {}) {
+  const evidenceItems = Array.isArray(facts.sellingPointVisualEvidence) ? facts.sellingPointVisualEvidence : [];
+  const usedUrls = new Set();
+  return limitedSellingPoints(points, 2).flatMap((point) => {
+    const match = evidenceItems.find((item) => !usedUrls.has(item.imageUrl) && sellingPointEvidenceMatchesClaim(point, item));
+    if (!match) return [];
+    usedUrls.add(match.imageUrl);
+    return [{ point, ...match }];
   });
-  return compactPromptItems([
-    ...guides,
-    facts.scene && `Keep scene relevant to ${facts.scene}`,
-  ], "", 4);
+}
+
+function sellingPointMatchedEvidenceText(points, facts = {}) {
+  const matches = matchedSellingPointVisualEvidence(points, facts);
+  if (!matches.length) return "";
+  const details = matches.map((item, index) => (
+    `Point ${index + 1} “${item.point}”: source evidence “${item.evidence}”; reference image URL: ${item.imageUrl}`
+  )).join(" / ");
+  return `MATCHED 1688 SELLING-POINT VISUAL EVIDENCE — these exact reference images must be supplied to the image generator as visual inputs, not treated as text-only links: ${details}. Reuse the matched image's demonstrated product state, action, and composition only for its matched point; retain the current SKU's verified color and included components.`;
+}
+
+function sellingPointReferenceSceneRule(points, facts = {}) {
+  const labels = sellingPointLabels(points);
+  const labelText = labels.length ? labels.join(" + ") : "the verified selling-point title";
+  const matchedEvidence = sellingPointMatchedEvidenceText(points, facts);
+  return [
+    "HIGHEST-PRIORITY SELLING-POINT EVIDENCE GATE / Selling-point reference priority: inspect all attached/current-product reference images before designing the image, but use a reference as evidence only when it visibly proves the entire exact current selling point, not merely one related action or keyword.",
+    matchedEvidence,
+    "A process, installation, instruction, unboxing, packing, or step-by-step reference image may be used when one of its individual steps visibly proves the complete exact current selling point. Do not reject a usable source scene because of its image type. However, never extract a merely related step (for example opening, twisting, inserting, pulling, holding, or hanging) and present it as proof of a different benefit.",
+    "For each selling point, a usable reference must show the same complete claimed mechanism and result. A partial action is insufficient: opening a cap does not prove anti-loose locking; pulling a bag does not prove zero contact with pet waste. Keep the current SKU accurate and never replace missing evidence with a newly imagined demonstration.",
+    `When no usable reference image directly proves a selling point, do not invent a proof scene, symbolic scenario, test action, person/hand interaction, water/load stunt, comparison, mechanism diagram, or imagined result. Use the clearest available current-product display view on a clean simple background and add only its short verified title (${labelText}).`,
+    "For a two-selling-point group, apply this decision independently to each point: a referenced point may use its reference scene, while an unreferenced point remains a title plus accurate product display; do not force two staged proof zones.",
+    "Reference images control only supported scene/action evidence; never copy Chinese text, supplier branding, watermarks, or an incorrect product variant.",
+  ].join(" ");
+}
+
+function sellingPointEvidenceAvoidRule() {
+  return "No invented visual proof: no isolated process/instruction/unboxing step unless that exact step visibly proves the complete current selling point; no action that merely suggests a claim; and no hand/action/test/scene unless the source visibly proves the complete exact current selling point. Do not treat opening as anti-loose locking, or pulling a bag as zero-contact waste pickup.";
 }
 
 function sellingPointSceneDescription(points, facts = {}, fallback = "verified product detail") {
   if (!limitedSellingPoints(points, 2).length) {
-    const baseScene = compactSpecificPromptItems([
-      useSceneText(facts, neutralProductSceneFallback(), 2),
-    ], neutralProductSceneFallback(), 2);
-    return `Scene: ${baseScene}; use universal product-detail proof: ${verifiedProductDetailFallback()}; no unsupported benefit claims; no sentence captions.`;
+    return "No verified selling-point evidence is available. Use an accurate current-product display on a plain neutral background; do not add a benefit claim, proof scene, substitute claim, or explanatory caption.";
   }
-  const focusText = sellingPointFocusText(points, fallback);
-  const sceneGuide = sellingPointSceneGuide(points, facts);
-  const baseScene = compactSpecificPromptItems([
-    useSceneText(facts, neutralProductSceneFallback(), 2),
-  ], neutralProductSceneFallback(), 2);
-  return `Scene: ${baseScene}; visual proof target only, do not write this target on the image: ${focusText}. Prove it through ${sceneGuide || "product imagery only"}; no sentence captions or explanatory phrases.`;
+  return sellingPointReferenceSceneRule(points, facts);
 }
 
 function sellingPointImageTemplateRule(points, facts = {}, imageName = "this selling-point image") {
   if (!limitedSellingPoints(points, 2).length) {
     return [
-      `${imageName}: detail-focused Amazon proof layout using the current product only.`,
+      `${imageName}: accurate Amazon product-display layout using the current product only.`,
       sellingPointSceneDescription(points, facts),
       "On-image text may only be short label groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.",
       "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, repeated benefit, or unsupported feature claim.",
     ].join(" ");
   }
-  const focusText = sellingPointFocusText(points);
   const sceneDescription = sellingPointSceneDescription(points, facts);
   return [
-    `${imageName}: visual proof target only, not on-image text: ${focusText}. ${sellingPointHeadlineRule(points)} On-image text may only be these headline groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.`,
+    `${imageName}: ${sellingPointHeadlineRule(points)} On-image text may only be these headline groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.`,
     sceneDescription,
+    `Title coverage lock: show one short title group for each verified selling point in this group (${limitedSellingPoints(points, 2).length} total). Visual demonstration is required only when a matching reference image provides it; title plus accurate product display is valid when it does not.`,
     "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, or repeated benefit.",
   ].join(" ");
 }
@@ -8151,7 +8986,7 @@ function visibleDetailParameter(value) {
     .join(", ");
 }
 
-function detailTextureText(facts, fallback = "accurate visible material texture from the reference") {
+function detailTextureText(facts, fallback = "") {
   return compactSpecificPromptItems([
     facts.material,
     facts.structure,
@@ -8161,10 +8996,16 @@ function detailTextureText(facts, fallback = "accurate visible material texture 
 }
 
 function visibleTextureDetails(facts) {
-  return compactSpecificPromptItems([detailTextureText(facts), facts.color], "visible material texture and true color", 4);
+  return compactSpecificPromptItems([detailTextureText(facts), facts.color], "", 4);
 }
 
-function referenceRuleText() {
+function referenceRuleText(mode = "") {
+  if (mode === "first-scene-hero") {
+    return "Reference rule for Scene Image 1A: preserve product identity only; deliberately avoid recreating any attached reference background, room, surface, prop arrangement, camera angle, lighting, or scene composition.";
+  }
+  if (mode === "selling-point") {
+    return "Reference rule for selling-point images: use the demonstrated reference scene/action when a current-product reference visibly supports that exact selling point; otherwise use product display plus title only and invent no proof scene.";
+  }
   return sourcePayload.competitor
     ? "Reference: composition only; copy no claims, text, brand, or people."
     : "Reference: clean Amazon listing style.";
@@ -8429,12 +9270,7 @@ function referenceLinkInsightText(typeId = "") {
 }
 
 function specModulePrompt(typeId, facts) {
-  const dimensionLine = [
-    facts.dimension1 && `Dimension 1: ${facts.dimension1}`,
-    facts.dimension2 && `Dimension 2: ${facts.dimension2}`,
-    facts.dimension3 && `Dimension 3: ${facts.dimension3}`,
-    facts.weightOrCapacity && `Weight / Capacity: ${facts.weightOrCapacity}`,
-  ].filter(Boolean).join(" / ");
+  const dimensionLine = dimensionText(facts);
   const summarySideLabels = uniquePromptItems([
     facts.material,
     facts.structure,
@@ -8457,6 +9293,12 @@ function specModulePrompt(typeId, facts) {
   const featureLabels = compactPromptItems(sellingPointCandidates(facts, 4), "verified benefits", 4);
   const sceneUse = useSceneText(facts, neutralProductSceneFallback(), 4);
   const sellingPointGroup1 = sellingPointGroups(facts, 0);
+  const installationSteps = String(facts.installationSteps || "")
+    .split(/\s*>\s*|\n+/)
+    .map((step) => step.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const installationStepList = installationSteps.map((step, index) => `Step ${index + 1}: ${step}`).join("; ");
 
   const modules = {
     "1": {
@@ -8467,17 +9309,32 @@ function specModulePrompt(typeId, facts) {
     "2": {
       basic: basicImageRequirements("spec", "2"),
       details: productDetailText(facts, [sceneUse], 6),
-      style: overallStyleText(facts, "2", `Realistic lifestyle use scene: ${sceneUse}; ${sceneMainProductScaleRule()} Product stays clear and accurate.`),
+      style: overallStyleText(facts, "2", sceneUse
+        ? `Realistic lifestyle use scene: ${sceneUse}; ${sceneMainProductScaleRule()} Product stays clear and accurate.`
+        : `${premiumStudioRenderRule()} No reference scene information; product only, with no invented usage context.`),
     },
     "3A": {
       basic: basicImageRequirements("spec", "3A"),
       details: productDetailText(facts, [sceneUse], 6),
-      style: overallStyleText(facts, "3A", `3-4 clean panels showing different product-matched use scenes: ${sceneUse}.`),
+      style: overallStyleText(facts, "3A", sceneUse
+        ? `3-4 clean panels showing different verified use scenes: ${sceneUse}.`
+        : `${premiumStudioRenderRule()} No reference scene information; use product-only multi-angle panels and do not invent use scenes.`),
     },
     "3B": {
-      basic: basicImageRequirements("spec", "3B"),
-      details: productDetailText(facts, [useSceneText(facts, "", 2)], 6),
-      style: overallStyleText(facts, "3B", `Simple 3-4 step usage infographic for ${facts.productName}; number markers and added captions allowed; added captions must stay short.`),
+      basic: "1:1 Amazon step-by-step installation instruction infographic, 4K clarity, exactly one clean 2x2 grid with four equal sequential panels.",
+      details: productDetailText(facts, [
+        installationStepList ? `Verified installation sequence: ${installationStepList}` : "No verified installation sequence was extracted; do not invent steps or replace them with use scenes.",
+      ], 7),
+      style: [
+        "Instruction-only composition, not a lifestyle or multi-use collage.",
+        installationStepList ? `Show these exact actions in reading order, left-to-right then top-to-bottom: ${installationStepList}.` : "Use a product-only neutral instruction layout without numbered actions when verified steps are unavailable.",
+        "Every panel shows the same single current product, same color, same geometry, same neutral wall and consistent camera direction as it progresses through installation.",
+        "Use a clear top title such as Easy Installation; number panels 1-4; one short 2-5 word English action caption per panel.",
+        "Hands appear only where required to perform the stated action; keep product mechanics large and easy to inspect.",
+        "No kitchen, bathroom, jewelry, headphones, utensils, hanging-load demonstration, decorative props, different rooms, different use cases, or installed-product gallery.",
+        "Do not turn the four panels into four applications. Do not show unrelated objects hanging from the product. Do not invent a disassembly, accessory, adhesive layer, hole, screw, or installation action absent from the verified sequence.",
+      ].filter(Boolean).join(" "),
+      negative: "No multi-scene usage collage, lifestyle gallery, different rooms, kitchen scene, bathroom scene, jewelry display, headphones, utensils, hanging objects, load-test scene, unrelated props, repeated finished hooks, wrong product, changed geometry, invented parts, screws, drilling, adhesive pads, Chinese text, dense copy, or reordered steps.",
     },
     "4": {
       basic: "Size/range infographic, 1:1 Amazon image, 4K, clean layout with concise verified text.",
@@ -8510,7 +9367,7 @@ function specModulePrompt(typeId, facts) {
     },
     "7": {
       basic: basicImageRequirements("spec", "7"),
-      details: productDetailText(facts, [`Macro focus: ${detailTextureText(facts, "material or structure")}`], 7),
+      details: productDetailText(facts, [detailTextureText(facts, "") && `Macro focus: ${detailTextureText(facts, "")}`], 7),
       style: overallStyleText(facts, "7", "Macro close-up detail; sharp texture, clean edges, optional small magnifier inset.", { includeHumanRule: false }),
     },
     "8": {
@@ -8528,7 +9385,7 @@ function specModulePrompt(typeId, facts) {
     basic: selected.basic,
     details: selected.details,
     style: selected.style,
-    negative: negativePrompt(facts),
+    negative: selected.negative || negativePrompt(facts),
   });
 }
 
@@ -8568,12 +9425,13 @@ function sceneCategoryStyleRule(facts) {
   const sceneText = cleanFieldDisplayValue(facts?.scene || "");
   return sceneText
     ? `Verified source scene: ${sceneText}.`
-    : `No verified use scene extracted; select scenes from the current product facts: ${recommendedUseSceneText(facts)}.`;
+    : "No reference scene information. Do not invent, infer, or add a usage scene; use a plain neutral studio background if an image still requires a background.";
 }
 
 function sceneOverallStyleText(facts, typeId, extra = "") {
+  const isReferenceControlledSellingPoint = /Selling-point reference priority/i.test(extra);
   return compactPromptItems([
-    sceneCategoryStyleRule(facts),
+    isReferenceControlledSellingPoint ? "" : sceneCategoryStyleRule(facts),
     sceneQualityRule(),
     extra,
   ], "", 4);
@@ -8597,34 +9455,25 @@ function multiSceneLifestyleStyleText(facts, sceneList) {
     ...globalSceneLines,
     hasVerifiedSceneList
       ? "Use only the Use Scene field currently shown on the left; do not add other scenes."
-      : "Use only the current-product scene selection task above; do not add unrelated scenes or unverified claims.",
+      : "No reference scene information; do not create a multi-scene lifestyle composition or invent scene content.",
     "No added selling-point text, no scene title labels, no captions, no callout labels, no badges, no arrows, no feature icons, no product-spec explanation, no inset close-up panels.",
   ].filter(Boolean).join(" / ");
 }
 
 function sceneMultiSceneDetails(facts, sceneList) {
-  if (!isFootwearCategory(facts)) return sceneContextProductDetailText(facts, [sceneList], 5);
-  return sceneContextProductDetailText(facts, [
-    footwearStructureReferenceText(facts),
-    `Use scenes: ${sceneList}`,
-    "Use state in every panel: worn on feet or naturally on stable ground inside the scene; no display-only, storage, basket, flat-lay, top-down, or isolated detail panels.",
-  ], 8);
+  return sceneContextProductDetailText(facts, [sceneList], 5);
 }
-
 function sceneMultiSceneStyleText(facts, sceneList) {
-  const base = multiSceneLifestyleStyleText(facts, sceneList);
-  if (!isFootwearCategory(facts)) return base;
-  return [
-    base,
-    "Every panel preserves source slipper/slide/sandal construction; scenes must not change upper band or strap layout/count/width, sole outline, toe area, or fold/hinge.",
-    footwearUsePlausibilityRule(),
-    footwearMultiSceneUseRule(),
-    "If the user-provided scene list explicitly contains market, cafe/coffee, or beach, interpret it as a footwear-appropriate environment only: market uses normal floor/pavement beside stalls, never produce; cafe/coffee uses floor/pavement with coffee only as optional background or hand prop, never floating beside a cup; beach uses sand, towel, deck, or feet. Do not add these scenes when they are not provided.",
-    isThongFlipFlopFacts(facts) ? `Across all panels, ${thongFlipFlopShortLockText()}` : "",
-  ].filter(Boolean).join(" / ");
+  return multiSceneLifestyleStyleText(facts, sceneList);
 }
-
 function sceneMultiSceneModule(facts, sceneList) {
+  if (!sceneList) {
+    return {
+      basic: "No reference scene information; do not generate or invent lifestyle scenes. Use a clean 2x2 product-only multi-angle layout on a plain neutral studio background.",
+      details: sceneProductDetailText(facts, ["Four source-accurate product angles only; no people, actions, locations, or environmental props."], 7),
+      style: `${premiumStudioRenderRule()} No use-scene content.`,
+    };
+  }
   return {
     basic: `1:1 Amazon listing image, 4K clarity, sharp realistic detail, equal 2x2 multi-panel complete-use-scene collage. ${multiSceneEqualPanelRule()} ${multiSceneProductScaleRule()}`,
     details: sceneMultiSceneDetails(facts, sceneList),
@@ -8633,28 +9482,15 @@ function sceneMultiSceneModule(facts, sceneList) {
 }
 
 function userProvidedSceneList(facts) {
-  return useSceneText(facts, recommendedUseSceneText(facts, "", 4), 4);
+  return useSceneText(facts, "", 4);
 }
 
 function sceneMultiAngleDetails(facts, physicalDetails) {
-  if (!isFootwearCategory(facts)) return sceneProductDetailText(facts, [physicalDetails, visibleTextureDetails(facts)], 7);
-  return sceneProductDetailText(facts, [
-    footwearStructureReferenceText(facts),
-    physicalDetails,
-    visibleTextureDetails(facts),
-  ], 10);
+  return sceneProductDetailText(facts, [physicalDetails, visibleTextureDetails(facts)], 7);
 }
-
 function sceneMultiAngleStyleText(facts) {
-  const base = "Product-only multi-angle display: front, side, back/top, and one detail view on clean light studio background; no text/annotations.";
-  if (!isFootwearCategory(facts)) return base;
-  return [
-    base,
-    "All angles show the same exact product and reveal upper band or strap layout/count/width, toe area, sole outline/thickness, edge profile, and fold/hinge if present.",
-    isThongFlipFlopFacts(facts) ? `For every angle, ${thongFlipFlopShortLockText()}` : "",
-  ].filter(Boolean).join(" ");
+  return "Product-only multi-angle display: front, side, back/top, and one detail view on clean light studio background; no text/annotations.";
 }
-
 function sceneExplanationDetails(facts, physicalDetails) {
   const dimensionLine = dimensionText(facts);
   const infoText = [
@@ -8663,32 +9499,17 @@ function sceneExplanationDetails(facts, physicalDetails) {
     "Use 2-3 short English info labels for verified material, structure, texture, size/range, or visible detail only.",
     "Premium text hierarchy: large title plus 2-3 short 3-5 word labels, aligned rows, crisp typography, spacing, no dense paragraphs.",
   ].filter(Boolean);
-  if (!isFootwearCategory(facts)) return sceneProductDetailText(facts, [...infoText, physicalDetails, visibleTextureDetails(facts)], 9);
-  return sceneProductDetailText(facts, [
-    ...infoText,
-    footwearStructureReferenceText(facts),
-    physicalDetails,
-    visibleTextureDetails(facts),
-    "Callouts may label only verified visible structure/material details without changing the product shape.",
-  ], 10);
+  return sceneProductDetailText(facts, [...infoText, physicalDetails, visibleTextureDetails(facts)], 9);
 }
-
 function sceneExplanationStyleText(facts) {
-  const base = [
+  return [
     "Premium product information infographic with large high-contrast title \"Product Information\" or \"Product Details\".",
     "Product centered; 2-3 verified 3-5 word callouts for material, structure, texture, size/range, or visible details.",
     "Polished typography, aligned label blocks, subtle dividers/icons, generous white space, soft shadows, restrained premium accents.",
     "No dense paragraphs, long claims, cluttered tables, or unsupported specs.",
     "No human model, hands, body parts, wearing model, lifestyle action, or use-scene composition.",
   ].join(" ");
-  if (!isFootwearCategory(facts)) return base;
-  return [
-    base,
-    "Callouts point to source-accurate structure, not a redesigned version.",
-    isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "",
-  ].filter(Boolean).join(" ");
 }
-
 function productFirstOptionalHumanRule() {
   return "Product-first proof scene; any human presence stays secondary.";
 }
@@ -8698,82 +9519,61 @@ function premiumStudioRenderRule() {
 }
 
 function premiumLifestyleHeroRule(sceneText) {
+  if (!sceneText) return "No reference scene information; do not invent a lifestyle environment. Use a plain neutral studio background with the product only.";
   return `Premium lifestyle hero photography: show the product actively being used in ${sceneText}; cinematic natural light, realistic depth of field, upscale props and environment, clear product silhouette, emotional but uncluttered composition, editorial-quality color grading.`;
 }
 
+function sceneFirstHeroReferenceDivergenceRule() {
+  return [
+    "First-main-image scene divergence: attached supplier/reference images are product-identity references, not a scene blueprint for Scene template Image 1A.",
+    "Whenever possible, create a clearly different environment from every reference image while staying inside the verified Use Scene field: change the room/location, wall or surface treatment, surrounding props, camera position, crop, lighting direction, depth, and product placement.",
+    "If only one functional use context is available, preserve that use context but redesign the setting and composition so the result is not a recreation of the reference photo.",
+    "Do not copy the reference background, exact wall/countertop, prop arrangement, installation position, lighting, viewing angle, or scene composition; copy only the exact current-product identity, color, structure, count, and verified use facts.",
+  ].join(" ");
+}
+
 function sceneHeroBasicRequirements(facts, heroVariant = "product") {
+  if (!hasVerifiedUseContext(facts)) {
+    return compactPromptItems([
+      "1:1 Amazon product image",
+      "4K clarity",
+      "sharp realistic detail",
+      "plain neutral studio background",
+      "no person, use action, environmental props, or invented usage context",
+      "no added overlay text",
+      sceneMainProductScaleRule(),
+    ], "", 8);
+  }
   const variantRule = heroVariant === "human"
     ? "person/model may demonstrate use, but the selected product remains the primary visual subject and must not become a small accessory"
     : "product itself is the primary hero subject, with matching scene support";
-  if (!isFootwearCategory(facts)) {
-    return compactPromptItems([
-      "1:1 Amazon lifestyle hero image",
-      "4K clarity",
-      "sharp realistic detail",
-      "no added overlay text",
-      "preserve authentic non-Chinese product/packaging markings only",
-      variantRule,
-      sceneMainProductScaleRule(),
-      hasVerifiedUseContext(facts)
-        ? `verified source scene/background: ${useSceneText(facts, neutralProductSceneFallback(), 2)}`
-        : `current-product scene/background selection: ${recommendedUseSceneText(facts)}`,
-    ], "", 8);
-  }
   return compactPromptItems([
     "1:1 Amazon lifestyle hero image",
     "4K clarity",
     "sharp realistic detail",
     "no added overlay text",
+    "preserve authentic non-Chinese product/packaging markings only",
     variantRule,
     sceneMainProductScaleRule(),
-    hasVerifiedUseContext(facts) ? "use only the verified source scene/use context" : `use current-product lifestyle scene selection: ${recommendedUseSceneText(facts)}`,
-    "medium environmental framing; not shoe-only close-up",
-    "product clear, with scene atmosphere/props filling frame",
-    "preserve authentic non-Chinese product/packaging markings only",
-  ], "", 10);
+    `verified source scene/background: ${useSceneText(facts, neutralProductSceneFallback(), 2)}`,
+  ], "", 8);
 }
-
-function footwearStructureReferenceText(facts) {
-  const isThong = isThongFlipFlopFacts(facts);
-  return compactPromptItems([
-    "Footwear reference lock: copy source geometry before adding scene/model/foot; reference overrides generic footwear assumptions.",
-    "Keep upper band or strap layout/count/width, toe area, sole outline/thickness, edge profile, and fold/hinge if present.",
-    isThong && thongFlipFlopStructureLockText(),
-    facts.structure && `Source structure field: ${facts.structure}`,
-    facts.color && `Source color field: ${facts.color}`,
-    facts.material && `Source material field: ${facts.material}`,
-  ], "", 7);
-}
-
-function footwearStructureNegativeText(facts) {
-  if (!isFootwearCategory(facts)) return "";
-  return compactPromptItems([
-    "No changed footwear construction, upper band or strap layout/count/width, toe area, sole outline/thickness, or fold/hinge",
-    "no added heel/back/ankle strap or second parallel strap",
-    isThongFlipFlopFacts(facts) && "no slide sandals, wide-band shower slides, two-strap sandals, sealed triangular vamp, closed/filled front, covered footbed, missing front slit/open hole, missing Y strap, missing central toe post, or closed heel",
-    "no invented decoration, wrong material texture, wrong color, or extra brand logo",
-  ], "", 9);
-}
-
 function sceneHeroProductDetails(facts, mainScene, heroVariant = "product") {
+  if (!mainScene) {
+    return sceneProductDetailText(facts, [
+      "No reference scene information; product-only presentation with no person, use action, or environmental props.",
+      visibleTextureDetails(facts),
+    ], 8);
+  }
   const variantDetail = heroVariant === "human"
     ? "Main template B: show the selected product being used or worn by a natural person in the matched scene; product remains the main visual subject, while human action/posture only explains scale and use."
     : "Main template A: product itself is the dominant subject; use the matched scene as context, props, depth, and atmosphere around the product.";
-  if (!isFootwearCategory(facts)) {
-    return sceneProductDetailText(facts, [variantDetail, mainScene, visibleTextureDetails(facts)], 8);
-  }
-  return sceneProductDetailText(facts, [
-    footwearStructureReferenceText(facts),
-    variantDetail,
-    `Hero lifestyle context: ${mainScene}`,
-    hasVerifiedUseContext(facts)
-      ? "Scene appeal uses only source-verified props/context; natural light, depth, negative space."
-      : `Scene appeal uses recommended product-category context: ${recommendedUseSceneText(facts)}.`,
-    visibleTextureDetails(facts),
-  ], 10);
+  return sceneProductDetailText(facts, [variantDetail, mainScene, visibleTextureDetails(facts)], 8);
 }
-
 function sceneHeroStyleText(facts, mainScene, heroVariant = "product") {
+  if (!mainScene) {
+    return sceneOverallStyleText(facts, "1", `${premiumStudioRenderRule()} Product only; do not invent a use scene.`);
+  }
   const productFirstRule = [
     `Main template A: product-first hero in ${mainScene}.`,
     sceneMainProductScaleRule(),
@@ -8786,45 +9586,25 @@ function sceneHeroStyleText(facts, mainScene, heroVariant = "product") {
     "A natural person may use, wear, hold, or interact with the product, but the product remains the hero subject.",
     "Use close or medium-close framing so the product is clearly inspectable; human posture, scene context, props, light, and environment explain use without overpowering the product.",
   ].join(" ");
-  if (isFootwearCategory(facts)) {
-    return sceneOverallStyleText(facts, "1", [
-      heroVariant === "human"
-        ? `Main template B: show the exact selected slippers/slides/sandals being worn or stepped with in ${mainScene}; crop close enough that the footwear is the hero subject, while foot/lower-leg use state only supports scale and use.`
-        : `Main template A: place the exact selected slippers/slides/sandals as the dominant product hero in ${mainScene}; model feet/lower legs optional and secondary.`,
-      hasVerifiedUseContext(facts)
-        ? "Medium environmental framing with only source-verified story, props, and depth; not only shoes/feet."
-        : `Medium environmental framing based on current-product scene selection: ${recommendedUseSceneText(facts)}; not only shoes/feet.`,
-      footwearUsePlausibilityRule(),
-      heroVariant === "human"
-        ? "Footwear leads the image; person-use state stays secondary, and footwear structure must stay clear; leave environment, light, texture, and negative space."
-        : "Product clear and desirable, at least 30% of frame; leave environment, light, texture, negative space.",
-      isThongFlipFlopFacts(facts) ? thongFlipFlopShortLockText() : "Preserve true color, upper band/strap shape, sole thickness/outline, toe area, and fold/hinge if visible.",
-      "If the scene angle would hide or distort key structure, adjust camera/placement instead of changing the slipper.",
-    ].join(" "));
-  }
   return sceneOverallStyleText(facts, "1", heroVariant === "human" ? humanUseRule : productFirstRule);
 }
-
-function featureSceneStoryRule(facts, sceneText, points) {
-  return compactPromptItems([
-    `Combine real use scene with visible product benefits in ${sceneText}.`,
-    `Visual proof focus: ${sellingPointSceneGuide(points, facts)}.`,
-    "Use 2-3 elegant mini inset close-ups, icons, arrows, or subtle 3-5 word callouts only where they explain the feature; keep the scene itself dominant and premium.",
-    "Avoid flat poster layout; create depth, foreground/background layering, natural shadows, and a clear product-use story.",
-  ], "", 4);
-}
-
 function parameterIllustrationRule() {
-  return "Size-reference parameter infographic like a premium Amazon measurement chart: include a clear 2-4 word top title such as \"Size Reference\" or \"Product Details\"; the main product must dominate the center, with verified dimensions drawn directly on or beside the product using clear ruler arrows, dashed guide lines, and bold numeric labels. Use premium studio rendering with realistic material highlights, soft shadows, clean depth, polished typography, and subtle category-matched background props. Do not replace core measurements with floating feature cards. Optional small benefit icons may appear only after the core dimensions are clearly shown; each icon label must be 3-5 words max. Mini illustrations or close-up crops are secondary and must support the measured parameter, not replace the measurement diagram.";
+  return `Size-reference parameter infographic like a premium Amazon measurement chart: include a clear 2-4 word top title such as "Size Reference" or "Product Details"; the main product must dominate the center, with verified dimensions drawn directly on or beside the fully expanded/open product using clear ruler arrows, dashed guide lines, and bold numeric labels. All measurement labels must describe the product itself in its fully expanded/open state. Never use package, shipping, carton, rolled storage, folded storage, bag, or box dimensions. ${referenceImageDimensionRule()} Use premium studio rendering with realistic material highlights, soft shadows, clean depth, polished typography, and only source-verified props; otherwise use a neutral background. Do not replace core measurements with floating feature cards. Optional small benefit icons may appear only after the core dimensions are clearly shown; each icon label must be 3-5 words max. Mini illustrations or close-up crops are secondary and must support the measured parameter, not replace the measurement diagram.`;
 }
 
-function summaryPosterStyleRule() {
+function summaryPosterStyleRule(facts = {}) {
+  const count = Number(facts.skuUnitQuantity || 0);
+  const quantityLabel = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || (count >= 2 ? `${count}-Pack` : "");
+  const packInsetRule = count >= 2
+    ? `Mandatory SKU pack proof: the lower-left product cutout/pack-contents area must show exactly ${count} separate complete product units together and one clear “${quantityLabel}” label; a single-unit-only summary is forbidden.`
+    : "Add an optional circular or softly rounded product cutout inset overlapping the lower-left area of the hero photo, showing one current selling unit clearly on a clean light background.";
   return [
     `${productFirstOptionalHumanRule()} Polished feature summary poster in a premium Amazon lifestyle style.`,
     "Use the approved layout: left side is one large warm lifestyle hero photo occupying about 60-65% width; right side is a vertical column occupying about 35-40% width with 3-4 rounded rectangular product-detail or use-detail inset windows.",
-    "Add an optional circular or softly rounded product cutout inset overlapping the lower-left area of the hero photo, showing one current selling unit clearly on a clean light background; do not duplicate the product, do not show two sets, and do not imply a 2-pack unless the pack count is explicitly verified.",
+    packInsetRule,
     "Top headline may be a large elegant 2-4 word seasonal/product mood phrase; feature labels sit on small warm rounded tabs inside or near each right-side inset, 1-3 English words max.",
     "Each right inset must show a real visual proof subject from the current product: use scene, decoration, material/texture, lightweight/comfort, or style match; keep product clear and source-accurate.",
+    "Summary inset reference rule: when a matching current-product reference image exists for a feature, use that reference image's demonstrated scene/action logic. When no matching reference exists, use an accurate product display/detail view plus the short feature title only; do not invent a demonstration scene, test, action, mechanism, or result.",
     "Keep the poster airy and editorial, with soft sunlight, rounded windows, cream/white dividers, warm neutral label color, and no dense table, bullets, long captions, arrows, hard-sell badges, or text stacking.",
   ].join(" ");
 }
@@ -8840,13 +9620,22 @@ function bundleComponentsShowcaseRule(facts) {
 
 function sceneSellingPointItems(facts, points, fallback) {
   const sellingPoints = limitedSellingPoints(points, 2);
-  const sellingPointText = sellingPoints.join(" + ") || fallback;
+  // With no confirmed left-side point, this image is a clean product display,
+  // not a vacant selling-point slot to be filled with a generic claim.
+  if (!sellingPoints.length) return [];
+  const sellingPointText = sellingPoints.join(" + ");
   const support = compactSpecificPromptItems([
     facts.structure && !promptItemsOverlap(sellingPointText, facts.structure) ? facts.structure : "",
     facts.material && !promptItemsOverlap(sellingPointText, facts.material) ? facts.material : "",
     facts.color && !promptItemsOverlap(sellingPointText, facts.color) ? facts.color : "",
   ], "", 2);
-  return [support].filter(Boolean);
+  // The labels are deliberately short, but the generated image still needs the
+  // complete current left-side claim as its visual target. Otherwise an old
+  // shorthand label can replace the actual selling point.
+  return [
+    `Exact current left-side selling points to represent: ${sellingPointText}`,
+    support,
+  ].filter(Boolean);
 }
 
 function summaryInsetGuide(facts, points) {
@@ -8905,12 +9694,12 @@ function sceneModulePrompt(typeId, facts) {
     "5": {
       basic: basicImageRequirements("scene", "5"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup1, "the primary verified benefit"), 7),
-      style: sceneOverallStyleText(facts, "5", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")}`),
+      style: sceneOverallStyleText(facts, "5", sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")),
     },
     "6": {
       basic: basicImageRequirements("scene", "6"),
       details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup2, "the secondary verified benefit"), 6),
-      style: sceneOverallStyleText(facts, "6", `${productFirstOptionalHumanRule()} ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Distinct from Image 5.`),
+      style: sceneOverallStyleText(facts, "6", `${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Distinct from Image 5.`),
     },
     "7": {
       basic: basicImageRequirements("scene", "7"),
@@ -8918,7 +9707,7 @@ function sceneModulePrompt(typeId, facts) {
         `Summary points: ${summaryPoints}`,
         `Detail inset subjects: ${summaryInsetText}`,
       ], 8),
-      style: sceneOverallStyleText(facts, "7", summaryPosterStyleRule()),
+      style: sceneOverallStyleText(facts, "7", summaryPosterStyleRule(facts)),
     },
   };
   const selected = modules[typeId] || modules["1A"];
@@ -8960,7 +9749,7 @@ function featureModulePrompt(typeId, facts) {
     detailTextureText(facts, ""),
     visibleDetailParameter(facts.detailParameter),
     facts.color && `True color: ${facts.color}`,
-  ], "verified visible product details", 4);
+  ], "", 4);
   const sellingPointGroup1 = sellingPointGroups(facts, 0);
   const sellingPointGroup2 = sellingPointGroups(facts, 1);
   const sellingPointSet = sellingPointCandidates(facts, 6);
@@ -8983,16 +9772,20 @@ function featureModulePrompt(typeId, facts) {
       style: `Pure white Amazon main image: show only the product itself, centered, no hands, no people, no body parts, no props, no furniture, no room, no outdoor scene, no lifestyle background, no added title, no added labels. ${premiumStudioRenderRule()}`,
     },
     "2": {
-      basic: `1:1 Amazon lifestyle hero image, 4K clarity, sharp realistic detail, premium real-use scene, no added overlay text, ${sceneMainProductScaleRule()} product clearly visible and actively used.`,
+      basic: mainScene
+        ? `1:1 Amazon lifestyle hero image, 4K clarity, sharp realistic detail, premium real-use scene, no added overlay text, ${sceneMainProductScaleRule()} product clearly visible and actively used.`
+        : `1:1 Amazon product image, 4K clarity, plain neutral studio background, no people or usage context, ${sceneMainProductScaleRule()}.`,
       details: sceneProductDetailText(facts, [mainScene, visibleTextureDetails(facts)], 7),
       style: sceneOverallStyleText(facts, "1", hasVerifiedUseContext(facts)
         ? `${premiumLifestyleHeroRule(mainScene)} ${sceneMainProductScaleRule()} Product must be in active use, not just placed as a prop; composition uses only source-verified context.`
-        : `${premiumLifestyleHeroRule(mainScene)} ${sceneMainProductScaleRule()} Product must be in active use, not just placed as a prop; scene choices are recommended from product identity and category, without adding unsupported performance claims.`),
+        : `${premiumLifestyleHeroRule("")} Do not claim or depict an unverified use context.`),
     },
     "3": {
-      basic: `1:1 Amazon listing image, 4K clarity, sharp realistic detail, premium equal 2x2 multi-scene lifestyle collage. ${multiSceneEqualPanelRule()} ${multiSceneProductScaleRule()}`,
+      basic: sceneList
+        ? `1:1 Amazon listing image, 4K clarity, sharp realistic detail, premium equal 2x2 multi-scene lifestyle collage. ${multiSceneEqualPanelRule()} ${multiSceneProductScaleRule()}`
+        : "No reference scene information; do not generate lifestyle scenes. Use a clean 2x2 product-only multi-angle layout on a plain neutral studio background.",
       details: sceneContextProductDetailText(facts, [
-        `Use scenes: ${sceneList}`,
+        sceneList && `Use scenes: ${sceneList}`,
         `Scene-implied benefits only: ${compactSpecificPromptItems(sellingPointSet, verifiedProductDetailFallback(), 4)}`,
       ], 6),
       style: multiSceneLifestyleStyleText(facts, sceneList),
@@ -9003,7 +9796,7 @@ function featureModulePrompt(typeId, facts) {
         productInfo,
         dimensionLine && `Mandatory measurement labels on image: ${dimensionLine}`,
       ], 8),
-      style: overallStyleText(facts, "4", `${parameterIllustrationRule()} For umbrella products, show the open umbrella as the main measured object and the folded umbrella as a smaller measured object, with Open Diameter, Open Height, Folded Size, and Weight visibly labeled. Show only extracted measurements and verified option facts; no dense table, no filler fields, no unverified measurements.`, { includeHumanRule: false }),
+      style: overallStyleText(facts, "4", `${parameterIllustrationRule()} Show the product in the same expanded/open state documented by the source reference and visibly label only extracted measurements and verified option facts; no dense table, no filler fields, no unverified measurements.`, { includeHumanRule: false }),
     },
     "5": {
       basic: basicImageRequirements("spec", "5"),
@@ -9026,14 +9819,14 @@ function featureModulePrompt(typeId, facts) {
     "6": {
       basic: basicImageRequirements("feature", "6"),
       details: productDetailText(facts, [], 5),
-      style: overallStyleText(facts, "6", `Core function demo. ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Feature template Image 6")} Product remains clear and accurate.`),
+      style: overallStyleText(facts, "6", `Selling-point product presentation. ${sellingPointImageTemplateRule(sellingPointGroup1, facts, "Feature template Image 6")} Product remains clear and accurate.`),
     },
     "7": {
       basic: basicImageRequirements("feature", "7"),
       details: productDetailText(facts, [
         `Detail fields: ${detailInfo}`,
       ], 8),
-      style: overallStyleText(facts, "7", `Detail/material feature display with macro close-ups or structure proof. ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Feature template Image 7")} Distinct from Image 6; no unsupported claims.`, { includeHumanRule: false }),
+      style: overallStyleText(facts, "7", `Accurate product detail/material presentation. ${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Feature template Image 7")} Distinct from Image 6; no unsupported claims.`, { includeHumanRule: false }),
     },
     "8": {
       basic: basicImageRequirements("scene", "7"),
@@ -9041,7 +9834,7 @@ function featureModulePrompt(typeId, facts) {
         `Summary points: ${sceneSummaryPoints || summaryPoints}`,
         `Detail inset subjects: ${summaryInsetText}`,
       ], 8),
-      style: sceneOverallStyleText(facts, "7", summaryPosterStyleRule()),
+      style: sceneOverallStyleText(facts, "7", summaryPosterStyleRule(facts)),
     },
   };
   const selected = modules[typeId] || modules["1"];
@@ -9093,6 +9886,9 @@ function genericFiveImageDetailInfo(facts) {
 }
 
 function genericFiveImageMainSceneStyle(facts, sceneText) {
+  if (!sceneText) {
+    return `${genericFiveImageIdentityRule(facts)} ${premiumStudioRenderRule()} No reference scene information; product only, with no people, actions, locations, or environmental props.`;
+  }
   return sceneOverallStyleText(facts, "1", [
     genericFiveImageIdentityRule(facts),
     `Main scene: product-first realistic use scene in ${sceneText}.`,
@@ -9120,10 +9916,12 @@ function genericFiveImageModulePrompt(typeId, facts) {
   const sharedMultiScene = sceneMultiSceneModule(facts, sceneText);
   const modules = {
     "1": {
-      basic: `1:1 Amazon main scene image, 4K clarity, sharp realistic detail, no added overlay text, ${sceneMainProductScaleRule()} product-first use scene, person/model optional only when product use requires it.`,
+      basic: sceneText
+        ? `1:1 Amazon main scene image, 4K clarity, sharp realistic detail, no added overlay text, ${sceneMainProductScaleRule()} product-first use scene, person/model optional only when product use requires it.`
+        : `1:1 Amazon product image, 4K clarity, plain neutral studio background, no people or usage context, ${sceneMainProductScaleRule()}.`,
       details: sceneProductDetailText(facts, [
         genericFiveImageIdentityRule(facts),
-        `Use scene: ${sceneText}`,
+        sceneText && `Use scene: ${sceneText}`,
         visibleTextureDetails(facts),
       ], 8),
       style: genericFiveImageMainSceneStyle(facts, sceneText),
@@ -9156,7 +9954,6 @@ function genericFiveImageModulePrompt(typeId, facts) {
       style: sceneOverallStyleText(facts, "4", [
         genericFiveImageIdentityRule(facts),
         sellingPointImageTemplateRule(sellingPointGroup, facts, "Generic 5-image template Image 4"),
-        "Use visual proof first: show the verified benefit through product use, structure, material, detail, scale, or scene evidence without inventing category-specific claims.",
       ].join(" ")),
     },
     "5": {
@@ -9199,10 +9996,9 @@ function referenceLinkGlobalRule(facts, typeId = "") {
     "Current product fields always override the reference product: product type, color, material, structure, dimensions, scene, and verified benefits.",
     "If the reference product shape conflicts with the current product, keep the current product structure and adapt only the layout.",
     "Do not copy the reference brand, exact text, typography, people, image assets, product markings, or unsupported claims.",
-    isFootwearCategory(facts) ? footwearStructureReferenceText(facts) : productIdentityBasicRule(facts),
+    productIdentityBasicRule(facts),
   ], "", 7);
 }
-
 function referenceLinkModulePrompt(typeId, facts) {
   const blueprint = referenceBlueprintSlot(typeId);
   const blueprintRoute = referenceBlueprintText(typeId);
@@ -9323,26 +10119,30 @@ function referenceLinkTemplatePrompt(typeId, sku, data) {
   return referenceLinkModulePrompt(typeId, facts);
 }
 
+function appendManualParameterRequirements(prompt, data) {
+  const requirements = manualFields
+    .map(([key, label]) => [label, cleanFieldDisplayValue(data?.[key])])
+    .filter(([, value]) => value);
+  if (!prompt || !requirements.length) return prompt;
+  return `${prompt}\n\nMANUALLY VERIFIED SKU PARAMETERS\n${requirements.map(([label, value]) => `${label}: ${value}`).join("\n")}`;
+}
+
 function promptFor(templateId, typeId, sku, data) {
   const facts = promptFacts(sku, data);
 
-  if (templateId === "spec") {
-    return specTemplatePrompt(typeId, sku, data);
+  // Scene slot 6 is reserved for the second confirmed selling-point group.
+  // Do not repurpose it as a product display or manufacture a generic claim.
+  if (templateId === "scene" && typeId === "6" && !sellingPointGroups(facts, 1).length) {
+    return "";
   }
 
-  if (templateId === "scene") {
-    return sceneTemplatePrompt(typeId, sku, data);
-  }
-
-  if (templateId === "reference") {
-    return referenceLinkTemplatePrompt(typeId, sku, data);
-  }
-
-  if (templateId === "plantTie") {
-    return plantTieTemplatePrompt(typeId, sku, data);
-  }
-
-  return featureTemplatePrompt(typeId, sku, data);
+  let prompt;
+  if (templateId === "spec") prompt = specTemplatePrompt(typeId, sku, data);
+  else if (templateId === "scene") prompt = sceneTemplatePrompt(typeId, sku, data);
+  else if (templateId === "reference") prompt = referenceLinkTemplatePrompt(typeId, sku, data);
+  else if (templateId === "plantTie") prompt = plantTieTemplatePrompt(typeId, sku, data);
+  else prompt = featureTemplatePrompt(typeId, sku, data);
+  return appendManualParameterRequirements(prompt, data);
 }
 
 function sellingPointGroupForImageTitle(templateId, typeId, facts) {
@@ -9374,6 +10174,762 @@ function renderFacts() {
     "一次性输出",
   ].map((label) => `<span class="badge">${label}</span>`).join("");
   renderProductPromptGrid();
+  renderParameterPromptGrid();
+}
+
+function imageGenerationState(cardKey) {
+  if (!imageGenerationByCard[cardKey]) {
+    imageGenerationByCard[cardKey] = {
+      model: "gpt-image-2",
+      size: "1024x1024",
+      status: "idle",
+      message: "",
+      images: [],
+      availableReferences: [],
+      selectedReferences: [],
+      referenceSelectionInitialized: false,
+      referencesExpanded: false,
+      generatedPromptSnapshot: "",
+      generatedReferenceSnapshot: [],
+    };
+  }
+  return imageGenerationByCard[cardKey];
+}
+
+function rememberGenerationInputs(cardKey) {
+  const state = imageGenerationState(cardKey);
+  const item = promptStore.find((entry) => entry.key === cardKey);
+  state.generatedPromptSnapshot = item?.promptEn || "";
+  state.generatedReferenceSnapshot = [...state.selectedReferences];
+}
+
+function generationInputsChanged(cardKey, promptEn) {
+  const state = imageGenerationState(cardKey);
+  if (!state.images.length || !state.generatedPromptSnapshot) return false;
+  return state.generatedPromptSnapshot !== promptEn
+    || JSON.stringify(state.generatedReferenceSnapshot) !== JSON.stringify(state.selectedReferences);
+}
+
+function imageSizeOptions(model, selectedSize) {
+  const sizes = model === "gpt-image-2-vip"
+    ? ["1024x1024", "2048x2048", "2880x2880"]
+    : ["1024x1024"];
+  return sizes.map((size) => `<option value="${size}" ${size === selectedSize ? "selected" : ""}>${size}</option>`).join("");
+}
+
+function referenceImageCandidatesForCard(type, facts, sku) {
+  const points = sellingPointGroupForImageTitle(selectedTemplate().id, type.id, facts);
+  const mapped = Array.isArray(referenceImagesBySku[sku?.id]) ? referenceImagesBySku[sku.id] : [];
+  const mappedSet = new Set(mapped);
+  const matched = matchedSellingPointVisualEvidence(points, facts).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
+  const evidence = (facts.sellingPointVisualEvidence || []).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
+  return {
+    matched: Array.from(new Set(matched.filter(Boolean))),
+    all: Array.from(new Set([...matched, ...evidence, ...mapped].filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES),
+  };
+}
+
+function renderReferenceImages(state) {
+  if (!state.availableReferences.length) {
+    return `<p class="reference-empty">暂无匹配参考图，可在下方拖入本地图片。</p>`;
+  }
+  const canExpand = state.availableReferences.length > 8;
+  return `
+    <div class="reference-picker-summary">
+      <span>候选图 ${state.availableReferences.length} 张</span>
+      ${canExpand ? `<button type="button" class="reference-expand-toggle">${state.referencesExpanded ? "收起候选图" : `展开全部 ${state.availableReferences.length} 张`}</button>` : ""}
+    </div>
+    <div class="reference-image-grid ${state.referencesExpanded ? "is-expanded" : ""}">${state.availableReferences.map((reference, index) => {
+    const checked = state.selectedReferences.includes(reference);
+    const previewUrl = /^data:image\//i.test(reference) ? reference : sourceProxyUrl(reference);
+    return `
+      <div class="reference-image-option ${checked ? "is-selected" : ""}" title="参考图 ${index + 1}">
+        <label>
+          <input type="checkbox" class="reference-image-checkbox" data-reference-index="${index}" ${checked ? "checked" : ""}>
+          <img src="${escapeHtml(previewUrl)}" alt="参考图 ${index + 1}" loading="lazy">
+          <span>${checked ? "已选择" : "选择"}</span>
+        </label>
+        <button type="button" class="preview-reference-image" data-reference-index="${index}" aria-label="放大查看参考图 ${index + 1}" title="放大查看">⌕</button>
+        <button type="button" class="delete-reference-image" data-reference-index="${index}" aria-label="删除参考图 ${index + 1}" title="删除参考图">×</button>
+      </div>
+    `;
+  }).join("")}</div>`;
+}
+
+function renderImageGenerator(cardKey) {
+  const state = imageGenerationState(cardKey);
+  const isBusy = state.status === "submitting" || state.status === "processing";
+  const images = state.images.map((url, index) => `
+    <figure class="generated-image-item">
+      <img src="${escapeHtml(url)}" alt="生成结果 ${index + 1}" loading="lazy">
+      <a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">打开原图</a>
+    </figure>
+  `).join("");
+  return `
+    <section class="image-generator" data-card-key="${escapeHtml(cardKey)}">
+      <div class="image-generator-heading">
+        <div>
+          <strong>出图工作区</strong>
+          <span>参考图最多选择 ${MAX_SELECTED_REFERENCES} 张</span>
+        </div>
+        <span class="reference-count">${state.selectedReferences.length}/${MAX_SELECTED_REFERENCES}</span>
+      </div>
+      <div class="reference-image-picker">
+        ${renderReferenceImages(state)}
+        <input class="reference-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden ${isBusy ? "disabled" : ""}>
+        <button type="button" class="reference-drop-zone" ${isBusy ? "disabled" : ""}>
+          <strong>拖拽参考图到这里</strong>
+          <span>或点击选择 JPG、PNG、WebP</span>
+        </button>
+      </div>
+      <div class="image-generator-controls">
+        <select class="image-model-select" aria-label="生图模型" ${isBusy ? "disabled" : ""}>
+          <option value="gpt-image-2" ${state.model === "gpt-image-2" ? "selected" : ""}>GPT Image 2</option>
+          <option value="gpt-image-2-vip" ${state.model === "gpt-image-2-vip" ? "selected" : ""}>GPT Image 2 VIP</option>
+        </select>
+        <select class="image-size-select" aria-label="图片尺寸" ${isBusy ? "disabled" : ""}>${imageSizeOptions(state.model, state.size)}</select>
+        <button type="button" class="generate-image" ${isBusy ? "disabled" : ""}>${isBusy ? "生成中…" : "生成图片"}</button>
+      </div>
+      <p class="image-generation-status" role="status" aria-live="polite">${escapeHtml(state.message)}</p>
+      ${images ? `<div class="generated-image-grid">${images}</div>` : ""}
+    </section>
+  `;
+}
+
+function readImageFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function referenceFileDataUrl(file) {
+  if (!file?.type?.startsWith("image/")) throw new Error("仅支持图片文件");
+  if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name} 超过 12 MB`);
+  const original = await readImageFileAsDataUrl(file);
+  const image = await loadImageForCanvas(original);
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  const scale = Math.min(1, 1800 / Math.max(sourceWidth, sourceHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) return original;
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.88);
+}
+
+async function addReferenceFiles(cardKey, fileList) {
+  const state = imageGenerationState(cardKey);
+  const remaining = Math.max(0, MAX_SELECTED_REFERENCES - state.selectedReferences.length);
+  const files = Array.from(fileList || []).slice(0, remaining);
+  if (!files.length) {
+    state.message = remaining ? "没有可添加的图片。" : `参考图最多选择 ${MAX_SELECTED_REFERENCES} 张。`;
+    updateImageGenerator(cardKey);
+    return;
+  }
+  state.message = `正在读取 ${files.length} 张本地参考图…`;
+  updateImageGenerator(cardKey);
+  const added = [];
+  const errors = [];
+  for (const file of files) {
+    try {
+      added.push(await referenceFileDataUrl(file));
+    } catch (error) {
+      errors.push(error?.message || `${file.name} 读取失败`);
+    }
+  }
+  state.availableReferences = Array.from(new Set([...added, ...state.availableReferences])).slice(0, MAX_REFERENCE_CANDIDATES);
+  state.selectedReferences = Array.from(new Set([...state.selectedReferences, ...added])).slice(0, MAX_SELECTED_REFERENCES);
+  if (added.length) lastReferenceSelectionCardKey = cardKey;
+  state.message = errors.length
+    ? `已添加 ${added.length} 张；${errors.slice(0, 2).join("；")}`
+    : `已添加并选择 ${added.length} 张本地参考图。`;
+  updateImageGenerator(cardKey);
+}
+
+function normalizeGeneratedImages(payload) {
+  const candidates = [
+    payload?.urls,
+    payload?.images,
+    payload?.results,
+    payload?.data?.urls,
+    payload?.data?.images,
+    payload?.data?.results,
+    payload?.result?.urls,
+    payload?.result?.images,
+  ];
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate)) continue;
+    const urls = candidate.map((item) => typeof item === "string" ? item : item?.url || item?.imageUrl || item?.image_url).filter(Boolean);
+    if (urls.length) return urls;
+  }
+  const single = payload?.url || payload?.imageUrl || payload?.image_url || payload?.data?.url || payload?.result?.url;
+  return single ? [single] : [];
+}
+
+function imageTaskId(payload) {
+  return String(payload?.id || payload?.taskId || payload?.task_id || payload?.data?.id || payload?.data?.taskId || payload?.data?.task_id || "").trim();
+}
+
+async function imageApiJson(url, options) {
+  const response = await fetch(url, options);
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`服务返回了无法解析的结果（HTTP ${response.status}）`);
+  }
+  if (!response.ok) throw new Error(payload?.error || payload?.message || `请求失败（HTTP ${response.status}）`);
+  return payload;
+}
+
+function updateImageGenerator(cardKey) {
+  const section = Array.from(document.querySelectorAll(".image-generator")).find((node) => node.dataset.cardKey === cardKey);
+  if (!section) return;
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderImageGenerator(cardKey).trim();
+  const replacement = wrapper.firstElementChild;
+  section.replaceWith(replacement);
+  bindImageGeneratorSection(replacement);
+  const taskButtons = Array.from(document.querySelectorAll(".prompt-task-item")).filter((button) => button.dataset.promptCardKey === cardKey);
+  const taskState = imageGenerationState(cardKey);
+  const taskStatus = ["submitting", "processing"].includes(taskState.status) ? "生成中" : taskState.images.length ? "已生成" : "待生成";
+  taskButtons.forEach((button) => { if (button.querySelector("small")) button.querySelector("small").textContent = taskStatus; });
+  if (cardKey === activePromptCardKey) {
+    const item = promptStore.find((entry) => entry.key === cardKey);
+    const referenceNode = document.querySelector(".studio-dependency-strip > div:nth-child(2) span");
+    const outputNode = document.querySelector(".studio-dependency-strip > div:last-child");
+    const changed = generationInputsChanged(cardKey, item?.promptEn || "");
+    if (referenceNode) referenceNode.textContent = `当前选择 ${taskState.selectedReferences.length} 张`;
+    if (outputNode) {
+      outputNode.classList.toggle("is-dirty", changed);
+      const label = changed ? "输入已变化，需重新生成" : taskState.images.length ? `已生成 ${taskState.images.length} 张` : "等待生成";
+      if (outputNode.querySelector("span")) outputNode.querySelector("span").textContent = label;
+    }
+  }
+  setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
+}
+
+function openReferenceLightbox(reference, label = "参考图") {
+  document.querySelector(".reference-lightbox")?.remove();
+  const previewUrl = /^data:image\//i.test(reference) ? reference : sourceProxyUrl(reference);
+  const overlay = document.createElement("div");
+  overlay.className = "reference-lightbox";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", `${label}放大预览`);
+  overlay.innerHTML = `
+    <button type="button" class="reference-lightbox-close" aria-label="关闭大图" title="关闭">×</button>
+    <figure>
+      <img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(label)}大图">
+      <figcaption>${escapeHtml(label)}</figcaption>
+    </figure>
+  `;
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKeydown);
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") close();
+  };
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) close();
+  });
+  overlay.querySelector(".reference-lightbox-close")?.addEventListener("click", close);
+  document.addEventListener("keydown", onKeydown);
+  document.body.appendChild(overlay);
+  overlay.querySelector(".reference-lightbox-close")?.focus();
+}
+
+async function pollImageGeneration(cardKey, taskId) {
+  const state = imageGenerationState(cardKey);
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2500));
+    const payload = await imageApiJson(`/api/image-task?id=${encodeURIComponent(taskId)}`);
+    const images = normalizeGeneratedImages(payload);
+    const status = String(payload?.status || payload?.data?.status || "").toLowerCase();
+    if (images.length) {
+      state.status = "success";
+      state.message = `生成完成，共 ${images.length} 张。`;
+      state.images = images;
+      rememberGenerationInputs(cardKey);
+      updateImageGenerator(cardKey);
+      return;
+    }
+    if (["failed", "error", "cancelled", "canceled"].includes(status)) {
+      throw new Error(payload?.error || payload?.message || payload?.data?.message || "生图任务失败");
+    }
+    state.status = "processing";
+    state.message = `Grsai 正在生成图片${attempt ? `（已等待约 ${Math.round((attempt + 1) * 2.5)} 秒）` : ""}…`;
+    updateImageGenerator(cardKey);
+  }
+  throw new Error("生图等待超时，请稍后重试");
+}
+
+async function generateImageForCard(cardKey) {
+  const item = promptStore.find((entry) => entry.key === cardKey);
+  if (!item?.promptEn) return;
+  const state = imageGenerationState(cardKey);
+  state.status = "submitting";
+  state.message = "正在提交生图任务…";
+  state.images = [];
+  updateImageGenerator(cardKey);
+  try {
+    const payload = await imageApiJson("/api/generate-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: state.model, prompt: item.promptEn, aspectRatio: state.size, images: state.selectedReferences }),
+    });
+    const images = normalizeGeneratedImages(payload);
+    if (images.length) {
+      state.status = "success";
+      state.message = `生成完成，共 ${images.length} 张。`;
+      state.images = images;
+      rememberGenerationInputs(cardKey);
+      updateImageGenerator(cardKey);
+      return;
+    }
+    const taskId = imageTaskId(payload);
+    if (!taskId) throw new Error(payload?.error || payload?.message || "Grsai 未返回任务 ID");
+    state.status = "processing";
+    state.message = "任务已提交，正在等待图片…";
+    updateImageGenerator(cardKey);
+    await pollImageGeneration(cardKey, taskId);
+  } catch (error) {
+    state.status = "failed";
+    state.message = error?.message || "图片生成失败";
+    updateImageGenerator(cardKey);
+  }
+}
+
+function setBulkGenerationUi(message = "", completed = 0, total = 0) {
+  const button = byId("generateAllImages");
+  const status = byId("bulkGenerationStatus");
+  if (button) {
+    button.disabled = bulkImageGenerationRunning || !hasExtractedProducts();
+    button.textContent = bulkImageGenerationRunning
+      ? `正在批量生成 ${completed}/${total}`
+      : "一键生成当前产品全部图片";
+  }
+  if (status) status.textContent = message;
+}
+
+function bulkReferenceSourceState(items) {
+  const lastItem = items.find((item) => item.key === lastReferenceSelectionCardKey);
+  if (lastItem && imageGenerationState(lastItem.key).selectedReferences.length) {
+    return imageGenerationState(lastItem.key);
+  }
+  return items
+    .map((item) => imageGenerationState(item.key))
+    .sort((left, right) => right.selectedReferences.length - left.selectedReferences.length)[0] || null;
+}
+
+async function generateAllImagesForCurrentOutput() {
+  if (bulkImageGenerationRunning) return;
+  const items = promptStore.filter((item) => !item.empty && item.promptEn?.trim());
+  if (!items.length) {
+    setBulkGenerationUi("当前产品没有可生成的提示词。");
+    return;
+  }
+  if (items.some((item) => ["submitting", "processing"].includes(imageGenerationState(item.key).status))) {
+    setBulkGenerationUi("当前仍有图片任务正在生成，请等待完成后再批量提交。");
+    return;
+  }
+  const sourceState = bulkReferenceSourceState(items);
+  const selectedReferences = Array.from(new Set(sourceState?.selectedReferences || [])).slice(0, MAX_SELECTED_REFERENCES);
+  if (!selectedReferences.length) {
+    setBulkGenerationUi("请先在任意一个出图工作区勾选 1–6 张参考图。");
+    return;
+  }
+
+  items.forEach((item) => {
+    const state = imageGenerationState(item.key);
+    state.model = sourceState.model;
+    state.size = sourceState.size;
+    state.availableReferences = Array.from(new Set([...selectedReferences, ...state.availableReferences])).slice(0, MAX_REFERENCE_CANDIDATES);
+    state.selectedReferences = [...selectedReferences];
+    state.referenceSelectionInitialized = true;
+    updateImageGenerator(item.key);
+  });
+
+  bulkImageGenerationRunning = true;
+  let completed = 0;
+  let nextIndex = 0;
+  setBulkGenerationUi(`已将 ${selectedReferences.length} 张参考图应用到 ${items.length} 张提示词，开始生成。`, completed, items.length);
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      await generateImageForCard(item.key);
+      completed += 1;
+      const successCount = items.filter((entry) => imageGenerationState(entry.key).status === "success").length;
+      setBulkGenerationUi(`批量生成进度 ${completed}/${items.length}，已成功 ${successCount} 张。`, completed, items.length);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(2, items.length) }, () => worker()));
+  } finally {
+    bulkImageGenerationRunning = false;
+    const successCount = items.filter((item) => imageGenerationState(item.key).status === "success").length;
+    const failedCount = items.length - successCount;
+    setBulkGenerationUi(
+      failedCount
+        ? `批量生成完成：成功 ${successCount} 张，失败 ${failedCount} 张；可查看各卡片错误并单独重试。`
+        : `批量生成完成：${successCount} 张图片全部成功。`,
+      items.length,
+      items.length,
+    );
+  }
+}
+
+function chineseProductFilenameBase() {
+  const sku = selectedSku() || {};
+  const data = currentPromptData(sku);
+  const candidates = [
+    sku.chineseProductName,
+    sku.originalProductName,
+    sku.sourceProductName,
+    sku.productName,
+    sku.sourceName,
+    sku.label,
+    sku.displayLabel,
+    data.productName,
+  ].map((value) => cleanFieldDisplayValue(value)).filter(Boolean);
+  let name = candidates.find((value) => /[\u3400-\u9fff]/.test(value)) || "";
+  if (!name) {
+    const identity = candidates.join(" ").toLowerCase();
+    const localized = [
+      [/dog\s*(?:poop|waste)\s*bags?|pet\s*waste\s*bags?/, "宠物垃圾袋"],
+      [/coffee\s*filters?|filter\s*paper/, "咖啡滤纸"],
+      [/plant\s*(?:ties?|straps?)/, "植物绑带"],
+      [/resistance\s*bands?|exercise\s*bands?/, "弹力带"],
+    ].find(([pattern]) => pattern.test(identity));
+    name = localized?.[1] || "产品套图";
+  }
+  return name
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/[-.\s]+$/g, "")
+    .slice(0, 48) || "产品套图";
+}
+
+function generatedImageItemsForCurrentSet() {
+  return promptStore.flatMap((item) => imageGenerationState(item.key).images.map((url) => ({ cardKey: item.key, url })));
+}
+
+function crc32(bytes) {
+  if (!crc32.table) {
+    crc32.table = Array.from({ length: 256 }, (_, index) => {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+      return value >>> 0;
+    });
+  }
+  let value = 0xffffffff;
+  bytes.forEach((byte) => { value = crc32.table[(value ^ byte) & 0xff] ^ (value >>> 8); });
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function zipDateTime(date = new Date()) {
+  return {
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    date: ((Math.max(1980, date.getFullYear()) - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+  };
+}
+
+function buildStoredZip(entries) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const stamp = zipDateTime();
+  entries.forEach((entry) => {
+    const filename = encoder.encode(entry.name);
+    const bytes = entry.bytes;
+    const checksum = crc32(bytes);
+    const local = new Uint8Array(30 + filename.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, stamp.time, true);
+    localView.setUint16(12, stamp.date, true);
+    localView.setUint32(14, checksum, true);
+    localView.setUint32(18, bytes.length, true);
+    localView.setUint32(22, bytes.length, true);
+    localView.setUint16(26, filename.length, true);
+    local.set(filename, 30);
+    localParts.push(local, bytes);
+
+    const central = new Uint8Array(46 + filename.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, stamp.time, true);
+    centralView.setUint16(14, stamp.date, true);
+    centralView.setUint32(16, checksum, true);
+    centralView.setUint32(20, bytes.length, true);
+    centralView.setUint32(24, bytes.length, true);
+    centralView.setUint16(28, filename.length, true);
+    centralView.setUint32(42, offset, true);
+    central.set(filename, 46);
+    centralParts.push(central);
+    offset += local.length + bytes.length;
+  });
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, entries.length, true);
+  endView.setUint16(10, entries.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  return new Blob([...localParts, ...centralParts, end], { type: "application/zip" });
+}
+
+function imageExtension(contentType, url) {
+  if (/webp/i.test(contentType)) return "webp";
+  if (/jpe?g/i.test(contentType)) return "jpg";
+  if (/png/i.test(contentType)) return "png";
+  const match = String(url || "").match(/\.(png|jpe?g|webp)(?:[?#]|$)/i);
+  return match ? match[1].replace(/jpeg/i, "jpg").toLowerCase() : "png";
+}
+
+function setSaveGeneratedSetUi(message = "") {
+  const button = byId("saveGeneratedSet");
+  if (button) {
+    button.disabled = generatedSetSaving || !generatedImageItemsForCurrentSet().length;
+    button.textContent = generatedSetSaving ? "正在整理套组图片…" : "一键保存套组生成图片";
+  }
+  if (byId("saveGeneratedSetStatus")) byId("saveGeneratedSetStatus").textContent = message;
+}
+
+async function saveGeneratedSet() {
+  if (generatedSetSaving) return;
+  const items = generatedImageItemsForCurrentSet();
+  if (!items.length) {
+    setSaveGeneratedSetUi("当前套组还没有生成图片。");
+    return;
+  }
+  generatedSetSaving = true;
+  setSaveGeneratedSetUi(`正在读取 0/${items.length} 张图片…`);
+  const baseName = chineseProductFilenameBase();
+  const entries = [];
+  try {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const requestUrl = /^data:image\//i.test(item.url) ? item.url : `/api/download-image?url=${encodeURIComponent(item.url)}`;
+      const response = await fetch(requestUrl);
+      if (!response.ok) throw new Error(`第 ${index + 1} 张图片读取失败（HTTP ${response.status}）`);
+      const blob = await response.blob();
+      const extension = imageExtension(blob.type, item.url);
+      entries.push({ name: `${baseName}-${String(index + 1).padStart(2, "0")}.${extension}`, bytes: new Uint8Array(await blob.arrayBuffer()) });
+      setSaveGeneratedSetUi(`正在读取 ${index + 1}/${items.length} 张图片…`);
+    }
+    const zip = buildStoredZip(entries);
+    const objectUrl = URL.createObjectURL(zip);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = `${baseName}-套组.zip`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+    setSaveGeneratedSetUi(`已保存 ${entries.length} 张图片；文件名为“${baseName}-01”起顺序编号。`);
+  } catch (error) {
+    setSaveGeneratedSetUi(error?.message || "套组图片保存失败");
+  } finally {
+    generatedSetSaving = false;
+    setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
+  }
+}
+
+function bindImageGeneratorSection(section) {
+  const cardKey = section.dataset.cardKey;
+  const state = imageGenerationState(cardKey);
+  section.querySelector(".reference-expand-toggle")?.addEventListener("click", () => {
+    state.referencesExpanded = !state.referencesExpanded;
+    updateImageGenerator(cardKey);
+  });
+  section.querySelector(".image-model-select")?.addEventListener("change", (event) => {
+    state.model = event.target.value;
+    state.size = "1024x1024";
+    updateImageGenerator(cardKey);
+  });
+  section.querySelector(".image-size-select")?.addEventListener("change", (event) => {
+    state.size = event.target.value;
+  });
+  section.querySelectorAll(".reference-image-checkbox").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const reference = state.availableReferences[Number(checkbox.dataset.referenceIndex)];
+      if (!reference) return;
+      if (checkbox.checked && state.selectedReferences.length >= MAX_SELECTED_REFERENCES) {
+        checkbox.checked = false;
+        state.message = `参考图最多选择 ${MAX_SELECTED_REFERENCES} 张。`;
+      } else if (checkbox.checked) {
+        state.selectedReferences = Array.from(new Set([...state.selectedReferences, reference]));
+        lastReferenceSelectionCardKey = cardKey;
+        state.message = `已选择 ${state.selectedReferences.length} 张参考图。`;
+      } else {
+        state.selectedReferences = state.selectedReferences.filter((item) => item !== reference);
+        lastReferenceSelectionCardKey = cardKey;
+        state.message = state.selectedReferences.length ? `已选择 ${state.selectedReferences.length} 张参考图。` : "未选择参考图。";
+      }
+      updateImageGenerator(cardKey);
+    });
+  });
+  section.querySelectorAll(".delete-reference-image").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const reference = state.availableReferences[Number(button.dataset.referenceIndex)];
+      if (!reference) return;
+      state.availableReferences = state.availableReferences.filter((item) => item !== reference);
+      state.selectedReferences = state.selectedReferences.filter((item) => item !== reference);
+      state.message = "已删除该参考图。";
+      updateImageGenerator(cardKey);
+    });
+  });
+  section.querySelectorAll(".preview-reference-image").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const index = Number(button.dataset.referenceIndex);
+      const reference = state.availableReferences[index];
+      if (reference) openReferenceLightbox(reference, `参考图 ${index + 1}`);
+    });
+  });
+  const fileInput = section.querySelector(".reference-file-input");
+  const dropZone = section.querySelector(".reference-drop-zone");
+  dropZone?.addEventListener("click", () => fileInput?.click());
+  fileInput?.addEventListener("change", () => addReferenceFiles(cardKey, fileInput.files));
+  ["dragenter", "dragover"].forEach((eventName) => dropZone?.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    dropZone.classList.add("is-dragging");
+  }));
+  ["dragleave", "drop"].forEach((eventName) => dropZone?.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("is-dragging");
+  }));
+  dropZone?.addEventListener("drop", (event) => addReferenceFiles(cardKey, event.dataTransfer?.files));
+  section.querySelector(".generate-image")?.addEventListener("click", () => generateImageForCard(cardKey));
+}
+
+function bindImageGeneratorEvents() {
+  document.querySelectorAll(".image-generator").forEach(bindImageGeneratorSection);
+}
+
+function taskManualParameterLabel(key, fallback) {
+  return ({
+    pack: "产品数量 / 套组",
+    cupRange: "尺寸 / 适用范围",
+    surfaceFinish: "工艺 / 表面处理",
+    topWidth: "尺寸参数 1",
+    sideLength: "尺寸参数 2",
+    bottomWidth: "尺寸参数 3",
+    weight: "重量 / 容量",
+  })[key] || fallback;
+}
+
+function renderTaskParameterPanel(data, facts) {
+  const primaryFacts = [
+    ["中文产品 / 当前款式", skuDisplayLabel(selectedSku(), data)],
+    ["颜色", facts.color || "待补充"],
+    ["结构 / 工艺", facts.structure || "待补充"],
+  ];
+  return `
+    <section class="task-parameter-panel">
+      <div class="task-input-heading">
+        <div><strong>产品参数</strong><span>修改后会重新计算当前套组提示词</span></div>
+        <span class="task-sync-state">自动同步</span>
+      </div>
+      <div class="task-primary-facts">${primaryFacts.map(([label, value]) => `
+        <div><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>
+      `).join("")}</div>
+      <div class="task-input-heading task-manual-heading">
+        <div><strong>人工补充参数</strong><span>保存到当前 SKU，并进入全部对应提示词</span></div>
+      </div>
+      <div class="task-manual-fields">${manualFields.map(([key, label]) => `
+        <label>
+          <span>${escapeHtml(taskManualParameterLabel(key, label))}</span>
+          <input class="task-manual-input" data-key="${escapeHtml(key)}" value="${escapeHtml(data[key] || "")}" placeholder="人工补充">
+        </label>
+      `).join("")}</div>
+    </section>
+  `;
+}
+
+function bindTaskParameterInputs(grid) {
+  grid.querySelectorAll(".task-manual-input").forEach((input) => {
+    const commit = () => {
+      const key = input.dataset.key;
+      const skuId = selectedSku()?.id || "";
+      if (!key || !skuId) return;
+      const value = cleanFieldDisplayValue(input.value);
+      if (cleanFieldDisplayValue(fieldOverridesBySku[skuId]?.[key]) === value) return;
+      fieldOverrides[key] = value;
+      fieldOverridesBySku[skuId] = { ...(fieldOverridesBySku[skuId] || {}), [key]: value };
+      const sidebarInput = byId(`field-${key}`);
+      if (sidebarInput) sidebarInput.value = value;
+      fieldSnapshot = currentFieldSignature();
+      renderAll();
+      byId("copyStatus").textContent = "人工参数已保存，并已更新整套提示词。";
+    };
+    input.addEventListener("change", commit);
+    input.addEventListener("blur", commit);
+  });
+}
+
+function promptTaskListHtml(items, activeItem, ariaLabel) {
+  return `<nav class="prompt-task-list" aria-label="${escapeHtml(ariaLabel)}">
+    <div class="prompt-task-list-head"><strong>图组任务</strong><span>${items.length} 张</span></div>
+    ${items.map((item) => {
+      const state = imageGenerationState(item.key);
+      const status = ["submitting", "processing"].includes(state.status) ? "生成中" : state.images.length ? "已生成" : "待生成";
+      return `<button type="button" class="prompt-task-item ${item.key === activeItem.key ? "is-active" : ""}" data-prompt-card-key="${escapeHtml(item.key)}">
+        <b>${escapeHtml(item.id)}</b><span><strong>${escapeHtml(item.type.name.replace(/^\s*[0-9]+[A-Z]?\.\s*/, ""))}</strong><small>${status}</small></span>
+      </button>`;
+    }).join("")}
+  </nav>`;
+}
+
+function refreshPromptSurfaces() {
+  renderProductPromptGrid();
+  renderParameterPromptGrid();
+}
+
+function bindPromptTaskSelection(container) {
+  container.querySelectorAll(".prompt-task-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      activePromptCardKey = button.dataset.promptCardKey || "";
+      refreshPromptSurfaces();
+    });
+  });
+}
+
+function bindPromptTextControls(container) {
+  container.querySelectorAll(".copy-prompt").forEach((button) => {
+    button.addEventListener("click", () => copyText(promptStore.find((item) => item.key === button.dataset.promptKey)?.prompt || "", "已复制该图提示词。", button));
+  });
+  container.querySelectorAll(".language-toggle").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = promptStore.find((entry) => entry.key === button.dataset.promptKey);
+      if (!item) return;
+      promptLanguageByCard[item.key] = item.language === "zh" ? "en" : "zh";
+      refreshPromptSurfaces();
+      byId("copyStatus").textContent = `已切换为${promptLanguageByCard[item.key] === "zh" ? "中文" : "英文"}提示词。`;
+    });
+  });
 }
 
 function renderProductPromptGrid() {
@@ -9390,64 +10946,113 @@ function renderProductPromptGrid() {
   const data = currentPromptData(sku);
   const facts = promptFacts(sku, data);
   const displayLabel = skuDisplayLabel(sku, data);
-  promptStore = template.imageTypes.map((type) => {
+  promptStore = template.imageTypes.map((type, index) => {
     const key = promptCardKey(sku, template, type);
     const language = promptLanguageByCard[key] || "en";
     const promptEn = bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
     const prompt = promptTextForLanguage(promptEn, language);
-    return { id: type.id, key, language, promptEn, prompt };
+    return { id: type.id, key, index, type, language, promptEn, prompt, empty: !promptEn.trim() };
   });
 
-  grid.innerHTML = template.imageTypes.map((type, index) => {
-    const item = promptStore[index];
-    const prompt = item.prompt;
-    return `
-      <article class="prompt-card">
+  promptStore.forEach((item) => {
+    const type = item.type;
+    const state = imageGenerationState(item.key);
+    const referenceCandidates = referenceImageCandidatesForCard(type, facts, sku);
+    state.availableReferences = Array.from(new Set([...referenceCandidates.all, ...state.availableReferences])).slice(0, MAX_REFERENCE_CANDIDATES);
+    if (!state.referenceSelectionInitialized) {
+      state.selectedReferences = referenceCandidates.matched.slice(0, MAX_SELECTED_REFERENCES);
+      state.referenceSelectionInitialized = true;
+    }
+  });
+
+  const visibleItems = promptStore.filter((item) => !item.empty);
+  if (!visibleItems.some((item) => item.key === activePromptCardKey)) activePromptCardKey = visibleItems[0]?.key || "";
+  const activeItem = visibleItems.find((item) => item.key === activePromptCardKey);
+  if (!activeItem) {
+    grid.innerHTML = `<p class="empty-state">当前模板没有可用提示词。</p>`;
+    return;
+  }
+  const activeState = imageGenerationState(activeItem.key);
+  const inputsChanged = generationInputsChanged(activeItem.key, activeItem.promptEn);
+  const referenceCount = activeState.selectedReferences.length;
+  const outputState = inputsChanged ? "输入已变化，需重新生成" : activeState.images.length ? `已生成 ${activeState.images.length} 张` : "等待生成";
+  grid.innerHTML = `
+    <div class="prompt-workbench">
+      ${promptTaskListHtml(visibleItems, activeItem, "提示词与图片任务")}
+      <section class="prompt-task-stage">
+        <div class="prompt-dependency-strip studio-dependency-strip" aria-label="当前图片依赖关系">
+          <div><b>① 当前提示词</b><span>${escapeHtml(activeItem.id)} · 已从参数页同步</span></div>
+          <div><b>② 参考图</b><span>当前选择 ${referenceCount} 张</span></div>
+          <div class="${inputsChanged ? "is-dirty" : ""}"><b>③ 对应生成结果</b><span>${escapeHtml(outputState)}</span></div>
+        </div>
+        <article class="prompt-card active-prompt-card">
         <div class="prompt-card-head">
           <div>
             <span>${escapeHtml(displayLabel)}</span>
-            <h3>${escapeHtml(type.name)}</h3>
+            <h3>${escapeHtml(activeItem.type.name)}</h3>
           </div>
           <div class="prompt-actions">
-            <button type="button" class="copy-prompt" data-prompt-index="${index}">复制</button>
-            <button type="button" class="language-toggle" data-prompt-index="${index}">${item.language === "zh" ? "切英文" : "切中文"}</button>
+            <button type="button" class="copy-prompt" data-prompt-key="${escapeHtml(activeItem.key)}">复制</button>
+            <button type="button" class="language-toggle" data-prompt-key="${escapeHtml(activeItem.key)}">${activeItem.language === "zh" ? "切英文" : "切中文"}</button>
           </div>
         </div>
-        <pre class="prompt-preview">${highlightPromptVariables(prompt, facts, type.id)}</pre>
+        <div class="prompt-card-body">
+          <div class="prompt-input-column">
+            <section class="task-prompt-panel studio-task-prompt-panel">
+              <div class="task-input-heading"><div><strong>当前提示词</strong><span>与右侧参考图共同决定当前生成结果</span></div></div>
+              <pre class="prompt-preview">${highlightPromptVariables(activeItem.prompt, facts, activeItem.type.id)}</pre>
+            </section>
+          </div>
+          ${renderImageGenerator(activeItem.key)}
+        </div>
       </article>
-    `;
-  }).join("");
+      </section>
+    </div>
+  `;
+  bindPromptTaskSelection(grid);
+  bindPromptTextControls(grid);
+  bindImageGeneratorEvents();
+  setBulkGenerationUi(byId("bulkGenerationStatus")?.textContent || "");
+  setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
+}
 
-  grid.querySelectorAll(".copy-prompt").forEach((button) => {
-    button.addEventListener("click", () => {
-      copyText(promptStore[Number(button.dataset.promptIndex)]?.prompt || "", "已复制该图提示词。", button);
-    });
-  });
-
-  grid.querySelectorAll(".language-toggle").forEach((button) => {
-    button.addEventListener("click", () => {
-      const index = Number(button.dataset.promptIndex);
-      const item = promptStore[index];
-      const type = template.imageTypes[index];
-      if (!item || !type) return;
-      const nextLanguage = item.language === "zh" ? "en" : "zh";
-      promptLanguageByCard[item.key] = nextLanguage;
-      item.language = nextLanguage;
-      item.prompt = promptTextForLanguage(item.promptEn, nextLanguage);
-      const card = button.closest(".prompt-card");
-      const preview = card?.querySelector(".prompt-preview");
-      if (preview) preview.innerHTML = highlightPromptVariables(item.prompt, facts, type.id);
-      button.textContent = nextLanguage === "zh" ? "切英文" : "切中文";
-      byId("copyStatus").textContent = `已切换为${nextLanguage === "zh" ? "中文" : "英文"}提示词。`;
-    });
-  });
+function renderParameterPromptGrid() {
+  const grid = byId("parameterPromptGrid");
+  if (!grid) return;
+  if (!hasExtractedProducts() || !promptStore.length) {
+    grid.innerHTML = `<p class="empty-state">第 1 页解析出产品后，这里显示参数对应的整套提示词。</p>`;
+    return;
+  }
+  const sku = selectedSku();
+  const data = currentPromptData(sku);
+  const facts = promptFacts(sku, data);
+  const displayLabel = skuDisplayLabel(sku, data);
+  const visibleItems = promptStore.filter((item) => !item.empty);
+  const activeItem = visibleItems.find((item) => item.key === activePromptCardKey) || visibleItems[0];
+  if (!activeItem) {
+    grid.innerHTML = `<p class="empty-state">当前模板没有可用提示词。</p>`;
+    return;
+  }
+  grid.innerHTML = `
+    <div class="parameter-prompt-workbench">
+      ${promptTaskListHtml(visibleItems, activeItem, "参数对应提示词任务")}
+      <article class="prompt-card parameter-prompt-detail">
+        <div class="prompt-card-head"><div><span>${escapeHtml(displayLabel)}</span><h3>${escapeHtml(activeItem.type.name)}</h3></div><div class="prompt-actions"><button type="button" class="copy-prompt" data-prompt-key="${escapeHtml(activeItem.key)}">复制</button><button type="button" class="language-toggle" data-prompt-key="${escapeHtml(activeItem.key)}">${activeItem.language === "zh" ? "切英文" : "切中文"}</button></div></div>
+        <div class="parameter-prompt-link"><span>左侧当前 SKU 参数</span><b>→</b><span>${escapeHtml(activeItem.id)} 对应提示词</span></div>
+        <section class="task-prompt-panel"><div class="task-input-heading"><div><strong>完整提示词</strong><span>左侧任何参数修改都会重新计算此处内容</span></div></div><pre class="prompt-preview">${highlightPromptVariables(activeItem.prompt, facts, activeItem.type.id)}</pre></section>
+      </article>
+    </div>
+  `;
+  bindPromptTaskSelection(grid);
+  bindPromptTextControls(grid);
 }
 
 function renderPrompt() {
-  renderProductPromptGrid();
+  refreshPromptSurfaces();
 }
 
 function renderAll() {
+  renderBundleEditor();
   renderProductParameters();
   renderSourceSummary();
   renderFacts();
@@ -9465,11 +11070,12 @@ function allPromptsForSku() {
     const key = promptCardKey(sku, template, type);
     const promptEn = bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
     const prompt = promptTextForLanguage(promptEn, promptLanguageByCard[key] || "en");
-    return `## ${title}\n\n${prompt}`;
-  }).join("\n\n---\n\n");
+    return prompt ? `## ${title}\n\n${prompt}` : "";
+  }).filter(Boolean).join("\n\n---\n\n");
 }
 
 function clearExtractedSourceState() {
+  extractionGeneration += 1;
   sourcePayload = {
     purchase: "",
     amazonTemplate: "",
@@ -9480,9 +11086,17 @@ function clearExtractedSourceState() {
   fieldOverrides = {};
   fieldOverridesBySku = {};
   appliedSellingPointOverridesBySku = {};
+  sellingPointResearchAttemptedBySku = new Set();
   promptLanguageByCard = {};
   sellingPointDraftDirty = false;
   promptStore = [];
+  imageGenerationByCard = {};
+  lastReferenceSelectionCardKey = "";
+  bulkImageGenerationRunning = false;
+  availableReferenceImageUrls = [];
+  referenceImagesBySku = {};
+  bundleStateBySku = {};
+  supplierSourceFileNames = [];
   renderProductSelect();
   renderFields(true);
   renderAll();
@@ -9564,10 +11178,46 @@ function fallbackCopyText(text) {
   return ok;
 }
 
+const THEME_STORAGE_KEY = "prompt-tool-theme";
+
+function applyTheme(theme, persist = false) {
+  const nextTheme = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = nextTheme;
+  const toggle = byId("themeToggle");
+  if (toggle) {
+    const isDark = nextTheme === "dark";
+    toggle.setAttribute("aria-pressed", String(isDark));
+    toggle.setAttribute("aria-label", isDark ? "切换到浅色主题" : "切换到深色主题");
+    const icon = toggle.querySelector(".theme-toggle-icon");
+    const label = toggle.querySelector(".theme-toggle-label");
+    if (icon) icon.textContent = isDark ? "☾" : "☀";
+    if (label) label.textContent = isDark ? "深色模式" : "浅色模式";
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    } catch {
+      // Theme switching remains available when storage is blocked.
+    }
+  }
+}
+
+function initThemeToggle() {
+  const currentTheme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  applyTheme(currentTheme);
+  byId("themeToggle")?.addEventListener("click", () => {
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+  });
+}
+
 function init() {
   window.renderAll = renderAll;
   window.promptForSku = promptFor;
+  initThemeToggle();
+  initWorkflowNavigation();
   fillSelects();
+  initProductStructureRoute();
+  initExtractionRoutePreview();
   renderFields(true);
   renderAll();
   startFieldWatcher();
@@ -9575,7 +11225,10 @@ function init() {
   byId("skuSelect").addEventListener("change", () => {
     renderFields(true);
     renderAll();
-    autoEnrichUseScenesIfNeeded();
+    if (selectedExtractionRoute === "web") {
+      autoEnrichSellingPointsIfNeeded();
+      autoEnrichUseScenesIfNeeded();
+    }
   });
   byId("templateSelect").addEventListener("change", renderAll);
   byId("extractSources").addEventListener("click", () => {
@@ -9589,14 +11242,37 @@ function init() {
       byId("extractStatus").textContent = `解析失败：${error.message || "请检查文件格式"}`;
     });
   });
-  ["amazonTemplateFile", "amazonSkuFilter", "supplierFile", "competitorFile"].forEach((id) => {
+  ["amazonTemplateFile", "amazonSkuFilter", "supplierFile", "supplierImageListFile", "supplierImageListText", "competitorFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
       clearExtractedSourceState();
       byId("extractStatus").textContent = "文件或筛选条件已更新，点击解析资料并提取产品信息。";
     };
     input.addEventListener("change", updateStatus);
-    if (input.type === "text") input.addEventListener("input", updateStatus);
+    if (input.type === "text" || input.tagName === "TEXTAREA") input.addEventListener("input", updateStatus);
+  });
+  const refreshSupplierBindingOptions = async () => {
+    const file = byId("amazonTemplateFile")?.files?.[0];
+    if (!file) {
+      populateSupplierSkuBinding([]);
+      return;
+    }
+    try {
+      const result = await extractAmazonTemplateProducts(file, byId("amazonSkuFilter")?.value || "");
+      populateSupplierSkuBinding(result.products);
+    } catch {
+      populateSupplierSkuBinding([]);
+    }
+  };
+  byId("amazonTemplateFile")?.addEventListener("change", refreshSupplierBindingOptions);
+  byId("amazonSkuFilter")?.addEventListener("change", refreshSupplierBindingOptions);
+  byId("supplierSkuBinding")?.addEventListener("change", () => {
+    referenceImagesBySku = {};
+    imageGenerationByCard = {};
+    productStructureRouteManuallySelected = false;
+    syncProductStructureRouteFromBinding(true);
+    renderAll();
+    byId("extractStatus").textContent = "1688资料的 SKU 归属已更新，请重新解析资料。";
   });
   byId("resetFields").addEventListener("click", () => {
     const skuId = selectedSku()?.id || "";
@@ -9615,6 +11291,8 @@ function init() {
     }
     copyText(text, "已复制当前产品全部图组。", byId("copyCurrent"));
   });
+  byId("generateAllImages")?.addEventListener("click", generateAllImagesForCurrentOutput);
+  byId("saveGeneratedSet")?.addEventListener("click", saveGeneratedSet);
 }
 
 init();
