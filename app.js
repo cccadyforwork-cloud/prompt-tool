@@ -146,6 +146,7 @@ const WORKSPACE_STORAGE_KEY = "prompt-tool-workspace-v1";
 let persistedImageHistory = loadPersistedImageHistory();
 let availableReferenceImageUrls = [];
 let referenceImagesBySku = {};
+let referenceImageMetaBySku = {};
 let promptLanguageByCard = {};
 let extractedProducts = [];
 let hasUserSourceAttempt = false;
@@ -184,6 +185,8 @@ const COLLECTOR_MAIN_LATE_LIMIT = 10;
 const COLLECTOR_MAIN_MIDDLE_LIMIT = 10;
 const COLLECTOR_DETAIL_TAIL_LIMIT = 12;
 const MAX_REFERENCE_CANDIDATES = 16;
+const MAX_REFERENCE_CLASSIFIER_CANDIDATES = 40;
+const MAX_COMPETITOR_REFERENCE_IMAGES = 5;
 const MAX_SELECTED_REFERENCES = 6;
 const REFERENCE_CLASSIFIER_BATCH_SIZE = 12;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -1500,6 +1503,61 @@ function extractImageUrlsFromHtml(html, sourceName = "html") {
   return urls;
 }
 
+function normalizeAmazonProductImageUrl(value) {
+  const url = normalizeImageUrl(value).replace(/\\u002F/gi, "/");
+  if (!/^https?:\/\//i.test(url)) return "";
+  if (!/m\.media-amazon\.com\/images\/I\//i.test(url)) return "";
+  if (/(?:sprite|transparent|grey-pixel|favicon|nav-|logo|beacon|uedata|avatar|loading|captcha|icon_zoom|thumbnail-icon)/i.test(url)) return "";
+  return url
+    .replace(/\._[^./]+_\.(jpg|jpeg|png|webp)(\?.*)?$/i, ".$1$2")
+    .replace(/[?#].*$/, "");
+}
+
+function extractAmazonCompetitorImageCandidates(html) {
+  const source = String(html || "");
+  const candidates = [];
+  const seen = new Set();
+  const add = (value, context = "", index = candidates.length) => {
+    const url = normalizeAmazonProductImageUrl(value);
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    candidates.push({
+      url,
+      source: "competitor",
+      context,
+      index,
+      score: 200 - Math.min(index, 100),
+    });
+  };
+
+  const mediaIdPattern = /data-csa-c-content-id=["']([A-Za-z0-9+-]{8,})["'][\s\S]{0,240}?data-csa-c-media-type=["']IMAGE["']/gi;
+  for (const match of source.matchAll(mediaIdPattern)) {
+    add(`https://m.media-amazon.com/images/I/${match[1]}.jpg`, nearbyImageContext(source, match.index || 0), match.index || candidates.length);
+  }
+
+  const doc = new DOMParser().parseFromString(source, "text/html");
+  doc.querySelectorAll("img, source").forEach((node, index) => {
+    const context = [node.getAttribute("alt"), node.getAttribute("title"), node.getAttribute("data-title")].filter(Boolean).join(" ");
+    ["src", "data-src", "data-old-hires", "data-a-hires", "data-thumb", "data-large-image"].forEach((attr) => {
+      add(node.getAttribute(attr), context, index);
+    });
+    ["srcset", "data-srcset"].forEach((attr) => {
+      extractSrcsetUrls(node.getAttribute(attr)).forEach((url) => add(url, context, index));
+    });
+  });
+
+  const objectImagePattern = /"(?:hiRes|large|main|variant|landingImage|thumb)"\s*:\s*"([^"]+)"/gi;
+  for (const match of source.matchAll(objectImagePattern)) {
+    add(match[1], nearbyImageContext(source, match.index || 0), match.index || candidates.length);
+  }
+  const urlPattern = /https?:\\?\/\\?\/[^"'<>\s]+?\.(?:jpe?g|png|webp)(?:\?[^"'<>\s]*)?/gi;
+  for (const match of source.matchAll(urlPattern)) {
+    add(match[0], nearbyImageContext(source, match.index || 0), match.index || candidates.length);
+  }
+
+  return uniqueByUrl(candidates).slice(0, MAX_COMPETITOR_REFERENCE_IMAGES);
+}
+
 function extractCollectedImageCandidates(text) {
   const source = String(text || "");
   const occurrenceMap = new Map();
@@ -1568,12 +1626,12 @@ function evenlySpacedImageCandidates(candidates, limit = MAX_REFERENCE_CANDIDATE
   return selected;
 }
 
-function referencePickerImageCandidates(collectedCandidates, fallbackCandidates) {
+function referencePickerImageCandidates(collectedCandidates, fallbackCandidates, limit = MAX_REFERENCE_CANDIDATES) {
   const collected = uniqueByUrl(collectedCandidates)
     .filter(isLikelyProductDetailImageCandidate)
     .sort((left, right) => (left.firstOccurrenceIndex || 0) - (right.firstOccurrenceIndex || 0));
   const sourcePool = collected.length ? collected : uniqueByUrl(fallbackCandidates);
-  return evenlySpacedImageCandidates(sourcePool, MAX_REFERENCE_CANDIDATES);
+  return evenlySpacedImageCandidates(sourcePool, limit);
 }
 
 function collectedImageCandidatesForLocalOcr(collectedCandidates, ...fallbackGroups) {
@@ -3119,8 +3177,8 @@ async function fetchLocalProductAnalysisProxy(facts, imageCandidates, onProgress
   }
 }
 
-async function fetchSkuReferenceImageMapping(products, imageUrls, onProgress, timeoutMs = 150000) {
-  const urls = Array.from(new Set((imageUrls || []).filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES);
+async function fetchSkuReferenceImageMapping(products, imageUrls, onProgress, timeoutMs = 300000) {
+  const urls = Array.from(new Set((imageUrls || []).filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CLASSIFIER_CANDIDATES);
   if (!products.length || !urls.length) return { mappings: {}, unmatched: urls, errors: ["No SKU or image candidates"] };
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -3139,6 +3197,7 @@ async function fetchSkuReferenceImageMapping(products, imageUrls, onProgress, ti
   onProgress?.(`正在让豆包按商品身份筛选 ${urls.length} 张参考图（${batches.length} 批）...`);
   try {
     const mappings = Object.fromEntries(products.map((sku) => [sku.id, []]));
+    const referenceMeta = Object.fromEntries(products.map((sku) => [sku.id, []]));
     const unmatched = [];
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
       onProgress?.(`正在按商品身份筛选参考图... ${batchIndex + 1}/${batches.length}`);
@@ -3159,15 +3218,25 @@ async function fetchSkuReferenceImageMapping(products, imageUrls, onProgress, ti
       products.forEach((sku) => {
         const mapped = Array.isArray(result?.mappings?.[sku.id]) ? result.mappings[sku.id] : [];
         mappings[sku.id].push(...mapped);
+        const meta = Array.isArray(result?.referenceMeta?.[sku.id]) ? result.referenceMeta[sku.id] : [];
+        referenceMeta[sku.id].push(...meta);
       });
       if (Array.isArray(result?.unmatched)) unmatched.push(...result.unmatched);
     }
     Object.keys(mappings).forEach((skuId) => {
       mappings[skuId] = Array.from(new Set(mappings[skuId])).slice(0, MAX_REFERENCE_CANDIDATES);
+      const allowedUrls = new Set(mappings[skuId]);
+      const seenMetaUrls = new Set();
+      referenceMeta[skuId] = referenceMeta[skuId].filter((item) => {
+        const url = item?.url || "";
+        if (!allowedUrls.has(url) || seenMetaUrls.has(url)) return false;
+        seenMetaUrls.add(url);
+        return true;
+      });
     });
     const matchedCount = Object.values(mappings).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0);
     onProgress?.(`SKU 参考图筛选完成：保留 ${matchedCount} 个同款/同类匹配，${unmatched.length} 张明显无关图片已排除。`);
-    return { mappings, unmatched: Array.from(new Set(unmatched)), errors: [] };
+    return { mappings, referenceMeta, unmatched: Array.from(new Set(unmatched)), errors: [] };
   } catch (error) {
     onProgress?.(`SKU 参考图匹配失败：${error?.message || "请求失败"}。为防止错配，本次不自动分配参考图。`);
     return { mappings: {}, unmatched: urls, errors: [error?.message || "Reference image mapping failed"] };
@@ -3316,7 +3385,7 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
   const detailAttrLines = productAttributeLinesFromSource(attributeSource);
   const combinedBeforeVision = [baseText, structuredText, ...detailAttrLines, attributeSource].filter(Boolean).join("\n");
   const visionImageCandidates = balancedVisionImageCandidates(imageUrls);
-  const pickerImageCandidates = referencePickerImageCandidates(collectedImageCandidates, imageUrls);
+  const pickerImageCandidates = referencePickerImageCandidates(collectedImageCandidates, imageUrls, MAX_REFERENCE_CLASSIFIER_CANDIDATES);
   const hintedProductName = cleanFieldDisplayValue(
     identityHint.productName || identityHint.baseProductName || identityHint.label || "",
   );
@@ -3355,7 +3424,7 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
     // but the human reference picker must retain the full validated source
     // pool. Otherwise late/early variant photos can disappear merely because
     // they were not selected for model analysis.
-    referenceImageUrls: pickerImageCandidates.map(imageCandidateUrl).filter(Boolean).slice(0, MAX_REFERENCE_CANDIDATES),
+    referenceImageUrls: pickerImageCandidates.map(imageCandidateUrl).filter(Boolean).slice(0, MAX_REFERENCE_CLASSIFIER_CANDIDATES),
     ocrAvailable: ocr.available,
   };
 }
@@ -6029,69 +6098,10 @@ function amazonTitleDimensionList(text = "") {
 function amazonListingDimensionListText(row, columns, context = "", title = "") {
   const titleDimensions = amazonTitleDimensionList(title);
   if (titleDimensions) return titleDimensions;
-  const itemLength = amazonMeasurementText(row, columns, [
-    "Item Length",
-    "Item Length Head to Toe",
-    "item_length[marketplace_id=ATVPDKIKX0DER]#1.value",
-    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.length.value",
-    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.value",
-  ], [
-    "Item Length Unit",
-    "Item length Unit",
-    "item_length[marketplace_id=ATVPDKIKX0DER]#1.unit",
-    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.length.unit",
-    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.length.unit",
-  ]);
-  const itemWidth = amazonMeasurementText(row, columns, [
-    "Item Width",
-    "Item Width Side To Side",
-    "item_width[marketplace_id=ATVPDKIKX0DER]#1.value",
-    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.width.value",
-    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.width.value",
-  ], [
-    "Width Unit",
-    "Item Width Unit",
-    "item_width[marketplace_id=ATVPDKIKX0DER]#1.unit",
-    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.width.unit",
-    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.width.unit",
-  ]);
-  const itemThickness = amazonMeasurementText(row, columns, [
-    "Item Thickness Decimal Value",
-    "Thickness Floor to Top",
-    "item_thickness[marketplace_id=ATVPDKIKX0DER]#1.decimal_value",
-    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.thickness.value",
-  ], [
-    "Item Thickness Unit",
-    "item_thickness[marketplace_id=ATVPDKIKX0DER]#1.unit",
-    "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.thickness.unit",
-  ]);
-  const itemHeight = amazonMeasurementText(row, columns, [
-    "Item Height",
-    "Item Height Floor To Top",
-    "Height Floor to Top",
-    "item_height[marketplace_id=ATVPDKIKX0DER]#1.value",
-    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.height.value",
-  ], [
-    "Item Height Unit",
-    "Height Unit",
-    "item_height[marketplace_id=ATVPDKIKX0DER]#1.unit",
-    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.height.unit",
-  ]);
-  const itemWeight = amazonMeasurementText(row, columns, [
-    "Item Weight",
-    "item_weight[marketplace_id=ATVPDKIKX0DER]#1.value",
-  ], [
-    "Item Weight Unit",
-    "item_weight[marketplace_id=ATVPDKIKX0DER]#1.unit",
-  ]);
-  const dimensions = uniquePromptItems([
-    itemWidth && `Width: ${itemWidth}`,
-    itemLength && `Length: ${itemLength}`,
-    itemThickness && `Thickness: ${itemThickness}`,
-    !itemThickness && itemHeight && `Height: ${itemHeight}`,
-    itemWeight && `Weight: ${itemWeight}`,
-  ]);
-  return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
+  // Spreadsheet item dimensions are often parcel/package values in Amazon
+  // flat files. Product measurement fields are filled later from supplier
+  // detail images/OCR/Doubao vision evidence instead.
+  return "";
 }
 
 function amazonFactsWithFallback(primary, fallback) {
@@ -6527,14 +6537,14 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
   // conflicting source levels into one product-size chart.
   const supplierDimensionList = visionDimensionList || supplierProduct.dimensionList || "";
   const dimensionMerge = mergeVerifiedDimensionLists(
-    supplierDimensionList || amazonProduct.dimensionList,
+    supplierDimensionList,
     "",
     [productName, supplierProduct.structure, amazonProduct.structure].filter(Boolean).join(" ")
   );
   const dimensions = dimensionMerge.dimensions.length
     ? dimensionMerge.dimensions
     : (amazonGroup.dimensions || []).length ? amazonGroup.dimensions : (supplierGroup.dimensions || []);
-  const hasDimensionEvidence = Boolean(visionDimensionList || amazonProduct.dimensionList || supplierProduct.dimensionList);
+  const hasDimensionEvidence = Boolean(visionDimensionList || supplierProduct.dimensionList);
   const dimensionList = hasDimensionEvidence
     ? dimensionMerge.dimensionList
     : (dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "");
@@ -6985,6 +6995,17 @@ async function extractSources() {
     const competitorHtml = await readTextFiles(competitorFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
+    const competitorReferenceImageCandidates = extractAmazonCompetitorImageCandidates(competitorHtml);
+    const competitorReferenceImageUrls = competitorReferenceImageCandidates.map(imageCandidateUrl).filter(Boolean);
+    const competitorReferenceMeta = competitorReferenceImageUrls.map((url) => ({
+      url,
+      image_type: "amazon_competitor_reference",
+      reference_value: "high",
+      confidence: "high",
+      sku_match: "visual_reference",
+      best_for: ["main_product", "human_use", "multi_scene", "multi_angle", "selling_point", "summary"],
+      reason: "Amazon competitor image used only as composition/style reference; current SKU facts stay from Amazon flat file and 1688 supplier evidence.",
+    }));
     const supplierFileExtraction = supplierEntries.length > 1
       ? await extractSupplierSourcesByFile(supplierEntries, (message) => {
         byId("extractStatus").textContent = message;
@@ -7002,17 +7023,11 @@ async function extractSources() {
       ? productsFromSupplierFileSources(supplierFileExtraction.fileSources)
       : [];
     const useSupplierFileProducts = supplierFileProducts.length > 1 && !amazonTemplate.products.length;
-    const competitorSourceText = competitorHtml
-      ? [
-        `REFERENCE_SOURCE_FILES: ${competitorFiles.map((file) => file.name).join(", ")}`,
-        cleanHtmlText(competitorHtml),
-      ].filter(Boolean).join("\n")
-      : "";
     sourcePayload = {
       purchase: "",
       amazonTemplate: useSupplierFileProducts ? "" : amazonTemplate.sourceText,
       supplier: supplierSource.text,
-      competitor: useSupplierFileProducts ? "" : competitorSourceText,
+      competitor: "",
     };
     fieldOverrides = {};
     fieldOverridesBySku = {};
@@ -7069,61 +7084,89 @@ async function extractSources() {
       throw new Error("没有从当前资料中提取到产品 / 款式，请确认 Amazon 模板或 1688 HTML 是否已选择。");
     }
     applyProductStructureRoute(extractedProducts);
-    availableReferenceImageUrls = Array.from(new Set([
+    const supplierReferenceImageUrls = Array.from(new Set([
       ...(Array.isArray(supplierSource.referenceImageUrls) ? supplierSource.referenceImageUrls : []),
       ...(Array.isArray(supplierSource.sellingPointVisualEvidence)
         ? supplierSource.sellingPointVisualEvidence.map((item) => item?.imageUrl || item?.image_url).filter(Boolean)
         : []),
-    ])).filter((url) => /^https?:\/\//i.test(url)).slice(0, MAX_REFERENCE_CANDIDATES);
+    ])).filter((url) => /^https?:\/\//i.test(url)).slice(0, MAX_REFERENCE_CLASSIFIER_CANDIDATES);
+    availableReferenceImageUrls = Array.from(new Set([
+      ...competitorReferenceImageUrls,
+      ...supplierReferenceImageUrls,
+    ])).filter((url) => /^https?:\/\//i.test(url)).slice(0, MAX_REFERENCE_CLASSIFIER_CANDIDATES);
     let referenceMappingStatus = "";
     if (explicitSupplierSku) {
       const shouldVisionFilterReferences = routeId === "vision" || routeId === "web";
       const mappingResult = shouldVisionFilterReferences
-        ? await fetchSkuReferenceImageMapping([explicitSupplierSku], availableReferenceImageUrls, (message) => {
+        ? await fetchSkuReferenceImageMapping([explicitSupplierSku], supplierReferenceImageUrls, (message) => {
           byId("extractStatus").textContent = message;
         })
-        : { mappings: { [explicitSupplierSku.id]: availableReferenceImageUrls }, unmatched: [], errors: [] };
+        : { mappings: { [explicitSupplierSku.id]: supplierReferenceImageUrls }, unmatched: [], errors: [] };
       if (extractionGeneration !== requestedGeneration) return;
-      const allowedUrls = new Set(availableReferenceImageUrls);
+      const allowedUrls = new Set(supplierReferenceImageUrls);
       const intelligentlyMappedUrls = Array.from(new Set(Array.isArray(mappingResult?.mappings?.[explicitSupplierSku.id])
         ? mappingResult.mappings[explicitSupplierSku.id]
         : []))
         .filter((url) => allowedUrls.has(url))
         .slice(0, MAX_REFERENCE_CANDIDATES);
       const mappedUrls = mappingResult?.errors?.length
-        ? availableReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES)
+        ? supplierReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES)
         : intelligentlyMappedUrls;
+      const finalUrls = Array.from(new Set([...competitorReferenceImageUrls, ...mappedUrls])).slice(0, MAX_REFERENCE_CANDIDATES);
       referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [
         sku.id,
-        sku.id === explicitSupplierSku.id ? mappedUrls : [],
+        sku.id === explicitSupplierSku.id ? finalUrls : [],
+      ]));
+      referenceImageMetaBySku = Object.fromEntries(extractedProducts.map((sku) => [
+        sku.id,
+        sku.id === explicitSupplierSku.id
+          ? [
+            ...competitorReferenceMeta,
+            ...(Array.isArray(mappingResult?.referenceMeta?.[explicitSupplierSku.id]) ? mappingResult.referenceMeta[explicitSupplierSku.id] : []),
+          ]
+          : [],
       ]));
       const rejectedCount = Array.isArray(mappingResult?.unmatched) ? mappingResult.unmatched.length : 0;
       referenceMappingStatus = mappingResult?.errors?.length
-        ? `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}；智能候选筛选失败，已保留 ${mappedUrls.length} 张均衡抽样图供人工选择：${mappingResult.errors.slice(0, 1).join("；")}`
-        : `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}：从链接候选中保留 ${mappedUrls.length} 张同款/同类参考图，排除 ${rejectedCount} 张明显无关图片；同款异色允许保留。`;
-    } else if (extractedProducts.length === 1) {
-      referenceImagesBySku = { [extractedProducts[0].id]: availableReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES) };
-      referenceMappingStatus = `单 SKU 资料：保留 ${referenceImagesBySku[extractedProducts[0].id].length} 张当前商品参考图。`;
+        ? `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}；竞品图前置 ${competitorReferenceImageUrls.length} 张，1688 智能候选筛选失败，已保留 ${mappedUrls.length} 张均衡抽样图供人工选择：${mappingResult.errors.slice(0, 1).join("；")}`
+        : `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}：竞品图前置 ${competitorReferenceImageUrls.length} 张，1688 链接候选保留 ${mappedUrls.length} 张同款/同类参考图，排除 ${rejectedCount} 张明显无关图片；同款异色允许保留。`;
     } else if (routeId === "vision" || routeId === "web") {
-      const mappingResult = await fetchSkuReferenceImageMapping(extractedProducts, availableReferenceImageUrls, (message) => {
+      const mappingResult = await fetchSkuReferenceImageMapping(extractedProducts, supplierReferenceImageUrls, (message) => {
         byId("extractStatus").textContent = message;
       });
       if (extractionGeneration !== requestedGeneration) return;
-      const allowedUrls = new Set(availableReferenceImageUrls);
+      const allowedUrls = new Set(supplierReferenceImageUrls);
       referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [
         sku.id,
-        Array.from(new Set(Array.isArray(mappingResult?.mappings?.[sku.id]) ? mappingResult.mappings[sku.id] : []))
-          .filter((url) => allowedUrls.has(url))
-          .slice(0, 12),
+        Array.from(new Set([
+          ...competitorReferenceImageUrls,
+          ...(Array.isArray(mappingResult?.mappings?.[sku.id]) ? mappingResult.mappings[sku.id] : [])
+            .filter((url) => allowedUrls.has(url)),
+        ])).slice(0, MAX_REFERENCE_CANDIDATES),
+      ]));
+      referenceImageMetaBySku = Object.fromEntries(extractedProducts.map((sku) => [
+        sku.id,
+        [
+          ...competitorReferenceMeta,
+          ...(Array.isArray(mappingResult?.referenceMeta?.[sku.id]) ? mappingResult.referenceMeta[sku.id] : []),
+        ],
       ]));
       const assignmentCount = Object.values(referenceImagesBySku).reduce((sum, urls) => sum + urls.length, 0);
+      const supplierAssignmentCount = Object.values(mappingResult?.mappings || {}).reduce((sum, urls) => sum + (Array.isArray(urls) ? urls.length : 0), 0);
       const unmatchedCount = Array.isArray(mappingResult?.unmatched) ? mappingResult.unmatched.length : 0;
       referenceMappingStatus = mappingResult?.errors?.length
         ? `SKU 参考图严格匹配未完成，已停止自动分配：${mappingResult.errors.slice(0, 1).join("；")}`
-        : `SKU 参考图：建立 ${assignmentCount} 个严格匹配，排除 ${unmatchedCount} 张无法确认或存在冲突的图片。`;
+        : `SKU 参考图：竞品图前置 ${competitorReferenceImageUrls.length} 张，1688 建立 ${supplierAssignmentCount} 个严格匹配，候选合计 ${assignmentCount} 张，排除 ${unmatchedCount} 张无法确认或存在冲突的图片。`;
+    } else if (extractedProducts.length === 1) {
+      referenceImagesBySku = { [extractedProducts[0].id]: availableReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES) };
+      referenceImageMetaBySku = { [extractedProducts[0].id]: competitorReferenceMeta };
+      referenceMappingStatus = `单 SKU 资料：保留 ${referenceImagesBySku[extractedProducts[0].id].length} 张当前商品参考图。`;
     } else {
-      referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [sku.id, []]));
-      referenceMappingStatus = "本地分析路线不调用豆包进行 SKU 图片匹配；多 SKU 参考图保持为空，可手动拖入。";
+      referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [sku.id, competitorReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES)]));
+      referenceImageMetaBySku = Object.fromEntries(extractedProducts.map((sku) => [sku.id, competitorReferenceMeta]));
+      referenceMappingStatus = competitorReferenceImageUrls.length
+        ? `本地分析路线不调用豆包进行 SKU 图片匹配；已将 ${competitorReferenceImageUrls.length} 张竞品图放入候选图前面。`
+        : "本地分析路线不调用豆包进行 SKU 图片匹配；多 SKU 参考图保持为空，可手动拖入。";
     }
     renderProductSelect(explicitSupplierSku?.id || extractedProducts[0]?.id);
     renderFields(true);
@@ -7142,7 +7185,7 @@ async function extractSources() {
             : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
       : "";
     const pastedListStatus = pastedSupplierImageListText ? "、已粘贴链接清单" : "";
-    const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；采集助手图片清单：${supplierImageListFiles.length} 个文件${pastedListStatus}${supplierSource.collectorCandidateCount ? `、过滤去重后 ${supplierSource.collectorCandidateCount} 张` : ""}；参考链接 HTML：${competitorFiles.length} 个。`;
+    const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；采集助手图片清单：${supplierImageListFiles.length} 个文件${pastedListStatus}${supplierSource.collectorCandidateCount ? `、过滤去重后 ${supplierSource.collectorCandidateCount} 张` : ""}；参考链接 HTML：${competitorFiles.length} 个${competitorReferenceImageUrls.length ? `，已抽取竞品候选图 ${competitorReferenceImageUrls.length} 张` : ""}。`;
     const supplierFileStatus = useSupplierFileProducts
       ? `多 1688 文件：已按 ${supplierFileProducts.length} 个文件生成 ${supplierFileProducts.length} 个独立产品选项；旧参考链接内容未参与本次提示词。`
       : amazonTemplate.products.length > 1
@@ -10427,15 +10470,62 @@ function imageSizeOptions(model, selectedSize) {
   return sizes.map((size) => `<option value="${size}" ${size === selectedSize ? "selected" : ""}>${size}</option>`).join("");
 }
 
+function referencePurposeForPromptType(typeId = "") {
+  const id = String(typeId || "");
+  if (id === "1A" || id === "1") return ["main_product", "multi_angle", "product_explanation"];
+  if (id === "1B") return ["human_use", "multi_scene", "main_product"];
+  if (id === "2") return ["multi_scene", "human_use", "selling_point"];
+  if (id === "3") return ["multi_angle", "main_product", "product_explanation"];
+  if (id === "4") return ["product_explanation", "summary", "multi_angle", "main_product"];
+  if (id === "5" || id === "6") return ["selling_point", "product_explanation", "summary", "detail"];
+  if (id === "7" || id === "8") return ["summary", "product_explanation", "selling_point", "main_product"];
+  return ["main_product", "product_explanation", "selling_point"];
+}
+
+function referencePurposeFromImageType(imageType = "") {
+  const type = String(imageType || "").toLowerCase().replace(/[-\s]+/g, "_");
+  if (/parameter|measurement|dimension|size|spec/.test(type)) return ["product_explanation", "summary"];
+  if (/detail|close|macro|material|texture|construction|structure/.test(type)) return ["product_explanation", "selling_point", "summary"];
+  if (/feature|benefit|demo|demonstration|function|proof/.test(type)) return ["selling_point", "product_explanation"];
+  if (/life|scene|use|application|environment/.test(type)) return ["human_use", "multi_scene"];
+  if (/angle|multi|side|front|back|top/.test(type)) return ["multi_angle", "main_product"];
+  if (/comparison|variant|option|color/.test(type)) return ["main_product", "multi_angle"];
+  if (/hero|overview|product|white|main/.test(type)) return ["main_product", "multi_angle"];
+  return [];
+}
+
+function referenceMetaItemsForSku(skuId) {
+  const values = Array.isArray(referenceImageMetaBySku[skuId]) ? referenceImageMetaBySku[skuId] : [];
+  return values.filter((item) => item && /^https?:\/\//i.test(item.url || ""));
+}
+
+function taskMatchedReferenceUrls(type, skuId, fallbackUrls) {
+  const desired = new Set(referencePurposeForPromptType(type?.id));
+  const meta = referenceMetaItemsForSku(skuId);
+  const exactOrUseful = (item) => {
+    const bestFor = [
+      ...(Array.isArray(item.best_for) ? item.best_for : []),
+      ...referencePurposeFromImageType(item.image_type),
+    ];
+    return bestFor.some((value) => desired.has(String(value || "").toLowerCase()));
+  };
+  const preferred = meta.filter(exactOrUseful).map((item) => item.url);
+  const exactSku = meta
+    .filter((item) => /exact|high/i.test([item.sku_match, item.confidence, item.reference_value].filter(Boolean).join(" ")))
+    .map((item) => item.url);
+  return Array.from(new Set([...preferred, ...exactSku, ...fallbackUrls])).filter((url) => /^https?:\/\//i.test(url));
+}
+
 function referenceImageCandidatesForCard(type, facts, sku) {
   const points = sellingPointGroupForImageTitle(selectedTemplate().id, type.id, facts);
   const mapped = Array.isArray(referenceImagesBySku[sku?.id]) ? referenceImagesBySku[sku.id] : [];
   const mappedSet = new Set(mapped);
   const matched = matchedSellingPointVisualEvidence(points, facts).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
   const evidence = (facts.sellingPointVisualEvidence || []).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
+  const taskMatched = taskMatchedReferenceUrls(type, sku?.id, Array.from(new Set([...matched, ...evidence, ...mapped])));
   return {
-    matched: Array.from(new Set(matched.filter(Boolean))),
-    all: Array.from(new Set([...matched, ...evidence, ...mapped].filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES),
+    matched: Array.from(new Set([...matched, ...taskMatched].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES),
+    all: Array.from(new Set([...taskMatched, ...matched, ...evidence, ...mapped].filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES),
   };
 }
 
@@ -11444,6 +11534,7 @@ function persistWorkspaceSnapshot() {
     fieldOverridesBySku,
     appliedSellingPointOverridesBySku,
     referenceImagesBySku,
+    referenceImageMetaBySku,
     availableReferenceImageUrls,
     bundleStateBySku,
     supplierSourceFileNames,
@@ -11471,6 +11562,7 @@ function restoreWorkspaceSnapshot() {
       ? snapshot.appliedSellingPointOverridesBySku
       : {};
     referenceImagesBySku = snapshot.referenceImagesBySku && typeof snapshot.referenceImagesBySku === "object" ? snapshot.referenceImagesBySku : {};
+    referenceImageMetaBySku = snapshot.referenceImageMetaBySku && typeof snapshot.referenceImageMetaBySku === "object" ? snapshot.referenceImageMetaBySku : {};
     availableReferenceImageUrls = Array.isArray(snapshot.availableReferenceImageUrls) ? snapshot.availableReferenceImageUrls : [];
     bundleStateBySku = snapshot.bundleStateBySku && typeof snapshot.bundleStateBySku === "object" ? snapshot.bundleStateBySku : {};
     supplierSourceFileNames = Array.isArray(snapshot.supplierSourceFileNames) ? snapshot.supplierSourceFileNames : [];
@@ -11521,7 +11613,7 @@ function allPromptsForSku() {
   }).filter(Boolean).join("\n\n---\n\n");
 }
 
-function clearExtractedSourceState() {
+function clearExtractedSourceState({ render = true } = {}) {
   extractionGeneration += 1;
   sourcePayload = {
     purchase: "",
@@ -11542,9 +11634,11 @@ function clearExtractedSourceState() {
   bulkImageGenerationRunning = false;
   availableReferenceImageUrls = [];
   referenceImagesBySku = {};
+  referenceImageMetaBySku = {};
   bundleStateBySku = {};
   supplierSourceFileNames = [];
   clearPersistedWorkspace();
+  if (!render) return;
   renderProductSelect();
   renderFields(true);
   renderAll();
@@ -11698,7 +11792,7 @@ function init() {
   ["amazonTemplateFile", "amazonSkuFilter", "supplierFile", "supplierImageListFile", "supplierImageListText", "competitorFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
-      clearExtractedSourceState();
+      clearExtractedSourceState({ render: false });
       byId("extractStatus").textContent = "文件或筛选条件已更新，点击解析资料并提取产品信息。";
     };
     input.addEventListener("change", updateStatus);
@@ -11721,6 +11815,7 @@ function init() {
   byId("amazonSkuFilter")?.addEventListener("change", refreshSupplierBindingOptions);
   byId("supplierSkuBinding")?.addEventListener("change", () => {
     referenceImagesBySku = {};
+    referenceImageMetaBySku = {};
     imageGenerationByCard = {};
     productStructureRouteManuallySelected = false;
     syncProductStructureRouteFromBinding(true);

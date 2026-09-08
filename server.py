@@ -27,7 +27,7 @@ MAX_IMAGE_PROMPT_CHARS = 30_000
 MAX_IMAGE_REFERENCES = 6
 MAX_PROXY_BYTES = 12 * 1024 * 1024
 MAX_DIMENSION_IMAGE_URLS = 12
-MAX_REFERENCE_MAP_IMAGE_URLS = 24
+MAX_REFERENCE_MAP_IMAGE_URLS = 40
 MAX_VISION_IMAGE_BYTES = 2 * 1024 * 1024
 SCENE_CACHE_TTL_SECONDS = 60 * 60
 SCENE_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
@@ -263,10 +263,10 @@ def source_image_data_url(url: str) -> tuple[str, str]:
     return f"data:{content_type};base64,{encoded}", content_type
 
 
-def vision_content_for_images(image_urls: list[str]) -> tuple[list[dict[str, object]], list[str]]:
+def vision_content_for_images(image_urls: list[str], limit: int = MAX_DIMENSION_IMAGE_URLS) -> tuple[list[dict[str, object]], list[str]]:
     content: list[dict[str, object]] = []
     errors: list[str] = []
-    for index, url in enumerate(image_urls[:MAX_DIMENSION_IMAGE_URLS], 1):
+    for index, url in enumerate(image_urls[:limit], 1):
         content.append({"type": "input_text", "text": f"Image {index} source_url: {url}"})
         try:
             data_url, _ = source_image_data_url(url)
@@ -291,6 +291,69 @@ def evidence_image_url(value: object, image_urls: list[str]) -> str:
         if 0 <= index < len(image_urls):
             return image_urls[index]
     return image_urls[0] if len(image_urls) == 1 else ""
+
+
+def reference_image_group(image_type: str) -> str:
+    value = clean_text(image_type, 80).lower().replace("-", "_").replace(" ", "_")
+    if re.search(r"caliper|ruler|measurement_tool|tool_measurement|raw_measurement", value):
+        return "measurement_tool"
+    if re.search(r"parameter|measurement|dimension|size|spec", value):
+        return "parameter"
+    if re.search(r"detail|close|macro|material|texture|construction|structure", value):
+        return "detail"
+    if re.search(r"feature|benefit|demo|demonstration|function|proof", value):
+        return "feature"
+    if re.search(r"life|scene|use|application|environment", value):
+        return "lifestyle"
+    if re.search(r"angle|multi|side|front|back|top", value):
+        return "angle"
+    if re.search(r"comparison|variant|option|color", value):
+        return "option"
+    if re.search(r"hero|overview|product|white|main", value):
+        return "hero"
+    return "other"
+
+
+def diversified_reference_urls(assignments: list[dict[str, str]], limit: int = 16) -> list[str]:
+    quotas = {
+        "hero": 4,
+        "detail": 4,
+        "feature": 3,
+        "lifestyle": 3,
+        "angle": 3,
+        "option": 2,
+        "parameter": 2,
+        "measurement_tool": 0,
+        "other": 2,
+    }
+    order = ["hero", "detail", "feature", "lifestyle", "angle", "option", "parameter", "other", "measurement_tool"]
+    groups: dict[str, list[dict[str, str]]] = {key: [] for key in order}
+    seen: set[str] = set()
+    for index, item in enumerate(assignments):
+        url = item.get("url", "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        group = reference_image_group(item.get("image_type", ""))
+        groups.setdefault(group, []).append({**item, "group": group, "order": str(index)})
+
+    selected: list[str] = []
+    selected_set: set[str] = set()
+
+    def add(url: str) -> None:
+        if url and url not in selected_set and len(selected) < limit:
+            selected.append(url)
+            selected_set.add(url)
+
+    for group in order:
+        for item in groups.get(group, [])[:quotas.get(group, 2)]:
+            add(item["url"])
+
+    for group in ["hero", "detail", "feature", "lifestyle", "angle", "option", "parameter", "other"]:
+        for item in groups.get(group, []):
+            add(item["url"])
+
+    return selected
 
 
 def expanded_dimension_values(label: str, value: str, evidence: str) -> list[tuple[str, str]]:
@@ -850,16 +913,21 @@ def fetch_ark_reference_image_mapping(
 Candidate SKUs:
 {sku_lines}
 
-Inspect every attached supplier image and assign it only to SKUs that it visibly and unambiguously matches.
+First determine which supplier product family and visible variant matches each SKU: product type, visible color/spec, pack/count, material, and construction. Then assign useful task-specific image-generation references for that confirmed product family. Do not assign a useful-looking image before the product identity match is clear.
 
 Return JSON only:
-{{"assignments":[{{"image_ref":"Image 1","sku_ids":["SKU-ID"],"image_type":"product","confidence":"high","reason":"visible product type, color and pack match"}}],"unmatched":[{{"image_ref":"Image 2","image_type":"document","reason":"certificate, report, paperwork, accessory, or product identity conflict"}}]}}
+{{"assignments":[{{"image_ref":"Image 1","sku_ids":["SKU-ID"],"sku_match":"exact","image_type":"hero_product","reference_value":"high","best_for":["main_product","multi_angle"],"confidence":"high","reason":"clear product overview with exact construction"}}],"unmatched":[{{"image_ref":"Image 2","image_type":"document","reason":"certificate, report, paperwork, accessory, or product identity conflict"}}]}}
 
 Hard rules:
-- Product identity must match first. Never map an accessory, dispenser, holder, case, bundle, refill, or other product type to a different product type.
-- Prefer the exact SKU color when visible, but allow the same product construction in another color as a medium-confidence reference. For example, a green version of the same bag may map to a Pink SKU for structure or feature reference; the reason must state that it is a color variant.
+- Product identity and SKU variant must match first. Never map an accessory, dispenser, holder, case, bundle, refill, or other product type to a different product type.
+- If the SKU asks for a color/spec/count, exact visible variant images are highest priority. For a single selected SKU from one supplier listing, keep high-value same-product-family images that show all colors, neutral/silver product structure, product information, details, comparison rows, or feature panels even when the exact SKU color is not isolated.
+- Prefer the exact SKU color when visible, but allow the same product construction in another color as a medium-confidence reference. For example, a green version of the same bag may map to a Pink SKU for structure or feature reference; the reason must state that it is a color variant or same-product-family reference.
 - Never use color similarity to override a product-identity conflict. A dispenser, holder, accessory, bundle, or different bag construction is not the same product merely because its color matches.
-- Order assignments by usefulness for the current SKU: exact visible variant first, then clear same-product alternate colors, then generic construction/detail views. Keep a mix of overview, detail, feature, parameter, and lifestyle evidence when available.
+- Order assignments by usefulness for image generation. Prefer high-value visual references in this mix: clean product overview/hero images, parameter or measurement images, material/detail close-ups, real use/lifestyle scenes, feature demonstration images, and useful multi-angle views.
+- A caliper/ruler photo is measurement evidence, not a good image-generation reference. Mark it as image_type "measurement_tool" and reference_value "low" unless it is the only available proof of a required dimension. Prefer designed parameter charts, product-information posters, detail panels, comparison/option rows, and clear whole-product photos over caliper/ruler photos.
+- Set best_for using any of these values when appropriate: main_product, human_use, multi_scene, multi_angle, product_explanation, selling_point, summary. A parameter/measurement image is best_for product_explanation and summary; a lifestyle/use image is best_for human_use and multi_scene; a clean whole-product image is best_for main_product and multi_angle; a feature demonstration or detail close-up is best_for selling_point and product_explanation.
+- Give low value or unmatched to near-duplicate caliper/ruler measurement photos, near-duplicate plain color swatches, tiny/cropped fragments, shipping/package-only photos, factory/service photos, pure decorative banners, and images where the product is too small to guide generation.
+- If multiple images show similar content, keep the clearest and most information-rich one first rather than returning many duplicates.
 - Certificates, certification reports, laboratory reports, test-result documents, invoices, spec sheets, text-only charts, and screenshots of paperwork are evidence documents, not visual product references. Always put them in unmatched even when they mention the current product.
 - When pack count, roll count, set composition, size, or model is visibly stated, it must not conflict with the SKU.
 - A mixed-variant comparison image may map to multiple SKUs only if every mapped SKU is visibly represented and the product type is identical.
@@ -869,7 +937,7 @@ Hard rules:
 - Reference images are numbered in attachment order as Image 1, Image 2, etc.
 """,
     }]
-    image_content, image_fetch_errors = vision_content_for_images(image_urls)
+    image_content, image_fetch_errors = vision_content_for_images(image_urls, MAX_REFERENCE_MAP_IMAGE_URLS)
     content.extend(image_content)
     request_payload = {"model": model, "input": [{"role": "user", "content": content}]}
     request = urllib.request.Request(
@@ -894,15 +962,17 @@ Hard rules:
 
     parsed = parse_json_object(response_output_text(response_payload))
     known_skus = {item["id"] for item in skus}
-    mappings: dict[str, list[str]] = {sku_id: [] for sku_id in known_skus}
+    assignment_items_by_sku: dict[str, list[dict[str, str]]] = {sku_id: [] for sku_id in known_skus}
     assigned_urls: set[str] = set()
     assignments = parsed.get("assignments", [])
     if isinstance(assignments, list):
         for item in assignments:
             if not isinstance(item, dict) or clean_text(item.get("confidence"), 20).lower() not in {"high", "medium"}:
                 continue
+            if clean_text(item.get("reference_value"), 20).lower() in {"low", "none", "unusable"}:
+                continue
             image_type = clean_text(item.get("image_type"), 40).lower().replace("-", "_").replace(" ", "_")
-            if image_type in {"document", "certificate", "report", "paperwork", "invoice", "spec_sheet", "text_chart"}:
+            if image_type in {"document", "certificate", "report", "paperwork", "invoice", "spec_sheet", "text_chart", "factory", "service", "banner", "package_only"}:
                 continue
             image_url = evidence_image_url(item.get("image_ref"), image_urls)
             sku_ids = item.get("sku_ids", [])
@@ -911,12 +981,42 @@ Hard rules:
             valid_skus = [clean_text(sku_id, 160) for sku_id in sku_ids if clean_text(sku_id, 160) in known_skus]
             if not valid_skus:
                 continue
+            best_for = item.get("best_for", [])
+            if not isinstance(best_for, list):
+                best_for = []
+            normalized_item = {
+                "url": image_url,
+                "image_type": image_type,
+                "reference_value": clean_text(item.get("reference_value"), 20).lower() or "medium",
+                "confidence": clean_text(item.get("confidence"), 20).lower(),
+                "sku_match": clean_text(item.get("sku_match"), 40).lower() or "matched",
+                "best_for": [
+                    clean_text(value, 40).lower().replace("-", "_").replace(" ", "_")
+                    for value in best_for
+                    if clean_text(value, 40)
+                ],
+                "reason": clean_text(item.get("reason"), 220),
+            }
             for sku_id in valid_skus:
-                if image_url not in mappings[sku_id]:
-                    mappings[sku_id].append(image_url)
+                assignment_items_by_sku[sku_id].append(normalized_item)
             assigned_urls.add(image_url)
+    mappings = {
+        sku_id: diversified_reference_urls(items, 16)
+        for sku_id, items in assignment_items_by_sku.items()
+    }
+    reference_meta: dict[str, list[dict[str, str]]] = {}
+    for sku_id, items in assignment_items_by_sku.items():
+        allowed_urls = set(mappings.get(sku_id, []))
+        seen_urls: set[str] = set()
+        reference_meta[sku_id] = []
+        for item in items:
+            url = item.get("url", "")
+            if url in allowed_urls and url not in seen_urls:
+                reference_meta[sku_id].append(item)
+                seen_urls.add(url)
     return {
         "mappings": mappings,
+        "referenceMeta": reference_meta,
         "unmatched": [url for url in image_urls if url not in assigned_urls],
         "errors": image_fetch_errors,
         "provider": "doubao",
@@ -1264,7 +1364,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         if not api_key.startswith("ark-"):
             self._send_json({"mappings": {}, "unmatched": image_urls, "errors": ["ARK_API_KEY unavailable or invalid"]}, 503)
             return
-        cache_key = json.dumps({"skus": skus, "imageUrls": image_urls, "model": model}, ensure_ascii=False).casefold()
+        cache_key = json.dumps({"schemaVersion": "reference-map-v2", "skus": skus, "imageUrls": image_urls, "model": model}, ensure_ascii=False).casefold()
         cached = REFERENCE_IMAGE_MAP_CACHE.get(cache_key)
         if cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
             self._send_json(cached[1])
@@ -1362,7 +1462,9 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
 def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 4173
     api_key = os.environ.get("ARK_API_KEY", "").strip()
-    if not api_key and sys.stdin.isatty():
+    if (not api_key or not api_key.startswith("ark-")) and sys.stdin.isatty():
+        if api_key:
+            print("ARK_API_KEY 格式无效，请重新输入。", file=sys.stderr, flush=True)
         api_key = getpass.getpass("请输入火山方舟 API Key（输入不会显示，直接回车可仅使用本地分析）：").strip()
         if api_key:
             os.environ["ARK_API_KEY"] = api_key
@@ -1376,7 +1478,9 @@ def main() -> None:
         print(f"豆包配置：Coding Plan / {active_model}", flush=True)
         print(f"豆包接口：{ARK_RESPONSES_URL}", flush=True)
     grsai_key = os.environ.get("GRSAI_API_KEY", "").strip()
-    if not grsai_key and sys.stdin.isatty():
+    if (not grsai_key or not grsai_key.startswith("sk-")) and sys.stdin.isatty():
+        if grsai_key:
+            print("GRSAI_API_KEY 格式无效，请重新输入。", file=sys.stderr, flush=True)
         grsai_key = getpass.getpass("请输入 Grsai API Key（输入不会显示，直接回车可暂不启用生图）：").strip()
         if grsai_key:
             os.environ["GRSAI_API_KEY"] = grsai_key
