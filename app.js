@@ -102,9 +102,12 @@ const DEFAULT_TEMPLATE_ID = "scene";
 
 const fields = [
   ["productName", "Product Name", "[PRODUCT_NAME]"],
+  ["category", "Category", ""],
   ["material", "Material", ""],
   ["color", "Color", ""],
   ["structure", "Structure / Craft", ""],
+  ["productStyle", "Product Style", ""],
+  ["packaging", "Supplier Packaging", ""],
   ["detailParameter", "Detail Features", ""],
   ["scene", "Use Scene", ""],
   ["feature1", "Selling Point 1", ""],
@@ -124,6 +127,7 @@ const manualFields = [
 const allFields = [...fields, ...manualFields];
 const manualFieldKeys = new Set(manualFields.map(([key]) => key));
 const extractedManualFieldKeys = new Set(["topWidth", "sideLength", "bottomWidth", "weight"]);
+const supplierStructuredFieldKeys = new Set(["category", "material", "productStyle", "packaging"]);
 const multilineFieldKeys = new Set(["scene", "feature1", "feature2"]);
 const sellingPointFieldKeys = new Set(["feature1", "feature2"]);
 const NO_REFERENCE_SCENE_MESSAGE = "没有参考场景信息";
@@ -135,7 +139,11 @@ let lastReferenceSelectionCardKey = "";
 let activePromptCardKey = "";
 let activeWorkflowPage = "source";
 let bulkImageGenerationRunning = false;
+let bulkImageGenerationMode = "";
 let generatedSetSaving = false;
+const IMAGE_HISTORY_STORAGE_KEY = "prompt-tool-image-history-v1";
+const WORKSPACE_STORAGE_KEY = "prompt-tool-workspace-v1";
+let persistedImageHistory = loadPersistedImageHistory();
 let availableReferenceImageUrls = [];
 let referenceImagesBySku = {};
 let promptLanguageByCard = {};
@@ -204,6 +212,7 @@ function showWorkflowPage(pageName) {
   document.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.workflowPanel === activeWorkflowPage);
   });
+  persistWorkspaceSnapshot();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -315,11 +324,20 @@ function dimensionListForSku(sku, group = {}) {
 function dimensionFieldsFromDimensionList(dimensionList, context = "") {
   const source = cleanTokenValue(dimensionList);
   if (!source) return {};
+  const semanticItems = dimensionListItems(source, context);
+  const valueFor = (key, legacyLabels) => {
+    const candidates = dimensionLabelCandidatesByKey[key] || [];
+    const semanticItem = semanticItems.find((item) => candidates.includes(canonicalDimensionKey(item)));
+    if (semanticItem) {
+      return cleanFieldDisplayValue(semanticItem.split(":").slice(1).join(":").trim());
+    }
+    return dimensionValueByLabels(source, legacyLabels);
+  };
   return {
-    topWidth: dimensionValueByLabels(source, ["SKU Dimension 1", "Base Diameter", "Diameter", "Top Width", "Length", "Folded Size", "Expanded Width"]),
-    sideLength: dimensionValueByLabels(source, ["SKU Dimension 2", "Front Diameter", "Knob Diameter", "Side Length", "Width", "Open Diameter", "Expanded Length"]),
-    bottomWidth: dimensionValueByLabels(source, ["Projection Depth", "Depth", "Overall Projection", "Bottom Width", "Thickness", "Height", "Open Height"]),
-    weight: dimensionValueByLabels(source, ["Weight", "Weight / Capacity", "Capacity", "Volume", "Quantity"]),
+    topWidth: valueFor("topWidth", ["SKU Dimension 1", "Base Diameter", "Diameter", "Top Width", "Length", "Folded Size", "Expanded Width"]),
+    sideLength: valueFor("sideLength", ["SKU Dimension 2", "Front Diameter", "Knob Diameter", "Side Length", "Width", "Open Diameter", "Expanded Length"]),
+    bottomWidth: valueFor("bottomWidth", ["Projection Depth", "Depth", "Overall Projection", "Bottom Width", "Thickness", "Height", "Open Height"]),
+    weight: valueFor("weight", ["Weight", "Weight / Capacity", "Capacity", "Volume", "Quantity"]),
   }
 }
 
@@ -413,11 +431,14 @@ function valueMap(sku) {
   const useContext = sanitizeUseContextFields(sku);
   return {
     productName: cleanFieldDisplayValue(defaultProductName(sku)),
+    category: cleanFieldDisplayValue(sku.category || ""),
     pack: cleanFieldDisplayValue(sku.pack || ""),
     packComposition: cleanFieldDisplayValue(sku.packComposition || ""),
     material: cleanFieldDisplayValue(sku.material || materialFallback),
     color: cleanFieldDisplayValue(sku.color || colorFallback),
     structure: cleanFieldDisplayValue(sku.structure || structureFallback),
+    productStyle: cleanFieldDisplayValue(sku.productStyle || ""),
+    packaging: cleanFieldDisplayValue(sku.packaging || ""),
     cupRange: cleanFieldDisplayValue(sizeRangeValueForSku(sku, {})),
     topWidth: sku.dims?.topWidth || dimensionFields.topWidth || "",
     sideLength: sku.dims?.sideLength || dimensionFields.sideLength || "",
@@ -627,7 +648,7 @@ function renderExtractionRoutePreview(routeId = "vision") {
 }
 
 function initExtractionRoutePreview() {
-  renderExtractionRoutePreview("vision");
+  renderExtractionRoutePreview(selectedExtractionRoute);
   document.querySelectorAll("[data-extraction-route]").forEach((button) => {
     button.addEventListener("click", () => renderExtractionRoutePreview(button.dataset.extractionRoute));
   });
@@ -652,21 +673,24 @@ function renderFields(reset = false) {
     const shouldUseExtractedDefault = typeof useExtractedDefaults === "function"
       ? useExtractedDefaults(key)
       : useExtractedDefaults;
-    const displayLabel = ["topWidth", "sideLength", "bottomWidth"].includes(key)
-      ? dimensionLabelForData({ ...sku, ...values }, { topWidth: 1, sideLength: 2, bottomWidth: 3 }[key])
-      : label;
+    const parameterData = { ...sku, ...values };
+    const displayLabel = label;
+    const hasSavedOverride = Object.prototype.hasOwnProperty.call(fieldOverrides, key);
     const currentValue = reset ? fieldOverrides[key] ?? "" : byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
     const value = reset
-      ? (shouldUseExtractedDefault ? values[key] || fallback : cleanFieldDisplayValue(currentValue))
+      ? (hasSavedOverride ? cleanFieldDisplayValue(currentValue) : shouldUseExtractedDefault ? values[key] || fallback : cleanFieldDisplayValue(currentValue))
       : (cleanFieldDisplayValue(currentValue) || (shouldUseExtractedDefault ? values[key] : "") || fallback);
     const cleanValue = ["fit", "scene"].includes(key)
       ? sanitizeUseContextFields({ ...values, [key]: cleanFieldDisplayValue(value) })[key]
       : cleanFieldDisplayValue(value);
-    const displayValue = key === "scene"
+    const baseDisplayValue = key === "scene"
       ? formatUseSceneDisplayValue(cleanValue)
       : multilineFieldKeys.has(key)
         ? formatMultilineSellingPoints(cleanValue)
         : cleanValue;
+    const displayValue = ["topWidth", "sideLength", "bottomWidth", "weight"].includes(key) && baseDisplayValue
+      ? editableParameterValue(baseDisplayValue, semanticParameterLabel(parameterData, key))
+      : baseDisplayValue;
     const fieldControl = key === "scene"
       ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="${NO_REFERENCE_SCENE_MESSAGE}">${escapeHtml(displayValue)}</textarea>
         <button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补全 3–5 个英文场景</button>
@@ -674,10 +698,14 @@ function renderFields(reset = false) {
       : multilineFieldKeys.has(key)
         ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
         : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
+    const sourceText = (extractedManualFieldKeys.has(key) || supplierStructuredFieldKeys.has(key)) && displayValue
+      ? parameterSourceForData(parameterData, key)
+      : "";
     return `
       <div>
         <label for="field-${key}">${displayLabel}</label>
         ${fieldControl}
+        ${sourceText ? `<p class="parameter-source">来源：${escapeHtml(sourceText)}</p>` : ""}
       </div>
     `;
   }).join("");
@@ -808,6 +836,9 @@ function productParameterRows() {
       cupRange: "",
       material: cleanTokenValue(values.material),
       structure: cleanTokenValue(values.structure),
+      category: cleanTokenValue(values.category),
+      productStyle: cleanTokenValue(values.productStyle),
+      packaging: cleanTokenValue(values.packaging),
       detailParameter: cleanTokenValue(values.detailParameter),
     };
 
@@ -816,6 +847,9 @@ function productParameterRows() {
     }
     if (isSelected || !existing.material) existing.material = cleanTokenValue(values.material);
     if (isSelected || !existing.structure) existing.structure = cleanTokenValue(values.structure);
+    if (isSelected || !existing.category) existing.category = cleanTokenValue(values.category);
+    if (isSelected || !existing.productStyle) existing.productStyle = cleanTokenValue(values.productStyle);
+    if (isSelected || !existing.packaging) existing.packaging = cleanTokenValue(values.packaging);
     if (isSelected || !existing.detailParameter) existing.detailParameter = cleanTokenValue(values.detailParameter);
     if (isSelected || !existing.productName) existing.productName = cleanFieldDisplayValue(values.productName || defaultProductName(sku));
     groups.set(groupKey, existing);
@@ -844,8 +878,11 @@ function renderProductParameters() {
     const params = [
       ["Product / Option", row.productName || row.title],
       ["Use Scene", row.scene],
+      ["Category", row.category],
       ["Material", row.material],
       ["Structure / Craft", row.structure],
+      ["Product Style", row.productStyle],
+      ["Supplier Packaging", row.packaging],
       ["Detail Features", row.detailParameter],
     ].filter(([, value]) => value && !/^\[[A-Z0-9_ ]+\]$/i.test(value));
 
@@ -1140,16 +1177,76 @@ function renderSourceSummary() {
   `).join("");
 }
 
+const dimensionFieldKeyByIndex = { 1: "topWidth", 2: "sideLength", 3: "bottomWidth" };
+const dimensionLabelCandidatesByKey = {
+  topWidth: ["length", "base_diameter", "diameter", "top_width", "folded_size", "expanded_width", "sku_dimension_1"],
+  sideLength: ["width", "front_diameter", "knob_diameter", "side_length", "open_diameter", "expanded_length", "sku_dimension_2"],
+  bottomWidth: ["height", "thickness", "projection_depth", "depth", "overall_projection", "bottom_width", "open_height", "sku_dimension_3"],
+  weight: ["weight", "item_weight", "weight_capacity"],
+};
+
+function dimensionListItemForField(data, key) {
+  const items = dimensionListItems(data?.dimensionList || "", [data?.productName, data?.structure].filter(Boolean).join(" "));
+  const candidates = dimensionLabelCandidatesByKey[key] || [];
+  return items.find((item) => candidates.includes(canonicalDimensionKey(item))) || null;
+}
+
+function dimensionItemLabel(item, fallback) {
+  const label = cleanFieldDisplayValue(String(item || "").split(":")[0]);
+  return label || fallback;
+}
+
 function dimensionLabelForData(data, index) {
-  return `Dimension ${index}`;
+  const key = dimensionFieldKeyByIndex[index];
+  return dimensionItemLabel(dimensionListItemForField(data, key), `Dimension ${index}`);
+}
+
+function dimensionWeightLabelForData(data) {
+  return dimensionItemLabel(dimensionListItemForField(data, "weight"), "Weight / Quantity");
+}
+
+function semanticParameterLabel(data, key) {
+  if (key === "weight") return dimensionWeightLabelForData(data).replace(/\s*\/\s*Quantity$/i, "") || "Weight";
+  const index = { topWidth: 1, sideLength: 2, bottomWidth: 3 }[key];
+  return index ? dimensionLabelForData(data, index) : "";
+}
+
+function editableParameterParts(value, fallbackLabel = "") {
+  const clean = cleanFieldDisplayValue(value);
+  if (!clean) return { label: fallbackLabel, value: "" };
+  const prefixed = clean.match(/^([A-Za-z][A-Za-z0-9 /_-]{0,40}?)\s*[:：]?\s*((?:\d|\.)[\s\S]*)$/);
+  if (prefixed) return { label: cleanFieldDisplayValue(prefixed[1]) || fallbackLabel, value: cleanFieldDisplayValue(prefixed[2]) };
+  return { label: fallbackLabel, value: clean };
+}
+
+function editableParameterValue(value, fallbackLabel) {
+  const parts = editableParameterParts(value, fallbackLabel);
+  return [parts.label, parts.value].filter(Boolean).join(" ");
+}
+
+function parameterSourceForData(data, key) {
+  if (supplierStructuredFieldKeys.has(key)) {
+    return cleanFieldDisplayValue(data?.structuredAttributesSource || "");
+  }
+  const direct = cleanFieldDisplayValue(data?.dimensionSources?.[key] || "");
+  if (direct) return direct;
+  return String(data?.dims?.source || "")
+    .split(/\s*\+\s*/)
+    .map((item) => cleanFieldDisplayValue(item))
+    .filter((item) => item && !/No verified dimensions extracted/i.test(item))
+    .join(" + ");
 }
 
 function buildDimensionListFromFields(data) {
+  const entry = (key, fallbackLabel) => {
+    const parts = editableParameterParts(data[key], fallbackLabel);
+    return parts.value ? `${parts.label}: ${parts.value}` : "";
+  };
   const dimensions = [
-    data.topWidth && `${dimensionLabelForData(data, 1)}: ${cleanTokenValue(data.topWidth)}`,
-    data.sideLength && `${dimensionLabelForData(data, 2)}: ${cleanTokenValue(data.sideLength)}`,
-    data.bottomWidth && `${dimensionLabelForData(data, 3)}: ${cleanTokenValue(data.bottomWidth)}`,
-    data.weight && `Weight: ${cleanTokenValue(data.weight)}`,
+    entry("topWidth", dimensionLabelForData(data, 1)),
+    entry("sideLength", dimensionLabelForData(data, 2)),
+    entry("bottomWidth", dimensionLabelForData(data, 3)),
+    entry("weight", semanticParameterLabel(data, "weight")),
   ].filter(Boolean);
   return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
 }
@@ -1282,8 +1379,8 @@ function ocrCompactText(text) {
 }
 
 function isProductSellingPointText(text) {
-  const source = [String(text || ""), ocrCompactText(text)].join("\n");
-  return /9\s*M|9米|不惧断裂|不断裂|防断|抗拉|不变形|均匀拉伸|耐用|安全|全身|便携|轻便|轻巧|小巧|收纳|防滑|止滑|抓地|防水|防雨|防晒|遮阳|防风|加固|柔软|透气|吸汗|抗菌|防臭|高弹|弹力|拉伸|阻力|拉力|容量|承重|省力|稳固|牢固|易清洁|可水洗|多场景|多用途|满足不同需求|fracture|break|tear|deformation|durable|safe|portable|lightweight|compact|non.?slip|anti.?slip|waterproof|windproof|uv|breathable|soft|elastic|stretch|resistance|reinforced|multi.?use|easy.?clean/i.test(source);
+  const source = String(text || "");
+  return /DOUBAO_VISION_SELLING_POINT\s*:|(?:卖点|产品特点|核心功能|产品优势|Selling Point|Product Benefit)\s*[:：]/i.test(source);
 }
 
 function urlImageSizeHint(url) {
@@ -1820,6 +1917,17 @@ function translateAttributeValue(key, value) {
   if (/^Capacity$/i.test(key)) return translateProductDetailValue("Capacity", clean);
   if (/^Technology$/i.test(key)) return translateProductDetailValue("Technology", clean);
   if (/^SpecialCraft$/i.test(key)) return translateProductDetailValue("SpecialCraft", clean);
+  if (/^Category$/i.test(key)) {
+    if (/吊坠/.test(clean)) return "pendant";
+    if (/挂饰|挂件/.test(clean)) return "hanging ornament";
+  }
+  if (/^Packaging$/i.test(key)) {
+    if (/PP\s*袋.*独立|独立.*PP\s*袋/i.test(clean)) return "individually packed in PP bag";
+    if (/独立包装/.test(clean)) return "individually packaged";
+  }
+  if (/^Style$/i.test(key)) {
+    if (/现代.*简约|简约.*现代/.test(clean)) return "modern minimalist style";
+  }
   if (/^Sock Height$/i.test(key)) {
     if (/中筒|mid/i.test(clean)) return "mid-calf coverage";
     if (/长筒|高筒|over[-\s]?the[-\s]?calf|knee/i.test(clean)) return "long sock coverage";
@@ -2695,17 +2803,34 @@ function extractSupplierStructuredText(html) {
 
   const attrPairs = [
     ["功能", "Function"],
+    ["材质", "Material"],
     ["主面料成分", "Material"],
+    ["类别", "Category"],
+    ["包装", "Packaging"],
     ["适用性别", "Gender"],
     ["包装形式", "Packaging"],
     ["风格", "Style"],
+    ["工艺", "Technology"],
+    ["特殊工艺", "SpecialCraft"],
+    ["颜色", "Color"],
+    ["尺寸", "Size"],
+    ["重量", "Weight"],
     ["筒高", "Sock Height"],
     ["图案", "Pattern"],
     ["织造方法", "Weaving"],
     ["无骨缝制", "Seam"],
   ];
   const attrLines = attrPairs.map(([sourceLabel, targetLabel]) => {
-    const value = extractFirstMatch(decoded, [new RegExp(`"${sourceLabel}"\\s*:\\s*"([^"]+)"`, "i")]);
+    const escapedLabel = sourceLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const directValue = extractFirstMatch(decoded, [new RegExp(`"${escapedLabel}"\\s*:\\s*"([^"]+)"`, "i")]);
+    const namedValue = extractFirstMatch(decoded, [
+      new RegExp(`"name"\\s*:\\s*"${escapedLabel}"[^{}]{0,500}?"value"\\s*:\\s*"([^"]+)"`, "i"),
+    ]);
+    const valuesBlock = extractFirstMatch(decoded, [
+      new RegExp(`"name"\\s*:\\s*"${escapedLabel}"[^{}]{0,500}?"values"\\s*:\\s*\\[([^\\]]+)\\]`, "i"),
+    ]);
+    const arrayValues = Array.from(String(valuesBlock || "").matchAll(/"([^"]+)"/g)).map((match) => match[1]);
+    const value = directValue || namedValue || uniquePromptItems(arrayValues).join(", ");
     return value ? `PRODUCT_ATTRIBUTE: ${targetLabel}=${value}` : "";
   }).filter(Boolean);
   const skuMaterial = skuOptions.find((option) => option.material)?.material || "";
@@ -3162,7 +3287,7 @@ function applyVisualEvidenceToBoundSku(products, evidenceItems, boundSkuId) {
   });
 }
 
-async function extractSupplierSourceText(html, onProgress, routeId = selectedExtractionRoute, collectedImageText = "") {
+async function extractSupplierSourceText(html, onProgress, routeId = selectedExtractionRoute, collectedImageText = "", identityHint = {}) {
   if (!html && !collectedImageText) {
     return { text: "", imageCount: 0, candidateCount: 0, scannedCount: 0, failedCount: 0, ocrAvailable: false };
   }
@@ -3192,12 +3317,19 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
   const combinedBeforeVision = [baseText, structuredText, ...detailAttrLines, attributeSource].filter(Boolean).join("\n");
   const visionImageCandidates = balancedVisionImageCandidates(imageUrls);
   const pickerImageCandidates = referencePickerImageCandidates(collectedImageCandidates, imageUrls);
+  const hintedProductName = cleanFieldDisplayValue(
+    identityHint.productName || identityHint.baseProductName || identityHint.label || "",
+  );
+  const hintedSpec = cleanFieldDisplayValue(
+    identityHint.outputSizeCode || identityHint.sizeCode || identityHint.shape || identityHint.model || "",
+  );
   const analysisResult = routeId === "vision" || routeId === "web"
     ? await fetchLocalProductAnalysisProxy({
-      productName: productTitleFromSupplierHtml(html, baseText),
-      material: extractProductDetailAttributes(attributeSource).Material || "",
-      structure: extractProductDetailAttributes(attributeSource).Structure || "",
-      detailParameter: extractProductDetailAttributes(attributeSource).DetailFeatures || "",
+      productName: productTitleFromSupplierHtml(html, baseText) || hintedProductName,
+      selectedSpec: hintedSpec,
+      material: extractProductDetailAttributes(attributeSource).Material || identityHint.material || "",
+      structure: extractProductDetailAttributes(attributeSource).Structure || identityHint.structure || "",
+      detailParameter: extractProductDetailAttributes(attributeSource).DetailFeatures || identityHint.detailParameter || "",
       localEvidence: [detailAttrLines.join("\n"), attributeSource].filter(Boolean).join("\n").slice(0, 12000),
     }, visionImageCandidates, onProgress)
     : null;
@@ -3882,7 +4014,10 @@ function inferUseScene(text) {
     /(?:适用于|适合用于|可用于)\s*([^\n。；;|]{2,80})/gi,
   ].forEach((pattern) => {
     Array.from(source.matchAll(pattern)).forEach((match) => {
-      const clean = cleanFieldDisplayValue(match[1]);
+      const clean = cleanFieldDisplayValue(match[1])
+        .replace(/\s*DOUBAO_VISION_[A-Z_]+\s*:.*$/i, "")
+        .replace(/\s*PRODUCT_ATTRIBUTE\s*:.*$/i, "")
+        .trim();
       if (clean && !/^\d+$/.test(clean)) explicit.push(clean);
     });
   });
@@ -3905,41 +4040,7 @@ function inferInstallationSteps(text) {
   return steps.length >= 2 ? steps.slice(0, 4).join(" > ") : "";
 }
 
-function hasExplicitSweatEvidence(text) {
-  return /吸汗|排汗|汗液|sweat(?:[-\s]?(?:absorb|wick|control))?|perspiration|moisture[-\s]?wick/i.test(String(text || ""));
-}
-
-function genericDetailSellingPointCandidates(text) {
-  const source = [String(text || ""), ocrCompactText(text)].join("\n");
-  const candidates = [];
-  const add = (pattern, value) => {
-    if (pattern.test(source)) candidates.push(value);
-  };
-  add(/夜光|自发光|蓄光|光致发光|glow[\s-]*in[\s-]*the[\s-]*dark|photoluminescen(?:t|ce)|illuminates? after dark|stores? daylight/i, "daylight-charged glow-in-the-dark visibility");
-  add(/防水|防雨|waterproof|water.?resistant/i, "water-resistant surface");
-  add(/万圣节[^\n]{0,30}装饰|装饰[^\n]{0,30}胶带|halloween[^\n]{0,30}decor|decorative[^\n]{0,30}(?:warning|caution|tape)/i, "Halloween warning decoration");
-  add(/9\s*M|9米|9\s*米/i, "9 m stretch range");
-  add(/不惧断裂|不断裂|防断|抗拉防断|抗拉|fracture|break|tear/i, "break-resistant performance");
-  add(/均匀拉伸|不变形|deformation/i, "even stretch without deformation");
-  add(/拉伸\s*3\s*倍|3\s*倍|three\s*times/i, "stretches to about 3x length");
-  add(/练遍全身|全身|full\s*body/i, "full-body workout coverage");
-  add(/安全更耐用|耐用|durable/i, "durable everyday use");
-  add(/便携|轻便|轻巧|小巧|收纳|portable|lightweight|compact/i, "portable compact design");
-  add(/防滑|止滑|抓地|anti.?slip|non.?slip|grip/i, "anti-slip grip");
-  add(/防晒|遮阳|紫外线|UV|UPF/i, "sun and UV protection");
-  add(/防风|抗风|加固|reinforced|windproof/i, "reinforced stable construction");
-  add(/柔软|soft/i, "soft hand feel");
-  add(/透气|breathable/i, "breathable comfort");
-  add(/吸汗|排汗|汗液|sweat(?:[-\s]?(?:absorb|wick|control))?|perspiration|moisture[-\s]?wick/i, "sweat-absorbing comfort");
-  add(/抗菌|防臭|antibacterial|deodor/i, "antibacterial deodorizing comfort");
-  add(/高弹|弹力|elastic|stretch/i, "high elasticity");
-  add(/易清洁|可水洗|easy.?clean|washable/i, "easy-clean washable design");
-  add(/稳固|牢固|承重|省力|stable|sturdy|load.?bearing/i, "stable sturdy support");
-  add(/多场景|多用途|满足不同需求|multi.?use/i, "multi-use versatility");
-  return uniqueSellingPoints(candidates, 8);
-}
-
-function visionSellingPointCandidates(text) {
+function verifiedVisionSellingPointCandidates(text) {
   return uniqueSellingPoints(
     Array.from(String(text || "").matchAll(/DOUBAO_VISION_SELLING_POINT:\s*([^\n]+)/gi))
       .map((match) => cleanFieldDisplayValue(match[1]))
@@ -3948,23 +4049,16 @@ function visionSellingPointCandidates(text) {
   );
 }
 
-function inferSellingPoints(text, material, limit = 2) {
-  const genericDetailPoints = genericDetailSellingPointCandidates(text);
-  const points = uniqueSellingPoints([
-    ...visionSellingPointCandidates(text),
-    ...genericDetailPoints,
-  ], Math.max(limit, 8)).filter((point) => sellingPointSupportedByCurrentEvidence(point, text)).slice(0, limit);
+function verifiedSellingPointsFromSource(text, limit = 2) {
+  const points = uniqueSellingPoints(
+    verifiedVisionSellingPointCandidates(text),
+    Math.max(limit, 8),
+  ).slice(0, limit);
   return {
     feature1: points[0] || "",
     feature2: points[1] || "",
     points,
   };
-}
-
-function sellingPointSupportedByCurrentEvidence(point, evidenceText) {
-  const key = sellingPointKey(point);
-  if (key === "sweat") return hasExplicitSweatEvidence(evidenceText);
-  return true;
 }
 
 function normalizeSkuText(text) {
@@ -4141,17 +4235,6 @@ function productIdentitySourceText(purchaseText, supplierText) {
     purchaseText,
     stripImageOcrBlocks(supplierText),
   ].filter(Boolean).join(" ");
-}
-
-function supplierSellingPointEvidenceText(supplierText) {
-  const source = String(supplierText || "");
-  const directLines = source
-    .split(/\n+/)
-    .filter((line) => /^\s*(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|DOUBAO_VISION_(?:SELLING_POINT|PRODUCT_NAME|USE_SCENE|VERIFIED))\s*:/i.test(line));
-  const ocrBlocks = Array.from(source.matchAll(
-    /1688 image OCR text:\s*([\s\S]*?)(?=\n(?:PRODUCT_TITLE|PRODUCT_ATTRIBUTE|SKU_OPTION|Source HTML file|Purchase order image OCR text|1688 image OCR text|DOUBAO_VISION_[A-Z_]+)\s*:|$)/gi,
-  )).map((match) => match[1]);
-  return [...directLines, ...ocrBlocks].filter(Boolean).join("\n");
 }
 
 function currentSourceFingerprint() {
@@ -5982,6 +6065,18 @@ function amazonListingDimensionListText(row, columns, context = "", title = "") 
     "item_thickness[marketplace_id=ATVPDKIKX0DER]#1.unit",
     "item_length_width_thickness[marketplace_id=ATVPDKIKX0DER]#1.thickness.unit",
   ]);
+  const itemHeight = amazonMeasurementText(row, columns, [
+    "Item Height",
+    "Item Height Floor To Top",
+    "Height Floor to Top",
+    "item_height[marketplace_id=ATVPDKIKX0DER]#1.value",
+    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.height.value",
+  ], [
+    "Item Height Unit",
+    "Height Unit",
+    "item_height[marketplace_id=ATVPDKIKX0DER]#1.unit",
+    "item_dimensions[marketplace_id=ATVPDKIKX0DER]#1.height.unit",
+  ]);
   const itemWeight = amazonMeasurementText(row, columns, [
     "Item Weight",
     "item_weight[marketplace_id=ATVPDKIKX0DER]#1.value",
@@ -5993,6 +6088,7 @@ function amazonListingDimensionListText(row, columns, context = "", title = "") 
     itemWidth && `Width: ${itemWidth}`,
     itemLength && `Length: ${itemLength}`,
     itemThickness && `Thickness: ${itemThickness}`,
+    !itemThickness && itemHeight && `Height: ${itemHeight}`,
     itemWeight && `Weight: ${itemWeight}`,
   ]);
   return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
@@ -6444,6 +6540,9 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     : (dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "");
   const mergedDimensionFields = dimensionFieldsFromDimensionList(dimensionList, [productName, amazonProduct.structure].filter(Boolean).join(" "));
   const material = supplierProduct.material || amazonProduct.material || "";
+  const category = supplierProduct.category || amazonProduct.category || "";
+  const packaging = supplierProduct.packaging || amazonProduct.packaging || "";
+  const productStyle = supplierProduct.productStyle || amazonProduct.productStyle || "";
   // The selected Amazon child SKU is authoritative for variant color.
   // Supplier/Doubao color is only a fallback when the child SKU has no color.
   const color = amazonProduct.color || supplierProduct.color || "";
@@ -6485,8 +6584,12 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     skuUnitQuantity: titleQuantity?.count || 0,
     skuUnitQuantityLabel: titleQuantity?.label || "",
     material,
+    category,
     color,
     structure,
+    productStyle,
+    packaging,
+    structuredAttributesSource: supplierProduct.structuredAttributesSource || amazonProduct.structuredAttributesSource || "",
     scene,
     installationSteps: supplierProduct.installationSteps || amazonProduct.installationSteps || "",
     feature1,
@@ -6640,14 +6743,18 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     ...visionEvidence.attributeValues,
   };
   const material = cleanFieldDisplayValue(detailAttributes.Material || "");
+  const category = cleanFieldDisplayValue(detailAttributes.Category || "");
+  const packaging = cleanFieldDisplayValue(detailAttributes.Packaging || "");
+  const productStyle = cleanFieldDisplayValue(detailAttributes.Style || "");
   const color = cleanFieldDisplayValue(detailAttributes.Color || "");
   const detailTechnology = identityAttrs.Technology || detailAttributes.Technology || "";
   const detailSpecialCraft = identityAttrs.SpecialCraft || detailAttributes.SpecialCraft || "";
   const structure = cleanFieldDisplayValue(detailAttributes.Structure || "");
   const scene = inferUseScene(attributeText || primaryText || combined);
   const installationSteps = detailAttributes.InstallationSteps || inferInstallationSteps(attributeText || primaryText);
-  const sellingPointEvidence = supplierSellingPointEvidenceText(supplierText);
-  const sellingPoints = inferSellingPoints(sellingPointEvidence, material, 6);
+  // Local OCR and raw HTML never manufacture selling points. Only evidence-backed
+  // markers returned by the product-specific vision analysis are accepted here.
+  const sellingPoints = verifiedSellingPointsFromSource(supplierText, 6);
   const extractedSellingPointSet = uniqueSellingPoints(sellingPoints.points || [], 6);
   const globalSellingPoint1 = sellingPointGroupText(distributedSellingPointGroups(extractedSellingPointSet, 0, 2, 4));
   const globalSellingPoint2 = sellingPointGroupText(distributedSellingPointGroups(extractedSellingPointSet, 1, 2, 4));
@@ -6817,8 +6924,12 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     },
     quantity: item.quantity,
     material: itemMaterial,
+    category,
     color: itemColor,
     structure: itemStructure,
+    productStyle,
+    packaging,
+    structuredAttributesSource: "1688 HTML 结构化商品属性（当前商品）",
     scene,
     installationSteps,
     feature1: globalSellingPoint1 || sellingPoints.feature1,
@@ -6879,9 +6990,11 @@ async function extractSources() {
         byId("extractStatus").textContent = message;
       }, routeId, supplierImageListEntries)
       : null;
+    const supplierIdentityHint = boundSupplierSku(amazonTemplate.products)
+      || (amazonTemplate.products.length === 1 ? amazonTemplate.products[0] : {});
     const supplierSource = supplierFileExtraction?.merged || await extractSupplierSourceText(supplierHtml, (message) => {
       byId("extractStatus").textContent = message;
-    }, routeId, supplierImageListText);
+    }, routeId, supplierImageListText, supplierIdentityHint);
     // A file/input change invalidates the entire extraction run. Never let a
     // late result from the previous product commit into the new product state.
     if (extractionGeneration !== requestedGeneration) return;
@@ -7168,6 +7281,7 @@ function promptFacts(sku, data) {
   const skuUnitQuantity = isMixedBundle || hasStructuredPackComposition ? 0 : Number(sku.skuUnitQuantity || 0);
   const skuUnitQuantityLabel = isMixedBundle || hasStructuredPackComposition ? "" : cleanFieldDisplayValue(sku.skuUnitQuantityLabel || "");
   const material = promptValue(data.material, "");
+  const category = promptValue(data.category, "");
   const color = promptValue(data.color, "");
   const fit = "";
   const scene = promptValue(data.scene, "");
@@ -7177,11 +7291,13 @@ function promptFacts(sku, data) {
   const variants = promptValue(data.variantList, "");
   const dimensions = promptValue(data.dimensionList, "");
   const cupRange = promptValue(data.cupRange, "");
-  const dimension1 = data.topWidth ? cleanTokenValue(data.topWidth) : "";
-  const dimension2 = data.sideLength ? cleanTokenValue(data.sideLength) : "";
-  const dimension3 = data.bottomWidth ? cleanTokenValue(data.bottomWidth) : "";
-  const weightOrCapacity = data.weight ? cleanTokenValue(data.weight) : "";
+  const dimension1 = editableParameterParts(data.topWidth, dimensionLabelForData(data, 1)).value;
+  const dimension2 = editableParameterParts(data.sideLength, dimensionLabelForData(data, 2)).value;
+  const dimension3 = editableParameterParts(data.bottomWidth, dimensionLabelForData(data, 3)).value;
+  const weightOrCapacity = editableParameterParts(data.weight, semanticParameterLabel(data, "weight")).value;
   const structure = promptValue(data.structure, sku.structure || "");
+  const productStyle = promptValue(data.productStyle, "");
+  const packaging = promptValue(data.packaging, "");
   const surfaceFinish = promptValue(data.surfaceFinish, "");
   const detailParameter = promptValue(data.detailParameter, "");
   const installationSteps = cleanFieldDisplayValue(sku.installationSteps || data.installationSteps || "");
@@ -7204,7 +7320,10 @@ function promptFacts(sku, data) {
     skuUnitQuantity,
     skuUnitQuantityLabel,
     material,
+    category,
     structure,
+    productStyle,
+    packaging,
     fit,
     cupRange,
   });
@@ -7228,6 +7347,7 @@ function promptFacts(sku, data) {
     skuUnitQuantity,
     skuUnitQuantityLabel,
     material,
+    category,
     color,
     fit,
     scene,
@@ -7243,6 +7363,8 @@ function promptFacts(sku, data) {
     dimension3,
     weightOrCapacity,
     structure,
+    productStyle,
+    packaging,
     surfaceFinish,
     detailParameter,
     installationSteps,
@@ -7348,7 +7470,15 @@ function promptIdentityText(facts) {
 }
 
 function mainImageRule() {
-  return "Main image: no overlay text; preserve authentic non-Chinese product/packaging markings only; product occupies about 85% of the frame.";
+  return "HIGHEST-PRIORITY MAIN-IMAGE TEXT BAN: create a clean photographic image only. Add absolutely no title, words, letters, numbers, captions, labels, badges, icons, arrows, guide lines, rulers, dimensions, measurements, units, specification panels, or infographic elements anywhere in the image. Do not copy text or parameter graphics from reference images. Preserve only markings physically printed on the real product when they are inseparable from the source-accurate product itself. Product occupies about 85% of the frame.";
+}
+
+function mainImageNoAnnotationRule() {
+  return "MAIN IMAGE MUST CONTAIN ZERO ADDED TEXT AND ZERO PARAMETER ANNOTATIONS: no title, words, letters, numbers, dimensions, units, measurement arrows, ruler lines, callouts, labels, badges, icons, tables, or specification graphics. Treat any text, dimensions, arrows, or parameter layout visible in an attached reference as forbidden content, not as a layout reference.";
+}
+
+function isProductInformationImage(typeId) {
+  return String(typeId || "") === "4";
 }
 
 function sceneMainProductScaleRule() {
@@ -7690,6 +7820,25 @@ function evidenceSceneStyleRule(facts) {
     : "No reference scene information. Do not invent, infer, or add a usage scene.";
 }
 
+function useSceneAuthorityRule(facts) {
+  const scene = cleanFieldDisplayValue(facts?.scene || "");
+  const nonSceneFacts = [facts?.productName, facts?.titleSpec, facts?.detailParameter, facts?.structure]
+    .map((value) => cleanFieldDisplayValue(value))
+    .filter(Boolean)
+    .join(" ");
+  const excludedContexts = [
+    { source: /\b(?:christmas|xmas|holiday)\b/i, allowed: /\b(?:christmas|xmas|holiday)\b/i, label: "Christmas or holiday setting, Christmas tree, ornaments, gifts, seasonal decorations, or festive background" },
+    { source: /\b(?:halloween)\b/i, allowed: /\b(?:halloween)\b/i, label: "Halloween setting or decorations" },
+    { source: /\b(?:wedding|bridal)\b/i, allowed: /\b(?:wedding|bridal)\b/i, label: "wedding or bridal setting" },
+  ]
+    .filter((item) => item.source.test(nonSceneFacts) && !item.allowed.test(scene))
+    .map((item) => item.label);
+  return compactPromptItems([
+    "HIGHEST-PRIORITY USE-SCENE LOCK: the editable Use Scene field is the only authority for environment, occasion, season, room, background, props, and lifestyle context. Product-name keywords, Detail Features, supplier titles, and attached reference backgrounds describe identity/evidence only and must never add a scene that is absent from the current Use Scene field.",
+    excludedContexts.length && `Explicitly excluded because the user removed it from Use Scene: ${excludedContexts.join("; ")}.`,
+  ], "", 2);
+}
+
 function basicImageRequirements(templateId, typeId, extra = "") {
   const parts = ["1:1 Amazon listing image", "4K clarity", "sharp realistic detail"];
   if (isMainImageType(typeId)) {
@@ -7744,29 +7893,33 @@ function convertLengthUnitsToInches(value) {
 }
 
 function dimensionText(facts) {
-  const evidenceItems = dimensionListItems(facts.dimensions, promptContextText(facts));
-  if (evidenceItems.length) {
-    return evidenceItems
-      .map((item) => convertLengthUnitsToInches(item))
-      .join(" / ");
-  }
   const weightLabel = /(?:\bkg\b|\bg\b|\blb\b|pounds?|千克|克|磅)/i.test(facts.weightOrCapacity || "")
     ? "Weight"
     : "Weight / Capacity";
-  return [
+  const editableItems = [
     facts.dimension1 && `${dimensionLabelForFacts(facts, 1)}: ${convertLengthUnitsToInches(facts.dimension1)}`,
     facts.dimension2 && `${dimensionLabelForFacts(facts, 2)}: ${convertLengthUnitsToInches(facts.dimension2)}`,
     facts.dimension3 && `${dimensionLabelForFacts(facts, 3)}: ${convertLengthUnitsToInches(facts.dimension3)}`,
     facts.weightOrCapacity && `${weightLabel}: ${facts.weightOrCapacity}`,
-  ].filter(Boolean).join(" / ");
+  ].filter(Boolean);
+  if (editableItems.length) return editableItems.join(" / ");
+
+  const evidenceItems = dimensionListItems(facts.dimensions, promptContextText(facts));
+  return evidenceItems
+    .map((item) => convertLengthUnitsToInches(item))
+    .join(" / ");
 }
 
 function referenceImageDimensionRule() {
-  return "Reference-image measurement lock: inspect every attached/source product parameter image and preserve every clearly printed product-dimension value and its measurement meaning, even when the generic structured fields contain fewer rows. The structured dimension list is a minimum, not a limit. Reproduce all verified visible measurements with separate ruler arrows and concise English labels; convert cm/mm to inches for on-image text. Do not omit a visible reference value, merge different measurements into one, or invent a value that is not visible in the references or verified list.";
+  return "Editable-parameter lock: the current Dimension 1/2/3 and Weight fields are the authoritative measurement list. Reproduce only the non-empty values currently present in those fields, with their current semantic prefixes. Never restore a value that the user cleared, and never copy an omitted, stale, or conflicting measurement from a reference image. Reference images may guide product shape and measurement-arrow placement only. Convert cm/mm to inches for on-image text; do not merge measurements or invent values.";
 }
 
 function dimensionLabelForFacts(facts, index) {
-  return `Dimension ${index}`;
+  return dimensionLabelForData({
+    dimensionList: facts?.dimensions || "",
+    productName: facts?.productName || "",
+    structure: facts?.structure || "",
+  }, index);
 }
 
 function productDetailText(facts, extraItems = [], limit = 8) {
@@ -7784,6 +7937,7 @@ function productDetailText(facts, extraItems = [], limit = 8) {
   const color = specificPromptValue(facts.color, "");
   return compactSpecificPromptItems([
     `Product: ${facts.productName}`,
+    facts.category && `Category: ${facts.category}`,
     option && `Current option: ${option}`,
     facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
     facts.packComposition && `Verified pack composition: ${facts.packComposition}`,
@@ -7794,6 +7948,7 @@ function productDetailText(facts, extraItems = [], limit = 8) {
     facts.cupRange && `Size / range: ${facts.cupRange}`,
     facts.pack && !extraIncludesPack && `Count / set: ${facts.pack}`,
     specificPromptValue(facts.structure, "") && !extraIncludesStructure && `Structure: ${facts.structure}`,
+    facts.productStyle && `Product style: ${facts.productStyle}`,
     specificPromptValue(facts.surfaceFinish, "") && !structureIncludesTechnology && !extraIncludesSurfaceFinish && `Technology: ${facts.surfaceFinish}`,
     detailValue && !extraIncludesDetail && `Texture detail: ${detailValue}`,
   ], "", limit);
@@ -7878,9 +8033,12 @@ function skuQuantityExplanationRule(facts, templateId, typeId) {
 
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
   const skuQuantityRule = skuQuantityExplanationRule(facts, templateId, typeId);
+  const sceneAuthorityRule = templateId === "scene" ? useSceneAuthorityRule(facts) : "";
   const referenceControlledSellingPoint = /Selling-point reference priority/i.test([details, style].filter(Boolean).join(" "));
   const referenceMode = referenceControlledSellingPoint ? "selling-point" : "";
   const priorityText = compactPromptItems([
+    isMainImageType(typeId) ? mainImageNoAnnotationRule() : "",
+    sceneAuthorityRule,
     skuQuantityRule,
     bundleFullSetDisplayRule(facts),
     standaloneAccessoryExclusionRule(facts),
@@ -7893,14 +8051,14 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     style || overallStyleText(facts, typeId)
   );
   const textRules = compactPromptItems([
-    noChineseTextRule(),
+    isMainImageType(typeId) ? mainImageNoAnnotationRule() : noChineseTextRule(),
     isMainImageType(typeId) ? "" : typeId === "3B"
       ? "Installation-step text only: title 2-3 English words; exactly one numbered 2-5 word English action caption per panel; no selling-point labels, paragraphs, badges, or extra copy."
       : shortTextRule(),
     isMainImageType(typeId) || referenceControlledSellingPoint ? "" : visualProofFirstRule(),
     skuQuantityRule ? `Mandatory SKU quantity text: show “${facts.skuUnitQuantityLabel || `${facts.skuUnitQuantity}-Pack`}” clearly once; the visible complete-unit count must equal ${facts.skuUnitQuantity}.` : "",
     humanSceneRule(facts),
-    imageMeasurementUnitRule(),
+    isProductInformationImage(typeId) ? imageMeasurementUnitRule() : "",
     amazonImageFileSizeRule(),
     referenceRuleText(referenceMode),
   ], "", 6);
@@ -7911,6 +8069,8 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
   ];
   if (includeNegative) {
     sections.push(promptSection("AVOID", compactPromptItems([
+      isMainImageType(typeId) ? "No added text of any kind; no numbers, dimensions, measurement units, arrows, ruler lines, callouts, labels, badges, icons, tables, parameter cards, or infographic layout, even when a reference image contains them." : "",
+      sceneAuthorityRule && "No environment, occasion, seasonal styling, background, or props absent from the current editable Use Scene field; reference-image backgrounds cannot override this exclusion.",
       negative || negativePrompt(facts),
       standaloneAccessoryExclusionRule(facts) && "No poop-bag dispenser, holder, container, carrying case, lid, clip, loop, leash attachment, or bundled accessory; do not turn refill bags into a dispenser set.",
       facts.packComposition && "No depiction, label, or implication that the total bag count is a count of refill rolls; no 60-roll stack, grid, wall, or quantity display. Show only the verified refill-roll composition when a count is visible.",
@@ -9496,6 +9656,8 @@ function sceneExplanationDetails(facts, physicalDetails) {
   const infoText = [
     "Main title required: Product Information.",
     dimensionLine && `Verified dimensions: ${dimensionLine}.`,
+    facts.productStyle && `Verified product style: ${facts.productStyle}.`,
+    facts.packaging && `Verified supplier packaging: ${facts.packaging}. Show it only in a clearly labeled packaging detail, never as the product itself or as a quantity claim.`,
     "Use 2-3 short English info labels for verified material, structure, texture, size/range, or visible detail only.",
     "Premium text hierarchy: large title plus 2-3 short 3-5 word labels, aligned rows, crisp typography, spacing, no dense paragraphs.",
   ].filter(Boolean);
@@ -10119,14 +10281,6 @@ function referenceLinkTemplatePrompt(typeId, sku, data) {
   return referenceLinkModulePrompt(typeId, facts);
 }
 
-function appendManualParameterRequirements(prompt, data) {
-  const requirements = manualFields
-    .map(([key, label]) => [label, cleanFieldDisplayValue(data?.[key])])
-    .filter(([, value]) => value);
-  if (!prompt || !requirements.length) return prompt;
-  return `${prompt}\n\nMANUALLY VERIFIED SKU PARAMETERS\n${requirements.map(([label, value]) => `${label}: ${value}`).join("\n")}`;
-}
-
 function promptFor(templateId, typeId, sku, data) {
   const facts = promptFacts(sku, data);
 
@@ -10142,7 +10296,7 @@ function promptFor(templateId, typeId, sku, data) {
   else if (templateId === "reference") prompt = referenceLinkTemplatePrompt(typeId, sku, data);
   else if (templateId === "plantTie") prompt = plantTieTemplatePrompt(typeId, sku, data);
   else prompt = featureTemplatePrompt(typeId, sku, data);
-  return appendManualParameterRequirements(prompt, data);
+  return prompt;
 }
 
 function sellingPointGroupForImageTitle(templateId, typeId, facts) {
@@ -10179,28 +10333,84 @@ function renderFacts() {
 
 function imageGenerationState(cardKey) {
   if (!imageGenerationByCard[cardKey]) {
+    const history = Array.isArray(persistedImageHistory[cardKey])
+      ? persistedImageHistory[cardKey].map(normalizeGenerationHistoryRecord).filter(Boolean)
+      : [];
+    const latest = history[history.length - 1] || null;
     imageGenerationByCard[cardKey] = {
-      model: "gpt-image-2",
-      size: "1024x1024",
+      model: latest?.model || "gpt-image-2",
+      size: latest?.size || "1024x1024",
       status: "idle",
       message: "",
-      images: [],
-      availableReferences: [],
-      selectedReferences: [],
-      referenceSelectionInitialized: false,
+      images: latest?.images || [],
+      history,
+      selectedHistoryIds: [],
+      availableReferences: latest?.referenceSnapshot || [],
+      selectedReferences: latest?.referenceSnapshot?.slice(0, MAX_SELECTED_REFERENCES) || [],
+      referenceSelectionInitialized: Boolean(latest),
       referencesExpanded: false,
-      generatedPromptSnapshot: "",
-      generatedReferenceSnapshot: [],
+      generatedPromptSnapshot: latest?.promptSnapshot || "",
+      generatedReferenceSnapshot: latest?.referenceSnapshot || [],
     };
   }
   return imageGenerationByCard[cardKey];
 }
 
-function rememberGenerationInputs(cardKey) {
+function normalizeGenerationHistoryRecord(record) {
+  if (!record || typeof record !== "object") return null;
+  const images = Array.isArray(record.images) ? record.images.filter((url) => typeof url === "string" && url.trim()) : [];
+  if (!images.length) return null;
+  return {
+    id: String(record.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    createdAt: String(record.createdAt || new Date().toISOString()),
+    images,
+    model: String(record.model || "gpt-image-2"),
+    size: String(record.size || "1024x1024"),
+    promptSnapshot: String(record.promptSnapshot || ""),
+    referenceSnapshot: Array.isArray(record.referenceSnapshot)
+      ? record.referenceSnapshot.filter((url) => typeof url === "string" && /^https?:\/\//i.test(url))
+      : [],
+    referenceCount: Math.max(0, Number(record.referenceCount) || record.referenceSnapshot?.length || 0),
+  };
+}
+
+function loadPersistedImageHistory() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(IMAGE_HISTORY_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistImageHistory(cardKey, history) {
+  persistedImageHistory[cardKey] = [...history];
+  try {
+    localStorage.setItem(IMAGE_HISTORY_STORAGE_KEY, JSON.stringify(persistedImageHistory));
+  } catch (error) {
+    console.warn("无法保存生图历史记录", error);
+  }
+}
+
+function recordGeneratedImages(cardKey, images) {
   const state = imageGenerationState(cardKey);
   const item = promptStore.find((entry) => entry.key === cardKey);
-  state.generatedPromptSnapshot = item?.promptEn || "";
-  state.generatedReferenceSnapshot = [...state.selectedReferences];
+  const record = normalizeGenerationHistoryRecord({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    images,
+    model: state.model,
+    size: state.size,
+    promptSnapshot: item?.promptEn || "",
+    referenceSnapshot: [...state.selectedReferences],
+    referenceCount: state.selectedReferences.length,
+  });
+  if (!record) return;
+  state.history = [...(state.history || []), record];
+  state.images = [...record.images];
+  state.generatedPromptSnapshot = record.promptSnapshot;
+  state.generatedReferenceSnapshot = [...record.referenceSnapshot];
+  persistImageHistory(cardKey, state.history);
 }
 
 function generationInputsChanged(cardKey, promptEn) {
@@ -10259,12 +10469,35 @@ function renderReferenceImages(state) {
 function renderImageGenerator(cardKey) {
   const state = imageGenerationState(cardKey);
   const isBusy = state.status === "submitting" || state.status === "processing";
-  const images = state.images.map((url, index) => `
-    <figure class="generated-image-item">
-      <img src="${escapeHtml(url)}" alt="生成结果 ${index + 1}" loading="lazy">
-      <a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">打开原图</a>
-    </figure>
-  `).join("");
+  const history = Array.isArray(state.history) ? state.history : [];
+  const selectedHistoryIds = new Set(state.selectedHistoryIds || []);
+  const historyRecordHtml = (record, round, isLatest = false) => {
+    const images = record.images.map((url, index) => `
+      <figure class="generated-image-item">
+        <a class="generated-image-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="打开${isLatest ? "最新" : `第 ${round} 轮`}生成原图 ${index + 1}">
+          <img src="${escapeHtml(url)}" alt="${isLatest ? "最新" : `第 ${round} 轮`}生成结果 ${index + 1}" loading="lazy">
+        </a>
+      </figure>
+    `).join("");
+    return `
+      <section class="generation-history-record ${isLatest ? "is-latest" : "is-previous"}" data-history-id="${escapeHtml(record.id)}">
+        <label class="generation-history-select" title="选择${isLatest ? "最新图片" : `第 ${round} 轮图片`}"><input type="checkbox" class="generation-history-checkbox" data-history-id="${escapeHtml(record.id)}" aria-label="选择${isLatest ? "最新图片" : `第 ${round} 轮图片`}" ${selectedHistoryIds.has(record.id) ? "checked" : ""}></label>
+        <div class="generated-image-grid">${images}</div>
+      </section>
+    `;
+  };
+  const latestRecord = history[history.length - 1] || null;
+  const previousRecords = history.slice(0, -1).map((record, index) => ({ record, round: index + 1 })).reverse();
+  const latestHtml = latestRecord ? historyRecordHtml(latestRecord, history.length, true) : "";
+  const previousHtml = previousRecords.map(({ record, round }) => historyRecordHtml(record, round)).join("");
+  const historyHtml = history.length ? `
+    <div class="generation-history-heading">
+      <strong>生成记录</strong>
+      <span>共 ${history.length} 轮</span>
+    </div>
+    ${latestHtml}
+    ${previousHtml ? `<div class="generation-history-archive"><div class="generation-history-toolbar"><span>已选择 ${selectedHistoryIds.size} 张</span><div><button type="button" class="select-all-generation-history">全选</button><button type="button" class="clear-generation-history-selection" ${selectedHistoryIds.size ? "" : "disabled"}>取消</button><button type="button" class="download-generation-history" ${selectedHistoryIds.size ? "" : "disabled"}>下载</button><button type="button" class="delete-generation-history" ${selectedHistoryIds.size ? "" : "disabled"}>删除</button></div></div><div class="generation-history-archive-grid">${previousHtml}</div></div>` : ""}
+  ` : "";
   return `
     <section class="image-generator" data-card-key="${escapeHtml(cardKey)}">
       <div class="image-generator-heading">
@@ -10291,7 +10524,7 @@ function renderImageGenerator(cardKey) {
         <button type="button" class="generate-image" ${isBusy ? "disabled" : ""}>${isBusy ? "生成中…" : "生成图片"}</button>
       </div>
       <p class="image-generation-status" role="status" aria-live="polite">${escapeHtml(state.message)}</p>
-      ${images ? `<div class="generated-image-grid">${images}</div>` : ""}
+      ${historyHtml ? `<div class="generation-history">${historyHtml}</div>` : ""}
     </section>
   `;
 }
@@ -10390,17 +10623,20 @@ async function imageApiJson(url, options) {
 }
 
 function updateImageGenerator(cardKey) {
+  const taskButtons = Array.from(document.querySelectorAll(".prompt-task-item")).filter((button) => button.dataset.promptCardKey === cardKey);
+  const taskState = imageGenerationState(cardKey);
+  const taskStatus = imageTaskStatusLabel(taskState);
+  taskButtons.forEach((button) => { if (button.querySelector("small")) button.querySelector("small").textContent = taskStatus; });
   const section = Array.from(document.querySelectorAll(".image-generator")).find((node) => node.dataset.cardKey === cardKey);
-  if (!section) return;
+  if (!section) {
+    setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
+    return;
+  }
   const wrapper = document.createElement("div");
   wrapper.innerHTML = renderImageGenerator(cardKey).trim();
   const replacement = wrapper.firstElementChild;
   section.replaceWith(replacement);
   bindImageGeneratorSection(replacement);
-  const taskButtons = Array.from(document.querySelectorAll(".prompt-task-item")).filter((button) => button.dataset.promptCardKey === cardKey);
-  const taskState = imageGenerationState(cardKey);
-  const taskStatus = ["submitting", "processing"].includes(taskState.status) ? "生成中" : taskState.images.length ? "已生成" : "待生成";
-  taskButtons.forEach((button) => { if (button.querySelector("small")) button.querySelector("small").textContent = taskStatus; });
   if (cardKey === activePromptCardKey) {
     const item = promptStore.find((entry) => entry.key === cardKey);
     const referenceNode = document.querySelector(".studio-dependency-strip > div:nth-child(2) span");
@@ -10409,7 +10645,13 @@ function updateImageGenerator(cardKey) {
     if (referenceNode) referenceNode.textContent = `当前选择 ${taskState.selectedReferences.length} 张`;
     if (outputNode) {
       outputNode.classList.toggle("is-dirty", changed);
-      const label = changed ? "输入已变化，需重新生成" : taskState.images.length ? `已生成 ${taskState.images.length} 张` : "等待生成";
+      const label = taskState.status === "queued"
+        ? "等待本轮生成"
+        : taskState.status === "failed"
+          ? "本轮生成失败"
+          : changed
+            ? "输入已变化，需重新生成"
+            : taskState.images.length ? `已生成 ${taskState.images.length} 张` : "等待生成";
       if (outputNode.querySelector("span")) outputNode.querySelector("span").textContent = label;
     }
   }
@@ -10457,8 +10699,7 @@ async function pollImageGeneration(cardKey, taskId) {
     if (images.length) {
       state.status = "success";
       state.message = `生成完成，共 ${images.length} 张。`;
-      state.images = images;
-      rememberGenerationInputs(cardKey);
+      recordGeneratedImages(cardKey, images);
       updateImageGenerator(cardKey);
       return;
     }
@@ -10478,7 +10719,6 @@ async function generateImageForCard(cardKey) {
   const state = imageGenerationState(cardKey);
   state.status = "submitting";
   state.message = "正在提交生图任务…";
-  state.images = [];
   updateImageGenerator(cardKey);
   try {
     const payload = await imageApiJson("/api/generate-image", {
@@ -10490,8 +10730,7 @@ async function generateImageForCard(cardKey) {
     if (images.length) {
       state.status = "success";
       state.message = `生成完成，共 ${images.length} 张。`;
-      state.images = images;
-      rememberGenerationInputs(cardKey);
+      recordGeneratedImages(cardKey, images);
       updateImageGenerator(cardKey);
       return;
     }
@@ -10505,32 +10744,61 @@ async function generateImageForCard(cardKey) {
     state.status = "failed";
     state.message = error?.message || "图片生成失败";
     updateImageGenerator(cardKey);
+  } finally {
+    refreshCurrentGenerationSummary();
+  }
+}
+
+function refreshCurrentGenerationSummary() {
+  if (bulkImageGenerationRunning) return;
+  const items = promptStore.filter((item) => !item.empty && item.promptEn?.trim());
+  if (!items.length) return;
+  const successCount = items.filter((item) => imageGenerationState(item.key).status === "success").length;
+  const failedCount = items.filter((item) => imageGenerationState(item.key).status === "failed").length;
+  const pendingCount = Math.max(0, items.length - successCount - failedCount);
+  if (successCount === items.length) {
+    setBulkGenerationUi(`当前图组 ${successCount} 张图片全部成功。`);
+  } else if (failedCount) {
+    setBulkGenerationUi(`当前图组：成功 ${successCount} 张，失败 ${failedCount} 张，待生成 ${pendingCount} 张。`);
+  } else if (successCount) {
+    setBulkGenerationUi(`当前图组已生成 ${successCount}/${items.length} 张。`);
   }
 }
 
 function setBulkGenerationUi(message = "", completed = 0, total = 0) {
-  const button = byId("generateAllImages");
+  const autoButton = byId("generateAllImagesAuto");
+  const manualButton = byId("generateAllImagesManual");
   const status = byId("bulkGenerationStatus");
-  if (button) {
-    button.disabled = bulkImageGenerationRunning || !hasExtractedProducts();
-    button.textContent = bulkImageGenerationRunning
-      ? `正在批量生成 ${completed}/${total}`
-      : "一键生成当前产品全部图片";
-  }
+  [autoButton, manualButton].forEach((button) => {
+    if (button) button.disabled = bulkImageGenerationRunning || !hasExtractedProducts();
+  });
+  if (autoButton) autoButton.textContent = bulkImageGenerationRunning && bulkImageGenerationMode === "auto"
+    ? `自动生成中 ${completed}/${total}`
+    : "自动选参考图生成";
+  if (manualButton) manualButton.textContent = bulkImageGenerationRunning && bulkImageGenerationMode === "manual"
+    ? `人工选图生成中 ${completed}/${total}`
+    : "按人工选图生成";
   if (status) status.textContent = message;
 }
 
-function bulkReferenceSourceState(items) {
-  const lastItem = items.find((item) => item.key === lastReferenceSelectionCardKey);
-  if (lastItem && imageGenerationState(lastItem.key).selectedReferences.length) {
-    return imageGenerationState(lastItem.key);
-  }
-  return items
-    .map((item) => imageGenerationState(item.key))
-    .sort((left, right) => right.selectedReferences.length - left.selectedReferences.length)[0] || null;
+function automaticReferencesForPromptItem(item) {
+  const sku = selectedSku();
+  const data = currentPromptData(sku);
+  const facts = promptFacts(sku, data);
+  const candidates = referenceImageCandidatesForCard(item.type, facts, sku);
+  const preferred = candidates.matched.length ? candidates.matched : candidates.all;
+  return Array.from(new Set(preferred)).slice(0, MAX_SELECTED_REFERENCES);
 }
 
-async function generateAllImagesForCurrentOutput() {
+function imageTaskStatusLabel(state) {
+  if (state.status === "queued") return "待生成";
+  if (["submitting", "processing"].includes(state.status)) return "生成中";
+  if (state.status === "failed") return "生成失败";
+  if (state.status === "success") return "已生成";
+  return state.images.length ? "已生成" : "待生成";
+}
+
+async function generateAllImagesForCurrentOutput(referenceMode = "auto") {
   if (bulkImageGenerationRunning) return;
   const items = promptStore.filter((item) => !item.empty && item.promptEn?.trim());
   if (!items.length) {
@@ -10541,27 +10809,46 @@ async function generateAllImagesForCurrentOutput() {
     setBulkGenerationUi("当前仍有图片任务正在生成，请等待完成后再批量提交。");
     return;
   }
-  const sourceState = bulkReferenceSourceState(items);
-  const selectedReferences = Array.from(new Set(sourceState?.selectedReferences || [])).slice(0, MAX_SELECTED_REFERENCES);
-  if (!selectedReferences.length) {
-    setBulkGenerationUi("请先在任意一个出图工作区勾选 1–6 张参考图。");
-    return;
+  if (referenceMode === "manual") {
+    const missingItems = items.filter((item) => !imageGenerationState(item.key).selectedReferences.length);
+    if (missingItems.length) {
+      setBulkGenerationUi(`人工选图路线尚缺 ${missingItems.length} 个任务：${missingItems.map((item) => item.id).join("、")}。请逐项勾选参考图后再生成。`);
+      return;
+    }
+  } else {
+    const missingItems = [];
+    items.forEach((item) => {
+      const state = imageGenerationState(item.key);
+      const selectedReferences = automaticReferencesForPromptItem(item);
+      state.availableReferences = Array.from(new Set([...selectedReferences, ...state.availableReferences])).slice(0, MAX_REFERENCE_CANDIDATES);
+      state.selectedReferences = selectedReferences;
+      state.referenceSelectionInitialized = true;
+      if (!selectedReferences.length) missingItems.push(item);
+      updateImageGenerator(item.key);
+    });
+    if (missingItems.length) {
+      setBulkGenerationUi(`自动选图路线找不到 ${missingItems.map((item) => item.id).join("、")} 的当前 SKU 参考图，请检查资料或改用人工选图路线。`);
+      return;
+    }
   }
 
-  items.forEach((item) => {
-    const state = imageGenerationState(item.key);
-    state.model = sourceState.model;
-    state.size = sourceState.size;
-    state.availableReferences = Array.from(new Set([...selectedReferences, ...state.availableReferences])).slice(0, MAX_REFERENCE_CANDIDATES);
-    state.selectedReferences = [...selectedReferences];
-    state.referenceSelectionInitialized = true;
-    updateImageGenerator(item.key);
-  });
-
   bulkImageGenerationRunning = true;
+  bulkImageGenerationMode = referenceMode;
   let completed = 0;
   let nextIndex = 0;
-  setBulkGenerationUi(`已将 ${selectedReferences.length} 张参考图应用到 ${items.length} 张提示词，开始生成。`, completed, items.length);
+  items.forEach((item) => {
+    const state = imageGenerationState(item.key);
+    state.status = "queued";
+    state.message = referenceMode === "manual" ? "已加入人工选图批量队列，等待生成…" : "已加入自动选图批量队列，等待生成…";
+    updateImageGenerator(item.key);
+  });
+  setBulkGenerationUi(
+    referenceMode === "manual"
+      ? `人工选图路线：保留每个任务各自勾选的参考图，开始生成 ${items.length} 张。`
+      : `自动选图路线：已按每个任务独立匹配当前 SKU 参考图，开始生成 ${items.length} 张。`,
+    completed,
+    items.length,
+  );
   const worker = async () => {
     while (nextIndex < items.length) {
       const item = items[nextIndex];
@@ -10576,6 +10863,7 @@ async function generateAllImagesForCurrentOutput() {
     await Promise.all(Array.from({ length: Math.min(2, items.length) }, () => worker()));
   } finally {
     bulkImageGenerationRunning = false;
+    bulkImageGenerationMode = "";
     const successCount = items.filter((item) => imageGenerationState(item.key).status === "success").length;
     const failedCount = items.length - successCount;
     setBulkGenerationUi(
@@ -10609,6 +10897,7 @@ function chineseProductFilenameBase() {
       [/coffee\s*filters?|filter\s*paper/, "咖啡滤纸"],
       [/plant\s*(?:ties?|straps?)/, "植物绑带"],
       [/resistance\s*bands?|exercise\s*bands?/, "弹力带"],
+      [/(?:sun\s*catcher|suncatcher|crystal\s*(?:pendant|ornament))/, "水晶太阳捕手挂饰"],
     ].find(([pattern]) => pattern.test(identity));
     name = localized?.[1] || "产品套图";
   }
@@ -10619,8 +10908,14 @@ function chineseProductFilenameBase() {
     .slice(0, 48) || "产品套图";
 }
 
-function generatedImageItemsForCurrentSet() {
-  return promptStore.flatMap((item) => imageGenerationState(item.key).images.map((url) => ({ cardKey: item.key, url })));
+function selectedGeneratedImageItemsForCurrentSet() {
+  return promptStore.flatMap((item) => {
+    const state = imageGenerationState(item.key);
+    const selectedIds = new Set(state.selectedHistoryIds || []);
+    return state.history
+      .filter((record) => selectedIds.has(record.id))
+      .flatMap((record) => record.images.map((url) => ({ cardKey: item.key, url })));
+  });
 }
 
 function crc32(bytes) {
@@ -10707,18 +11002,19 @@ function imageExtension(contentType, url) {
 
 function setSaveGeneratedSetUi(message = "") {
   const button = byId("saveGeneratedSet");
+  const selectedCount = selectedGeneratedImageItemsForCurrentSet().length;
   if (button) {
-    button.disabled = generatedSetSaving || !generatedImageItemsForCurrentSet().length;
-    button.textContent = generatedSetSaving ? "正在整理套组图片…" : "一键保存套组生成图片";
+    button.disabled = generatedSetSaving || !selectedCount;
+    button.textContent = generatedSetSaving ? "正在整理选中图片…" : `一键保存选中图片图组${selectedCount ? `（${selectedCount}）` : ""}`;
   }
   if (byId("saveGeneratedSetStatus")) byId("saveGeneratedSetStatus").textContent = message;
 }
 
 async function saveGeneratedSet() {
   if (generatedSetSaving) return;
-  const items = generatedImageItemsForCurrentSet();
+  const items = selectedGeneratedImageItemsForCurrentSet();
   if (!items.length) {
-    setSaveGeneratedSetUi("当前套组还没有生成图片。");
+    setSaveGeneratedSetUi("请先在各任务的生成记录左上角勾选要保存的图片。");
     return;
   }
   generatedSetSaving = true;
@@ -10740,18 +11036,59 @@ async function saveGeneratedSet() {
     const objectUrl = URL.createObjectURL(zip);
     const anchor = document.createElement("a");
     anchor.href = objectUrl;
-    anchor.download = `${baseName}-套组.zip`;
+    anchor.download = `${baseName}-选中图组.zip`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
-    setSaveGeneratedSetUi(`已保存 ${entries.length} 张图片；文件名为“${baseName}-01”起顺序编号。`);
+    setSaveGeneratedSetUi(`已保存 ${entries.length} 张选中图片；文件名为“${baseName}-01”起顺序编号。`);
   } catch (error) {
-    setSaveGeneratedSetUi(error?.message || "套组图片保存失败");
+    setSaveGeneratedSetUi(error?.message || "选中图片图组保存失败");
   } finally {
     generatedSetSaving = false;
     setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
   }
+}
+
+async function downloadSelectedGenerationHistory(cardKey) {
+  const state = imageGenerationState(cardKey);
+  const selectedIds = new Set(state.selectedHistoryIds || []);
+  const selectedRecords = state.history
+    .map((record, index) => ({ record, round: index + 1 }))
+    .filter(({ record }) => selectedIds.has(record.id));
+  if (!selectedRecords.length) return;
+  const baseName = chineseProductFilenameBase();
+  const entries = [];
+  state.message = `正在整理已选择的 ${selectedRecords.length} 轮图片…`;
+  updateImageGenerator(cardKey);
+  try {
+    for (const { record, round } of selectedRecords) {
+      for (let imageIndex = 0; imageIndex < record.images.length; imageIndex += 1) {
+        const url = record.images[imageIndex];
+        const requestUrl = /^data:image\//i.test(url) ? url : `/api/download-image?url=${encodeURIComponent(url)}`;
+        const response = await fetch(requestUrl);
+        if (!response.ok) throw new Error(`第 ${round} 轮图片读取失败（HTTP ${response.status}）`);
+        const blob = await response.blob();
+        const extension = imageExtension(blob.type, url);
+        entries.push({
+          name: `${baseName}-第${String(round).padStart(2, "0")}轮-${String(imageIndex + 1).padStart(2, "0")}.${extension}`,
+          bytes: new Uint8Array(await blob.arrayBuffer()),
+        });
+      }
+    }
+    const objectUrl = URL.createObjectURL(buildStoredZip(entries));
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = `${baseName}-历史记录.zip`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+    state.message = `已下载 ${selectedRecords.length} 轮、共 ${entries.length} 张历史图片。`;
+  } catch (error) {
+    state.message = error?.message || "历史图片下载失败";
+  }
+  updateImageGenerator(cardKey);
 }
 
 function bindImageGeneratorSection(section) {
@@ -10822,6 +11159,37 @@ function bindImageGeneratorSection(section) {
     dropZone.classList.remove("is-dragging");
   }));
   dropZone?.addEventListener("drop", (event) => addReferenceFiles(cardKey, event.dataTransfer?.files));
+  section.querySelectorAll(".generation-history-checkbox").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const historyId = checkbox.dataset.historyId;
+      state.selectedHistoryIds = checkbox.checked
+        ? Array.from(new Set([...(state.selectedHistoryIds || []), historyId]))
+        : (state.selectedHistoryIds || []).filter((id) => id !== historyId);
+      updateImageGenerator(cardKey);
+    });
+  });
+  section.querySelector(".select-all-generation-history")?.addEventListener("click", () => {
+    state.selectedHistoryIds = state.history.map((record) => record.id);
+    updateImageGenerator(cardKey);
+  });
+  section.querySelector(".clear-generation-history-selection")?.addEventListener("click", () => {
+    state.selectedHistoryIds = [];
+    updateImageGenerator(cardKey);
+  });
+  section.querySelector(".download-generation-history")?.addEventListener("click", () => downloadSelectedGenerationHistory(cardKey));
+  section.querySelector(".delete-generation-history")?.addEventListener("click", () => {
+    const selectedIds = new Set(state.selectedHistoryIds || []);
+    if (!selectedIds.size || !window.confirm(`确定删除选中的 ${selectedIds.size} 轮生成记录吗？删除后无法在工具中恢复。`)) return;
+    state.history = state.history.filter((record) => !selectedIds.has(record.id));
+    state.selectedHistoryIds = [];
+    const latest = state.history[state.history.length - 1] || null;
+    state.images = latest?.images || [];
+    state.generatedPromptSnapshot = latest?.promptSnapshot || "";
+    state.generatedReferenceSnapshot = latest?.referenceSnapshot || [];
+    persistImageHistory(cardKey, state.history);
+    state.message = latest ? "已删除所选记录，当前显示最新保留结果。" : "已删除所选记录。";
+    updateImageGenerator(cardKey);
+  });
   section.querySelector(".generate-image")?.addEventListener("click", () => generateImageForCard(cardKey));
 }
 
@@ -10829,15 +11197,15 @@ function bindImageGeneratorEvents() {
   document.querySelectorAll(".image-generator").forEach(bindImageGeneratorSection);
 }
 
-function taskManualParameterLabel(key, fallback) {
+function taskManualParameterLabel(key, fallback, data) {
   return ({
     pack: "产品数量 / 套组",
     cupRange: "尺寸 / 适用范围",
     surfaceFinish: "工艺 / 表面处理",
-    topWidth: "尺寸参数 1",
-    sideLength: "尺寸参数 2",
-    bottomWidth: "尺寸参数 3",
-    weight: "重量 / 容量",
+    topWidth: "Dimension 1",
+    sideLength: "Dimension 2",
+    bottomWidth: "Dimension 3",
+    weight: "Weight / Quantity",
   })[key] || fallback;
 }
 
@@ -10859,12 +11227,20 @@ function renderTaskParameterPanel(data, facts) {
       <div class="task-input-heading task-manual-heading">
         <div><strong>人工补充参数</strong><span>保存到当前 SKU，并进入全部对应提示词</span></div>
       </div>
-      <div class="task-manual-fields">${manualFields.map(([key, label]) => `
+      <div class="task-manual-fields">${manualFields.map(([key, label]) => {
+        const sourceText = extractedManualFieldKeys.has(key) && data[key]
+          ? parameterSourceForData({ ...selectedSku(), ...data }, key)
+          : "";
+        const fieldValue = ["topWidth", "sideLength", "bottomWidth", "weight"].includes(key) && data[key]
+          ? editableParameterValue(data[key], semanticParameterLabel({ ...selectedSku(), ...data }, key))
+          : data[key] || "";
+        return `
         <label>
-          <span>${escapeHtml(taskManualParameterLabel(key, label))}</span>
-          <input class="task-manual-input" data-key="${escapeHtml(key)}" value="${escapeHtml(data[key] || "")}" placeholder="人工补充">
+          <span>${escapeHtml(taskManualParameterLabel(key, label, data))}</span>
+          <input class="task-manual-input" data-key="${escapeHtml(key)}" value="${escapeHtml(fieldValue)}" placeholder="人工补充">
+          ${sourceText ? `<small class="parameter-source">来源：${escapeHtml(sourceText)}</small>` : ""}
         </label>
-      `).join("")}</div>
+      `;}).join("")}</div>
     </section>
   `;
 }
@@ -10895,7 +11271,7 @@ function promptTaskListHtml(items, activeItem, ariaLabel) {
     <div class="prompt-task-list-head"><strong>图组任务</strong><span>${items.length} 张</span></div>
     ${items.map((item) => {
       const state = imageGenerationState(item.key);
-      const status = ["submitting", "processing"].includes(state.status) ? "生成中" : state.images.length ? "已生成" : "待生成";
+      const status = imageTaskStatusLabel(state);
       return `<button type="button" class="prompt-task-item ${item.key === activeItem.key ? "is-active" : ""}" data-prompt-card-key="${escapeHtml(item.key)}">
         <b>${escapeHtml(item.id)}</b><span><strong>${escapeHtml(item.type.name.replace(/^\s*[0-9]+[A-Z]?\.\s*/, ""))}</strong><small>${status}</small></span>
       </button>`;
@@ -11057,6 +11433,77 @@ function renderAll() {
   renderSourceSummary();
   renderFacts();
   fieldSnapshot = currentFieldSignature();
+  persistWorkspaceSnapshot();
+}
+
+function persistWorkspaceSnapshot() {
+  if (!hasExtractedProducts()) return;
+  const snapshot = {
+    savedAt: new Date().toISOString(),
+    extractedProducts,
+    fieldOverridesBySku,
+    appliedSellingPointOverridesBySku,
+    referenceImagesBySku,
+    availableReferenceImageUrls,
+    bundleStateBySku,
+    supplierSourceFileNames,
+    selectedExtractionRoute,
+    selectedProductStructureRoute,
+    selectedSkuId: byId("skuSelect")?.value || extractedProducts[0]?.id || "",
+    supplierSkuBinding: byId("supplierSkuBinding")?.value || "",
+    templateId: byId("templateSelect")?.value || DEFAULT_TEMPLATE_ID,
+    activeWorkflowPage,
+  };
+  try {
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch (error) {
+    console.warn("无法保存当前工作台", error);
+  }
+}
+
+function restoreWorkspaceSnapshot() {
+  try {
+    const snapshot = JSON.parse(localStorage.getItem(WORKSPACE_STORAGE_KEY) || "null");
+    if (!snapshot || !Array.isArray(snapshot.extractedProducts) || !snapshot.extractedProducts.length) return null;
+    extractedProducts = snapshot.extractedProducts;
+    fieldOverridesBySku = snapshot.fieldOverridesBySku && typeof snapshot.fieldOverridesBySku === "object" ? snapshot.fieldOverridesBySku : {};
+    appliedSellingPointOverridesBySku = snapshot.appliedSellingPointOverridesBySku && typeof snapshot.appliedSellingPointOverridesBySku === "object"
+      ? snapshot.appliedSellingPointOverridesBySku
+      : {};
+    referenceImagesBySku = snapshot.referenceImagesBySku && typeof snapshot.referenceImagesBySku === "object" ? snapshot.referenceImagesBySku : {};
+    availableReferenceImageUrls = Array.isArray(snapshot.availableReferenceImageUrls) ? snapshot.availableReferenceImageUrls : [];
+    bundleStateBySku = snapshot.bundleStateBySku && typeof snapshot.bundleStateBySku === "object" ? snapshot.bundleStateBySku : {};
+    supplierSourceFileNames = Array.isArray(snapshot.supplierSourceFileNames) ? snapshot.supplierSourceFileNames : [];
+    selectedExtractionRoute = extractionRoutePreviews[snapshot.selectedExtractionRoute] ? snapshot.selectedExtractionRoute : "local";
+    selectedProductStructureRoute = productStructureRoutePreviews[snapshot.selectedProductStructureRoute] ? snapshot.selectedProductStructureRoute : "single";
+    hasUserSourceAttempt = true;
+    sourcePayload = {
+      purchase: "",
+      amazonTemplate: "已从浏览器本地工作记录恢复",
+      supplier: availableReferenceImageUrls.length ? "已恢复当前 SKU 的供应商参考图" : "",
+      competitor: "",
+    };
+    renderProductSelect(snapshot.selectedSkuId);
+    populateSupplierSkuBinding(extractedProducts);
+    if (snapshot.supplierSkuBinding && extractedProducts.some((sku) => sku.id === snapshot.supplierSkuBinding)) {
+      byId("supplierSkuBinding").value = snapshot.supplierSkuBinding;
+    }
+    if (templates.some((template) => template.id === snapshot.templateId && !template.disabled)) {
+      byId("templateSelect").value = snapshot.templateId;
+    }
+    return snapshot;
+  } catch (error) {
+    console.warn("无法恢复当前工作台", error);
+    return null;
+  }
+}
+
+function clearPersistedWorkspace() {
+  try {
+    localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+  } catch {
+    // Ignore unavailable browser storage; the in-memory reset still applies.
+  }
 }
 
 function allPromptsForSku() {
@@ -11097,6 +11544,7 @@ function clearExtractedSourceState() {
   referenceImagesBySku = {};
   bundleStateBySku = {};
   supplierSourceFileNames = [];
+  clearPersistedWorkspace();
   renderProductSelect();
   renderFields(true);
   renderAll();
@@ -11216,10 +11664,15 @@ function init() {
   initThemeToggle();
   initWorkflowNavigation();
   fillSelects();
+  const restoredWorkspace = restoreWorkspaceSnapshot();
   initProductStructureRoute();
   initExtractionRoutePreview();
   renderFields(true);
   renderAll();
+  if (restoredWorkspace) {
+    showWorkflowPage(restoredWorkspace.activeWorkflowPage || "studio");
+    byId("extractStatus").textContent = `已恢复 ${extractedProducts.length} 个产品 / 款式及其生图记录。`;
+  }
   startFieldWatcher();
 
   byId("skuSelect").addEventListener("change", () => {
@@ -11291,7 +11744,8 @@ function init() {
     }
     copyText(text, "已复制当前产品全部图组。", byId("copyCurrent"));
   });
-  byId("generateAllImages")?.addEventListener("click", generateAllImagesForCurrentOutput);
+  byId("generateAllImagesAuto")?.addEventListener("click", () => generateAllImagesForCurrentOutput("auto"));
+  byId("generateAllImagesManual")?.addEventListener("click", () => generateAllImagesForCurrentOutput("manual"));
   byId("saveGeneratedSet")?.addEventListener("click", saveGeneratedSet);
 }
 

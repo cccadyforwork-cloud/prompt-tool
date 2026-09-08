@@ -13,7 +13,7 @@
         document.documentElement.dataset.theme = "dark";
       }
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260902-three-page-workflow-20">
+    <link rel="stylesheet" href="./styles.css?v=20260908-checkbox-align-28">
   </head>
   <body>
     <header class="workflow-app-header">
@@ -60,11 +60,13 @@
           <label for="supplierImageListText">或直接粘贴采集助手图片链接</label>
           <textarea id="supplierImageListText" class="image-list-paste" rows="5" placeholder="可粘贴一行一个图片链接，也可直接粘贴 &lt;img src=&quot;https://...jpg&quot;/&gt; 清单"></textarea>
 
-          <label for="supplierSkuBinding">当前1688资料对应的 Amazon SKU</label>
-          <select id="supplierSkuBinding">
-            <option value="">自动识别（未指定 SKU）</option>
-          </select>
-          <p class="input-help">多 SKU 时建议明确指定；当前1688 HTML 和图片清单只会绑定到所选 SKU。</p>
+          <div class="source-field-group source-sku-binding-group">
+            <label for="supplierSkuBinding">当前1688资料对应的 Amazon SKU</label>
+            <select id="supplierSkuBinding">
+              <option value="">自动识别（未指定 SKU）</option>
+            </select>
+            <p class="input-help">多 SKU 时建议明确指定；当前1688 HTML 和图片清单只会绑定到所选 SKU。</p>
+          </div>
 
           <label for="competitorFile">参考链接 HTML 文件（可多选）</label>
           <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
@@ -132,12 +134,12 @@
       </section>
 
       <section class="workflow-page" data-workflow-panel="studio">
-        <div class="workflow-page-heading studio-heading"><div><p class="eyebrow">Page 03</p><h2>提示词与图组</h2><p>每个图片任务保持提示词、参考图和生成结果一一对应。</p></div><div class="studio-global-actions"><button id="copyCurrent" type="button" class="secondary">复制全部提示词</button><button id="generateAllImages" type="button">一键生成全部图片</button><button id="saveGeneratedSet" type="button" class="secondary">保存套组图片</button></div></div>
+        <div class="workflow-page-heading studio-heading"><div><p class="eyebrow">Page 03</p><h2>提示词与图组</h2><p>每个图片任务保持提示词、参考图和生成结果一一对应。</p></div><div class="studio-global-actions"><button id="copyCurrent" type="button" class="secondary">复制全部提示词</button><button id="generateAllImagesAuto" type="button">自动选参考图生成</button><button id="generateAllImagesManual" type="button" class="secondary">按人工选图生成</button><button id="saveGeneratedSet" type="button" class="secondary">一键保存选中图片图组</button></div></div>
         <p id="bulkGenerationStatus" class="status studio-status" role="status" aria-live="polite"></p><p id="saveGeneratedSetStatus" class="status studio-status" role="status" aria-live="polite"></p><p id="copyStatus" class="status studio-status" role="status" aria-live="polite"></p>
         <section class="product-prompt-panel studio-prompt-panel" aria-labelledby="product-prompts-title"><div class="section-header"><div><p class="eyebrow">Prompt ↔ Image Set</p><h2 id="product-prompts-title">当前产品图组</h2></div><p>左侧为当前提示词，右侧为其参考图和生成结果。</p></div><div id="productPromptGrid" class="product-prompt-grid"></div></section>
       </section>
     </main>
 
-    <script src="./app.js?v=20260902-three-page-workflow-20"></script>
+    <script src="./app.js?v=20260908-use-scene-authority-43"></script>
   </body>
 </html>
