@@ -106,7 +106,6 @@ const fields = [
   ["material", "Material", ""],
   ["color", "Color", ""],
   ["structure", "Structure / Craft", ""],
-  ["productStyle", "Product Style", ""],
   ["packaging", "Supplier Packaging", ""],
   ["detailParameter", "Detail Features", ""],
   ["scene", "Use Scene", ""],
@@ -127,7 +126,7 @@ const manualFields = [
 const allFields = [...fields, ...manualFields];
 const manualFieldKeys = new Set(manualFields.map(([key]) => key));
 const extractedManualFieldKeys = new Set(["topWidth", "sideLength", "bottomWidth", "weight"]);
-const supplierStructuredFieldKeys = new Set(["category", "material", "productStyle", "packaging"]);
+const supplierStructuredFieldKeys = new Set(["category", "material", "packaging"]);
 const multilineFieldKeys = new Set(["scene", "feature1", "feature2"]);
 const sellingPointFieldKeys = new Set(["feature1", "feature2"]);
 const NO_REFERENCE_SCENE_MESSAGE = "没有参考场景信息";
@@ -479,7 +478,6 @@ function valueMap(sku) {
     material: cleanFieldDisplayValue(sku.material || materialFallback),
     color: cleanFieldDisplayValue(sku.color || colorFallback),
     structure: cleanFieldDisplayValue(sku.structure || structureFallback),
-    productStyle: cleanFieldDisplayValue(sku.productStyle || ""),
     packaging: cleanFieldDisplayValue(sku.packaging || ""),
     cupRange: cleanFieldDisplayValue(sizeRangeValueForSku(sku, {})),
     topWidth: isDifferentDesignSet ? "" : sku.dims?.topWidth || dimensionFields.topWidth || "",
@@ -744,9 +742,10 @@ function renderFields(reset = false) {
     const hasSavedOverride = !suppressSharedAssortmentDimension
       && Object.prototype.hasOwnProperty.call(fieldOverrides, key);
     const currentValue = reset ? fieldOverrides[key] ?? "" : byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
+    const cleanedCurrentValue = cleanFieldDisplayValue(currentValue);
     const value = reset
-      ? (hasSavedOverride ? cleanFieldDisplayValue(currentValue) : shouldUseExtractedDefault ? values[key] || fallback : cleanFieldDisplayValue(currentValue))
-      : (cleanFieldDisplayValue(currentValue) || (shouldUseExtractedDefault ? values[key] : "") || fallback);
+      ? (hasSavedOverride ? cleanedCurrentValue : shouldUseExtractedDefault ? values[key] || fallback : cleanedCurrentValue)
+      : (hasSavedOverride ? cleanedCurrentValue : cleanedCurrentValue || (shouldUseExtractedDefault ? values[key] : "") || fallback);
     const cleanValue = suppressSharedAssortmentDimension
       ? ""
       : ["fit", "scene"].includes(key)
@@ -906,7 +905,6 @@ function productParameterRows() {
       material: cleanTokenValue(values.material),
       structure: cleanTokenValue(values.structure),
       category: cleanTokenValue(values.category),
-      productStyle: cleanTokenValue(values.productStyle),
       packaging: cleanTokenValue(values.packaging),
       detailParameter: cleanTokenValue(values.detailParameter),
     };
@@ -917,7 +915,6 @@ function productParameterRows() {
     if (isSelected || !existing.material) existing.material = cleanTokenValue(values.material);
     if (isSelected || !existing.structure) existing.structure = cleanTokenValue(values.structure);
     if (isSelected || !existing.category) existing.category = cleanTokenValue(values.category);
-    if (isSelected || !existing.productStyle) existing.productStyle = cleanTokenValue(values.productStyle);
     if (isSelected || !existing.packaging) existing.packaging = cleanTokenValue(values.packaging);
     if (isSelected || !existing.detailParameter) existing.detailParameter = cleanTokenValue(values.detailParameter);
     if (isSelected || !existing.productName) existing.productName = cleanFieldDisplayValue(values.productName || defaultProductName(sku));
@@ -950,7 +947,6 @@ function renderProductParameters() {
       ["Category", row.category],
       ["Material", row.material],
       ["Structure / Craft", row.structure],
-      ["Product Style", row.productStyle],
       ["Supplier Packaging", row.packaging],
       ["Detail Features", row.detailParameter],
     ].filter(([, value]) => value && !/^\[[A-Z0-9_ ]+\]$/i.test(value));
@@ -2064,9 +2060,6 @@ function translateAttributeValue(key, value) {
     if (/PP\s*袋.*独立|独立.*PP\s*袋/i.test(clean)) return "individually packed in PP bag";
     if (/独立包装/.test(clean)) return "individually packaged";
   }
-  if (/^Style$/i.test(key)) {
-    if (/现代.*简约|简约.*现代/.test(clean)) return "modern minimalist style";
-  }
   if (/^Sock Height$/i.test(key)) {
     if (/中筒|mid/i.test(clean)) return "mid-calf coverage";
     if (/长筒|高筒|over[-\s]?the[-\s]?calf|knee/i.test(clean)) return "long sock coverage";
@@ -2948,7 +2941,6 @@ function extractSupplierStructuredText(html) {
     ["包装", "Packaging"],
     ["适用性别", "Gender"],
     ["包装形式", "Packaging"],
-    ["风格", "Style"],
     ["工艺", "Technology"],
     ["特殊工艺", "SpecialCraft"],
     ["颜色", "Color"],
@@ -6380,7 +6372,6 @@ function amazonSharedFacts(row, columns, browsePath = "") {
     ...amazonRepeatedRowValues(row, columns, "occasion[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Occasion"),
   ]);
   const compatibleUses = amazonRepeatedRowValues(row, columns, "recommended_uses_for_product[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Recommended Uses For Product");
-  const style = amazonRowValue(row, columns, "Product Style", "Style", "style[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value", "style");
   const itemShape = amazonRowValue(row, columns, "Item Shape", "item_shape[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
   const itemForm = amazonRowValue(row, columns, "Item Form", "item_form[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
   const paperFinish = amazonRowValue(row, columns, "Paper Finish", "paper_finish[marketplace_id=ATVPDKIKX0DER]#1.value");
@@ -6406,7 +6397,6 @@ function amazonSharedFacts(row, columns, browsePath = "") {
   const structure = amazonListingStructureText({
     text: productText,
     material,
-    style,
     itemShape,
     itemForm,
     paperFinish,
@@ -6436,12 +6426,11 @@ function amazonSharedFacts(row, columns, browsePath = "") {
     packComposition,
     skuUnitQuantity: titleUnitQuantity?.count || 0,
     skuUnitQuantityLabel: titleUnitQuantity?.label || "",
-    feature1: bullets[0] || style || "",
+    feature1: bullets[0] || "",
     feature2: bullets[1] || bullets[2] || "",
     surfaceFinish: paperFinish,
     dimensionList,
     detailParameter: compactPromptItems([
-      style,
       itemShape,
       itemForm,
       designName,
@@ -6705,7 +6694,6 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
   const material = supplierProduct.material || amazonProduct.material || "";
   const category = supplierProduct.category || amazonProduct.category || "";
   const packaging = supplierProduct.packaging || amazonProduct.packaging || "";
-  const productStyle = supplierProduct.productStyle || amazonProduct.productStyle || "";
   // The selected Amazon child SKU is authoritative for variant color.
   // Supplier/Doubao color is only a fallback when the child SKU has no color.
   const color = amazonProduct.color || supplierProduct.color || "";
@@ -6750,7 +6738,6 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     category,
     color,
     structure,
-    productStyle,
     packaging,
     structuredAttributesSource: supplierProduct.structuredAttributesSource || amazonProduct.structuredAttributesSource || "",
     scene,
@@ -6908,7 +6895,6 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   const material = cleanFieldDisplayValue(detailAttributes.Material || "");
   const category = cleanFieldDisplayValue(detailAttributes.Category || "");
   const packaging = cleanFieldDisplayValue(detailAttributes.Packaging || "");
-  const productStyle = cleanFieldDisplayValue(detailAttributes.Style || "");
   const color = cleanFieldDisplayValue(detailAttributes.Color || "");
   const detailTechnology = identityAttrs.Technology || detailAttributes.Technology || "";
   const detailSpecialCraft = identityAttrs.SpecialCraft || detailAttributes.SpecialCraft || "";
@@ -7090,7 +7076,6 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     category,
     color: itemColor,
     structure: itemStructure,
-    productStyle,
     packaging,
     structuredAttributesSource: "1688 HTML 结构化商品属性（当前商品）",
     scene,
@@ -7534,8 +7519,9 @@ function promptFacts(sku, data) {
   const dimension2 = editableParameterParts(data.sideLength, dimensionLabelForData(data, 2)).value;
   const dimension3 = editableParameterParts(data.bottomWidth, dimensionLabelForData(data, 3)).value;
   const weightOrCapacity = editableParameterParts(data.weight, semanticParameterLabel(data, "weight")).value;
-  const structure = promptValue(data.structure, sku.structure || "");
-  const productStyle = promptValue(data.productStyle, "");
+  const structure = hasFieldOverride("structure")
+    ? promptValue(data.structure, "")
+    : promptValue(data.structure, sku.structure || "");
   const packaging = promptValue(data.packaging, "");
   const surfaceFinish = promptValue(data.surfaceFinish, "");
   const detailParameter = promptValue(data.detailParameter, "");
@@ -7554,13 +7540,18 @@ function promptFacts(sku, data) {
     ? sku.sizeCode
     : titleSpec || selectedSpec || sku.sizeCode;
   const extractedSkuColor = promptValue(sku.color || sku.colorEnglish || sku.displayColor, "");
-  const skuOptionSource = !color && extractedSkuColor
-    ? cleanTokenValue(rawSkuOptionSource)
-      .replace(new RegExp(`\\b${extractedSkuColor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"), "")
-      .replace(/\s*[/|,;]\s*(?=[/|,;]|$)|^\s*[/|,;]\s*/g, "")
-      .replace(/\s{2,}/g, " ")
-      .trim()
-    : rawSkuOptionSource;
+  // Color has its own prompt field and may be corrected manually after the
+  // Amazon file is parsed. Keep the immutable source SKU/label for traceability,
+  // but never repeat either the extracted or corrected color inside Option.
+  // Otherwise a correction such as Silver -> Black leaves contradictory prompt
+  // instructions. Preserve non-color variant facts, and make a bare Amazon
+  // NUMBER_OF_ITEMS value readable as a pack label.
+  const skuOptionSource = normalizeNonColorSkuOption(
+    rawSkuOptionSource,
+    [extractedSkuColor, color],
+    skuUnitQuantity,
+    skuUnitQuantityLabel,
+  );
   const skuOption = compactSkuOptionText(skuOptionSource, {
     productName,
     pack,
@@ -7569,7 +7560,6 @@ function promptFacts(sku, data) {
     material,
     category,
     structure,
-    productStyle,
     packaging,
     fit,
     cupRange,
@@ -7613,7 +7603,6 @@ function promptFacts(sku, data) {
     dimension3,
     weightOrCapacity,
     structure,
-    productStyle,
     packaging,
     surfaceFinish,
     detailParameter,
@@ -7643,6 +7632,24 @@ function stripPromptFragments(value, fragments = []) {
     .replace(/\s*\/\s*\/\s*/g, " / ")
     .replace(/^[\s,/-]+|[\s,/-]+$/g, "")
     .trim();
+}
+
+function normalizeNonColorSkuOption(value, colors = [], unitQuantity = 0, unitQuantityLabel = "") {
+  const withoutColor = stripPromptFragments(value, colors);
+  if (!withoutColor) return "";
+
+  const quantity = Number(unitQuantity || 0);
+  const quantityLabel = cleanFieldDisplayValue(unitQuantityLabel || (quantity >= 2 ? `${quantity}-Pack` : ""));
+  return cleanTokenValue(withoutColor)
+    .split(/\s*(?:\/|\||;|\s+-\s+)\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => (
+      quantity >= 2 && quantityLabel && /^\d+(?:\.0+)?$/.test(part) && Number(part) === quantity
+        ? quantityLabel
+        : part
+    ))
+    .join(" / ");
 }
 
 function compactSkuOptionText(value, context = {}) {
@@ -8198,7 +8205,6 @@ function productDetailText(facts, extraItems = [], limit = 8) {
     facts.cupRange && `Size / range: ${facts.cupRange}`,
     facts.pack && !extraIncludesPack && `Count / set: ${facts.pack}`,
     !facts.isDifferentDesignSet && specificPromptValue(facts.structure, "") && !extraIncludesStructure && `Structure: ${facts.structure}`,
-    facts.productStyle && `Product style: ${facts.productStyle}`,
     specificPromptValue(facts.surfaceFinish, "") && !structureIncludesTechnology && !extraIncludesSurfaceFinish && `Technology: ${facts.surfaceFinish}`,
     detailValue && !extraIncludesDetail && `Texture detail: ${detailValue}`,
   ], "", limit);
@@ -9934,7 +9940,6 @@ function sceneExplanationDetails(facts, physicalDetails) {
   const infoText = [
     "Main title required: Product Information.",
     dimensionLine && `Verified dimensions: ${dimensionLine}.`,
-    facts.productStyle && `Verified product style: ${facts.productStyle}.`,
     facts.packaging && `Verified supplier packaging: ${facts.packaging}. Show it only in a clearly labeled packaging detail, never as the product itself or as a quantity claim.`,
     "Use 2-3 short English info labels for verified material, structure, texture, size/range, or visible detail only.",
     "Premium text hierarchy: large title plus 2-3 short 3-5 word labels, aligned rows, crisp typography, spacing, no dense paragraphs.",
@@ -11237,11 +11242,12 @@ function chineseProductFilenameBase() {
     const localized = [
       [/dog\s*(?:poop|waste)\s*bags?|pet\s*waste\s*bags?/, "宠物垃圾袋"],
       [/coffee\s*filters?|filter\s*paper/, "咖啡滤纸"],
+      [/\b(?:metal\s+)?bookmarks?\b/, "金属书签"],
       [/plant\s*(?:ties?|straps?)/, "植物绑带"],
       [/resistance\s*bands?|exercise\s*bands?/, "弹力带"],
       [/(?:sun\s*catcher|suncatcher|crystal\s*(?:pendant|ornament))/, "水晶太阳捕手挂饰"],
     ].find(([pattern]) => pattern.test(identity));
-    name = localized?.[1] || "产品套图";
+    name = localized?.[1] || candidates[0] || "产品套图";
   }
   return name
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
