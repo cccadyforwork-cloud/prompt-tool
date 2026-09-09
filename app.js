@@ -533,7 +533,21 @@ function bundleSourceFor(name = "") { if (supplierSourceFileNames.length === 1) 
 function bundleComponentPromptText(state = {}) { return state.enabled && state.confirmed ? state.components.map((item) => `${cleanFieldDisplayValue(item.name)} × ${Number(item.quantity) || 0}`).filter((item) => !/× 0$/.test(item)).join("; ") : ""; }
 function renderBundleEditor() {
   const editor = byId("bundleEditor"); if (!editor) return; const sku = selectedSku();
-  if (!hasExtractedProducts() || !sku) { editor.innerHTML = `<h2 id="bundle-title">套装资料确认</h2><p class="empty-state">${selectedProductStructureRoute === "bundle" ? "已选择套装路线。解析资料后，在这里确认套装主体、配件、数量及其 1688 来源。" : "如当前 SKU 是套装，请先在第 1 页选择“套装路线”。"}</p>`; return; }
+  if (!hasExtractedProducts() || !sku) {
+    const emptyMessage = selectedProductStructureRoute === "bundle"
+      ? "已选择套装路线。解析资料后，在这里确认套装主体、配件、数量及其 1688 来源。"
+      : selectedProductStructureRoute === "assortment"
+        ? "已选择不同款组合套装路线。解析资料后，产品身份直接以选中的完整组合参考图为准。"
+        : "如当前 SKU 是套装，请先在第 1 页选择对应的商品组合路线。";
+    editor.innerHTML = `<h2 id="bundle-title">组合资料确认</h2><p class="empty-state">${emptyMessage}</p>`;
+    return;
+  }
+  if (selectedProductStructureRoute === "assortment") {
+    const count = Number(sku.skuUnitQuantity || 0);
+    const countText = count > 1 ? `当前标题识别为 ${count} 件；` : "";
+    editor.innerHTML = `<h2 id="bundle-title">不同款组合套装确认</h2><p class="bundle-note">${countText}各款外观与结构不在文字参数中展开描述，直接以第 3 页选中的完整组合参考图为产品身份依据。</p><p class="bundle-confirmed">✓ 展示规则：完整套装图呈现所有不同款；使用图按参考图选择真实成员；禁止复制同一款、融合不同款、遗漏成员或凭文字重画结构。</p>`;
+    return;
+  }
   const state = bundleStateForSku(sku); const options = (value) => (supplierSourceFileNames.length ? supplierSourceFileNames : ["未关联 1688 资料"]).map((file) => `<option value="${escapeHtml(file)}"${file === value ? " selected" : ""}>${escapeHtml(file)}</option>`).join("");
   const rows = state.components.map((item, index) => `<article class="bundle-component-card"><div class="bundle-component-top"><div><label>组件名称</label><input data-bundle-index="${index}" data-bundle-field="name" value="${escapeHtml(item.name || "")}"></div><div><label>数量</label><input data-bundle-index="${index}" data-bundle-field="quantity" type="number" min="1" value="${escapeHtml(String(item.quantity || 1))}"></div></div><div class="bundle-component-bottom"><div><label>该组件的 1688 来源</label><select data-bundle-index="${index}" data-bundle-field="sourceFile">${options(item.sourceFile)}</select></div><button type="button" class="bundle-remove" data-bundle-remove="${index}">×</button></div></article>`).join("");
   editor.innerHTML = `<h2 id="bundle-title">套装资料确认</h2><p class="bundle-note">只对当前 SKU 生效。确认后右侧全部图组严格使用这份组件、数量与来源。</p><label class="bundle-editor-toggle"><input id="bundleEnabled" type="checkbox"${state.enabled ? " checked" : ""}>当前 SKU 是套装（主体 + 配套产品）</label>${state.enabled ? `${rows}<button id="addBundleComponent" type="button" class="secondary bundle-add">+ 添加套装组件</button><button id="confirmBundleComponents" type="button">确认套装构成并更新提示词</button>${state.confirmed ? `<p class="bundle-confirmed">✓ 已确认：${escapeHtml(bundleComponentPromptText(state))}</p>` : ""}` : ""}`;
@@ -558,6 +572,13 @@ const productStructureRoutePreviews = {
     summary: "当前 SKU 是主体与配套产品组成的一套商品；解析后必须确认每个组件、数量及其 1688 来源。",
     flow: "当前套装 SKU + 各组件资料 → 套装构成确认 → 全套组件共同进入提示词与图片",
     note: "套装确认后，每张生成图都会锁定完整套装，避免漏掉组件、把组件融合或误当成可选款式。",
+  },
+  assortment: {
+    kicker: "SKU Structure 03 · Mixed Designs",
+    title: "不同款组合套装",
+    summary: "当前 SKU 由多个外观或结构不同、可独立使用的商品组成固定组合；产品身份由完整组合参考图直接控制。",
+    flow: "当前组合 SKU + 完整组合参考图 → 按图位分配不同款 → 组合套装图组",
+    note: "提示词只规定各款如何呈现，不用文字重述产品几何；禁止复制、融合、遗漏或新增参考图中不存在的款式。",
   },
 };
 
@@ -625,6 +646,7 @@ function applyProductStructureRoute(products = []) {
     components,
     confirmed: false,
   };
+  target.productStructureRoute = selectedProductStructureRoute;
 }
 
 const extractionRoutePreviews = {
@@ -7390,6 +7412,41 @@ function bundleFullSetDisplayRule(facts) {
   return `HIGHEST-PRIORITY BUNDLE VISUAL REQUIREMENT: every generated image must visibly show the complete current set together as separate physical items: ${facts.bundleComponents}. The main dispenser/container is not a standalone product; never show it alone or omit the refill/component items. Keep the listed quantities visibly distinct and source-accurate; do not fuse components or substitute them.`;
 }
 
+function differentDesignSetPresentationRule(facts, templateId, typeId) {
+  if (!facts?.isDifferentDesignSet) return "";
+  const count = Number(facts.differentDesignSetCount || 0);
+  const setMembers = count > 1 ? `all ${count} different included products` : "all different included products";
+  const taskKey = `${templateId}:${typeId}`;
+  const isHumanUse = taskKey === "scene:1B";
+  const isMultiScene = new Set(["scene:2", "feature:3", "spec:3A", "plantTie:3"]).has(taskKey);
+  const isStepSequence = taskKey === "spec:3B";
+  const isSetInformation = new Set([
+    "scene:3", "scene:4", "scene:7",
+    "feature:4", "feature:5", "feature:8",
+    "spec:4", "spec:5", "spec:8",
+    "plantTie:5",
+  ]).has(taskKey);
+  const identity = `HIGHEST-PRIORITY DIFFERENT-DESIGN SET IDENTITY: this SKU is one fixed set containing ${setMembers}. Use the selected reference image that clearly shows the complete set as the sole authority for product identity, set membership, and each member's visible form. Reproduce the products directly from that reference; do not infer or reconstruct their form from written descriptions. Other references may guide use, pose, or layout only and must never change the products.`;
+  let presentation = `Set presentation: treat the complete group as the hero product and show ${setMembers} as separate, complete, equally important products. The group as a whole satisfies product-size and prominence instructions; no single member may stand in for the set or dominate the other members.`;
+  if (isHumanUse) {
+    presentation = "Human-use presentation: use one actual referenced set member for the main action, and keep every other different included member together in a clear secondary set view. The action product must remain the same referenced design.";
+  } else if (isMultiScene) {
+    presentation = "Multi-scene presentation: assign each panel to an actual set member shown in the complete-set reference. Distribute scenes across the different members before reusing any member, and keep the chosen member unchanged in every panel.";
+  } else if (isStepSequence) {
+    presentation = "Instruction-sequence presentation: choose one actual referenced set member that supports the verified steps and keep that exact member unchanged through every panel. Do not switch, merge, or redesign members during the sequence; the other set members need not appear in this instruction image.";
+  } else if (isSetInformation) {
+    presentation = `Set-information presentation: give ${setMembers} their own readable view, inset, or information area and keep the full-set relationship obvious. Apply each callout only to the referenced member it actually describes.`;
+  } else if (!isMainImageType(typeId)) {
+    presentation = "Feature presentation: demonstrate the relevant claim with an actual referenced set member. If multiple members appear, keep each one separate and unchanged; never imply that one member represents the entire mixed-design set.";
+  }
+  return `${identity} ${presentation}`;
+}
+
+function differentDesignSetAvoidRule(facts) {
+  if (!facts?.isDifferentDesignSet) return "";
+  return "No duplicated member replacing a different design, no hybrid made by merging set members, no missing included design when the complete set is required, no extra design, and no text-invented product form. Do not let a use-scene or layout reference override the complete-set identity reference.";
+}
+
 function standaloneAccessoryExclusionRule(facts) {
   if (facts?.bundleComponents) return "";
   const identity = [facts?.productName, facts?.titleSpec, facts?.selectedSpec, facts?.skuOption].filter(Boolean).join(" ");
@@ -7417,6 +7474,11 @@ function promptFacts(sku, data) {
   const group = productGroups[sku.groupKey] || sku.group || {};
   const bundleComponents = promptValue(data.bundleComponents || sku.bundleComponents, "");
   const isMixedBundle = Boolean(bundleComponents);
+  const productStructureRoute = productStructureRoutePreviews[sku.productStructureRoute]
+    ? sku.productStructureRoute
+    : (productStructureRoutePreviews[selectedProductStructureRoute] ? selectedProductStructureRoute : "single");
+  const isDifferentDesignSet = productStructureRoute === "assortment";
+  const differentDesignSetCount = isDifferentDesignSet ? Number(sku.skuUnitQuantity || 0) : 0;
   const rawProductName = promptValue(data.productName, sku.shape || "the product");
   const rawSelectedSpec = promptValue(data.singleSpec, sku.shape || "");
   const productName = isMixedBundle ? removeGenericPieceCount(rawProductName) || rawProductName : rawProductName;
@@ -7430,8 +7492,8 @@ function promptFacts(sku, data) {
   // true for a sourced refill-roll composition: total bags must not turn into
   // a count of physical rolls in an image.
   const hasStructuredPackComposition = Boolean(packComposition);
-  const skuUnitQuantity = isMixedBundle || hasStructuredPackComposition ? 0 : Number(sku.skuUnitQuantity || 0);
-  const skuUnitQuantityLabel = isMixedBundle || hasStructuredPackComposition ? "" : cleanFieldDisplayValue(sku.skuUnitQuantityLabel || "");
+  const skuUnitQuantity = isMixedBundle || isDifferentDesignSet || hasStructuredPackComposition ? 0 : Number(sku.skuUnitQuantity || 0);
+  const skuUnitQuantityLabel = isMixedBundle || isDifferentDesignSet || hasStructuredPackComposition ? "" : cleanFieldDisplayValue(sku.skuUnitQuantityLabel || "");
   const material = promptValue(data.material, "");
   const category = promptValue(data.category, "");
   const color = promptValue(data.color, "");
@@ -7515,6 +7577,9 @@ function promptFacts(sku, data) {
     feature2,
     feature3,
     bundleComponents,
+    productStructureRoute,
+    isDifferentDesignSet,
+    differentDesignSetCount,
     variants,
     specs,
     dimensions,
@@ -8098,7 +8163,7 @@ function productDetailText(facts, extraItems = [], limit = 8) {
   return compactSpecificPromptItems([
     `Product: ${facts.productName}`,
     facts.category && `Category: ${facts.category}`,
-    option && `Current option: ${option}`,
+    !facts.isDifferentDesignSet && option && `Current option: ${option}`,
     facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
     facts.packComposition && `Verified pack composition: ${facts.packComposition}`,
     color && !extraIncludesColor && `Color: ${color}`,
@@ -8107,7 +8172,7 @@ function productDetailText(facts, extraItems = [], limit = 8) {
     specificPromptValue(facts.material, "") && !extraIncludesMaterial && `Material: ${facts.material}`,
     facts.cupRange && `Size / range: ${facts.cupRange}`,
     facts.pack && !extraIncludesPack && `Count / set: ${facts.pack}`,
-    specificPromptValue(facts.structure, "") && !extraIncludesStructure && `Structure: ${facts.structure}`,
+    !facts.isDifferentDesignSet && specificPromptValue(facts.structure, "") && !extraIncludesStructure && `Structure: ${facts.structure}`,
     facts.productStyle && `Product style: ${facts.productStyle}`,
     specificPromptValue(facts.surfaceFinish, "") && !structureIncludesTechnology && !extraIncludesSurfaceFinish && `Technology: ${facts.surfaceFinish}`,
     detailValue && !extraIncludesDetail && `Texture detail: ${detailValue}`,
@@ -8122,15 +8187,17 @@ function referenceColorLockText(facts) {
 
 function productIdentityLockText(facts) {
   return compactPromptItems([
-    "Identity lock: exact source product; no substitute, redesign, or invented detail.",
+    facts.isDifferentDesignSet
+      ? "Identity lock: reproduce the fixed mixed-design set directly from the complete-set reference; written product fields do not define product form."
+      : "Identity lock: exact source product; no substitute, redesign, or invented detail.",
     facts.bundleComponents && "Bundle identity lock: show every included component as separate physical items in one set; no fused hybrid product, no missing component, no component substitution.",
     facts.bundleComponents && `Included bundle components: ${facts.bundleComponents}`,
     bundleQuantityMeaningRule(facts),
     facts.productName && `Exact product type/name: ${facts.productName}`,
-    facts.selectedSpec && `Exact option/spec: ${shortOptionText(facts) || facts.selectedSpec}`,
+    !facts.isDifferentDesignSet && facts.selectedSpec && `Exact option/spec: ${shortOptionText(facts) || facts.selectedSpec}`,
     facts.color && `Exact color: ${facts.color}`,
     facts.material && `Exact material: ${facts.material}`,
-    facts.structure && `Exact visible structure: ${facts.structure}`,
+    !facts.isDifferentDesignSet && facts.structure && `Exact visible structure: ${facts.structure}`,
     facts.pack && `Pack count if shown: ${facts.pack}`,
     "Keep authentic markings.",
   ], "", 8);
@@ -8140,15 +8207,15 @@ function productIdentityBasicRule(facts) {
   if (!facts) return "";
   const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
   return compactPromptItems([
-    "Product identity lock comes first: exact selected current product only; no category substitution, no redesign, no invented parts.",
+    facts.isDifferentDesignSet ? "" : "Product identity lock comes first: exact selected current product only; no category substitution, no redesign, no invented parts.",
     facts.bundleComponents && "Bundle rule: this is one bundled listing; show all included components together as separate items, not alternative options.",
     facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
     bundleQuantityMeaningRule(facts),
     facts.productName && `Product: ${facts.productName}`,
-    option && `Option: ${option}`,
+    !facts.isDifferentDesignSet && option && `Option: ${option}`,
     facts.color && `Color: ${facts.color}`,
     facts.material && `Material: ${facts.material}`,
-    facts.structure && `Structure: ${facts.structure}`,
+    !facts.isDifferentDesignSet && facts.structure && `Structure: ${facts.structure}`,
   ], "", 7);
 }
 
@@ -8203,12 +8270,14 @@ function skuQuantityMainImageRule(facts, typeId) {
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
   const skuQuantityRule = skuQuantityExplanationRule(facts, templateId, typeId);
   const skuQuantityMainRule = skuQuantityMainImageRule(facts, typeId);
+  const differentDesignSetRule = differentDesignSetPresentationRule(facts, templateId, typeId);
   const sceneAuthorityRule = templateId === "scene" ? useSceneAuthorityRule(facts) : "";
   const referenceControlledSellingPoint = /Selling-point reference priority/i.test([details, style].filter(Boolean).join(" "));
   const referenceMode = referenceControlledSellingPoint ? "selling-point" : "";
   const priorityText = compactPromptItems([
     isMainImageType(typeId) ? mainImageNoAnnotationRule() : "",
     sceneAuthorityRule,
+    differentDesignSetRule,
     skuQuantityMainRule,
     skuQuantityRule,
     bundleFullSetDisplayRule(facts),
@@ -8243,6 +8312,7 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
       isMainImageType(typeId) ? "No added text of any kind; no numbers, dimensions, measurement units, arrows, ruler lines, callouts, labels, badges, icons, tables, parameter cards, or infographic layout, even when a reference image contains them." : "",
       sceneAuthorityRule && "No environment, occasion, seasonal styling, background, or props absent from the current editable Use Scene field; reference-image backgrounds cannot override this exclusion.",
       negative || negativePrompt(facts),
+      differentDesignSetAvoidRule(facts),
       standaloneAccessoryExclusionRule(facts) && "No poop-bag dispenser, holder, container, carrying case, lid, clip, loop, leash attachment, or bundled accessory; do not turn refill bags into a dispenser set.",
       facts.packComposition && "No depiction, label, or implication that the total bag count is a count of refill rolls; no 60-roll stack, grid, wall, or quantity display. Show only the verified refill-roll composition when a count is visible.",
       referenceControlledSellingPoint ? sellingPointEvidenceAvoidRule() : "",
@@ -9826,9 +9896,12 @@ function userProvidedSceneList(facts) {
 }
 
 function sceneMultiAngleDetails(facts, physicalDetails) {
-  return sceneProductDetailText(facts, [physicalDetails, visibleTextureDetails(facts)], 7);
+  return sceneProductDetailText(facts, [facts.isDifferentDesignSet ? "" : physicalDetails, visibleTextureDetails(facts)], 7);
 }
 function sceneMultiAngleStyleText(facts) {
+  if (facts.isDifferentDesignSet) {
+    return "Product-only complete-set display on a clean light studio background: give each different referenced set member one clear primary view at consistent scale, with separation between members and no text/annotations. Do not fill the layout with alternate-angle copies of one member.";
+  }
   return "Product-only multi-angle display: front, side, back/top, and one detail view on clean light studio background; no text/annotations.";
 }
 function sceneExplanationDetails(facts, physicalDetails) {
@@ -9844,6 +9917,14 @@ function sceneExplanationDetails(facts, physicalDetails) {
   return sceneProductDetailText(facts, [...infoText, physicalDetails, visibleTextureDetails(facts)], 9);
 }
 function sceneExplanationStyleText(facts) {
+  if (facts.isDifferentDesignSet) {
+    return [
+      "Premium complete-set information infographic with a large high-contrast title \"Product Information\" or \"Product Details\".",
+      "Arrange every different referenced set member in its own clear product area at consistent scale; keep the three-member set relationship immediately understandable.",
+      "Place shared verified material or set-level facts outside the individual areas. Apply member-specific callouts only beside the exact referenced member they describe.",
+      "Use a clean light studio background, short English labels, generous spacing, and no paragraphs, dense table, unverified specification, or copied reference-image layout text.",
+    ].join(" ");
+  }
   return [
     "Premium product information infographic with large high-contrast title \"Product Information\" or \"Product Details\".",
     "Product centered; 2-3 verified 3-5 word callouts for material, structure, texture, size/range, or visible details.",
@@ -9935,10 +10016,13 @@ function parameterIllustrationRule() {
 }
 
 function summaryPosterStyleRule(facts = {}) {
+  const supportingCutout = facts.isDifferentDesignSet
+    ? "Use the large hero area for the complete referenced set or a source-supported scene featuring an actual set member. Use the right-side insets to give the other referenced members and their verified proof points distinct readable areas; do not use one member as a visual substitute for the set."
+    : "An optional circular or softly rounded product cutout may overlap the lower-left area of the hero photo, showing one representative current product unit clearly on a clean light background. Keep it compact and do not use it for pack-count, quantity, or full-pack presentation.";
   return [
     `${productFirstOptionalHumanRule()} Polished feature summary poster in a premium Amazon lifestyle style.`,
     "Use the approved layout: left side is one large warm lifestyle hero photo occupying about 60-65% width; right side is a vertical column occupying about 35-40% width with 3-4 rounded rectangular product-detail or use-detail inset windows.",
-    "An optional circular or softly rounded product cutout may overlap the lower-left area of the hero photo, showing one representative current product unit clearly on a clean light background. Keep it compact and do not use it for pack-count, quantity, or full-pack presentation.",
+    supportingCutout,
     "Top headline may be a large elegant 2-4 word seasonal/product mood phrase; feature labels sit on small warm rounded tabs inside or near each right-side inset, 1-3 English words max.",
     "Each right inset must show a real visual proof subject from the current product: use scene, decoration, material/texture, lightweight/comfort, or style match; keep product clear and source-accurate.",
     "Summary inset reference rule: when a matching current-product reference image exists for a feature, use that reference image's demonstrated scene/action logic. When no matching reference exists, use an accurate product display/detail view plus the short feature title only; do not invent a demonstration scene, test, action, mechanism, or result.",
@@ -10651,9 +10735,20 @@ function referenceImageCandidatesForCard(type, facts, sku) {
   const matched = matchedSellingPointVisualEvidence(points, facts).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
   const evidence = (facts.sellingPointVisualEvidence || []).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
   const taskMatched = taskMatchedReferenceUrls(type, sku?.id, Array.from(new Set([...matched, ...evidence, ...mapped])));
+  const meta = referenceMetaItemsForSku(sku?.id);
+  const assortmentIdentity = facts.isDifferentDesignSet
+    ? meta.filter((item) => {
+      const description = [item.image_type, ...(Array.isArray(item.best_for) ? item.best_for : [])].join(" ");
+      const confidence = [item.sku_match, item.confidence, item.reference_value].filter(Boolean).join(" ");
+      return /hero|overview|main|white|product|multi.?angle/i.test(description) && /exact|high/i.test(confidence);
+    }).map((item) => item.url)
+    : [];
+  const identityFirst = facts.isDifferentDesignSet
+    ? Array.from(new Set([...assortmentIdentity, mapped[0]].filter(Boolean)))
+    : [];
   return {
-    matched: Array.from(new Set([...matched, ...taskMatched].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES),
-    all: Array.from(new Set([...taskMatched, ...matched, ...evidence, ...mapped].filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES),
+    matched: Array.from(new Set([...identityFirst, ...matched, ...taskMatched].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES),
+    all: Array.from(new Set([...identityFirst, ...taskMatched, ...matched, ...evidence, ...mapped].filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES),
   };
 }
 
@@ -10708,6 +10803,9 @@ function renderImageGenerator(cardKey) {
   const previousRecords = history.slice(0, -1).map((record, index) => ({ record, round: index + 1 })).reverse();
   const latestHtml = latestRecord ? historyRecordHtml(latestRecord, history.length, true) : "";
   const previousHtml = previousRecords.map(({ record, round }) => historyRecordHtml(record, round)).join("");
+  const assortmentReferenceNote = selectedProductStructureRoute === "assortment"
+    ? `<p class="bundle-note">结构母图要求：至少选择一张清晰展示完整不同款组合的参考图；其他参考图只用于场景、动作或版式，不能改变产品身份。</p>`
+    : "";
   const historyHtml = history.length ? `
     <div class="generation-history-heading">
       <strong>生成记录</strong>
@@ -10726,6 +10824,7 @@ function renderImageGenerator(cardKey) {
         <span class="reference-count">${state.selectedReferences.length}/${MAX_SELECTED_REFERENCES}</span>
       </div>
       <div class="reference-image-picker">
+        ${assortmentReferenceNote}
         ${renderReferenceImages(state)}
         <input class="reference-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden ${isBusy ? "disabled" : ""}>
         <button type="button" class="reference-drop-zone" ${isBusy ? "disabled" : ""}>
@@ -11694,6 +11793,7 @@ function restoreWorkspaceSnapshot() {
     supplierSourceFileNames = Array.isArray(snapshot.supplierSourceFileNames) ? snapshot.supplierSourceFileNames : [];
     selectedExtractionRoute = extractionRoutePreviews[snapshot.selectedExtractionRoute] ? snapshot.selectedExtractionRoute : "local";
     selectedProductStructureRoute = productStructureRoutePreviews[snapshot.selectedProductStructureRoute] ? snapshot.selectedProductStructureRoute : "single";
+    productStructureRouteManuallySelected = Boolean(productStructureRoutePreviews[snapshot.selectedProductStructureRoute]);
     hasUserSourceAttempt = true;
     sourcePayload = {
       purchase: "",
@@ -11702,6 +11802,10 @@ function restoreWorkspaceSnapshot() {
       competitor: "",
     };
     renderProductSelect(snapshot.selectedSkuId);
+    const restoredSku = extractedProducts.find((sku) => sku.id === (snapshot.selectedSkuId || extractedProducts[0]?.id));
+    if (productStructureRoutePreviews[restoredSku?.productStructureRoute]) {
+      selectedProductStructureRoute = restoredSku.productStructureRoute;
+    }
     populateSupplierSkuBinding(extractedProducts);
     if (snapshot.supplierSkuBinding && extractedProducts.some((sku) => sku.id === snapshot.supplierSkuBinding)) {
       byId("supplierSkuBinding").value = snapshot.supplierSkuBinding;

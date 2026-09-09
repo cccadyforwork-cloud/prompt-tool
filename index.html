@@ -80,13 +80,16 @@
             <h2 id="product-structure-route-title">商品组合路线</h2>
             <span class="preview-badge">SKU 结构</span>
           </div>
-          <p class="route-intro">先确定当前 Amazon SKU 是单品还是包含多个组件的套装，再选择下方的信息提取方式。</p>
+          <p class="route-intro">先确定当前 Amazon SKU 是单品、主体配件套装，还是由多个不同款商品组成的固定组合，再选择下方的信息提取方式。</p>
           <div class="product-structure-tabs" role="tablist" aria-label="商品组合路线">
             <button id="structure-single" class="route-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="productStructureRoutePreview" data-product-structure-route="single">
               <span>01</span> 单品路线
             </button>
             <button id="structure-bundle" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="productStructureRoutePreview" data-product-structure-route="bundle">
               <span>02</span> 套装路线
+            </button>
+            <button id="structure-assortment" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="productStructureRoutePreview" data-product-structure-route="assortment">
+              <span>03</span> 不同款组合套装
             </button>
           </div>
           <article id="productStructureRoutePreview" class="extraction-route-preview product-structure-route-preview" role="tabpanel" aria-live="polite"></article>
@@ -140,6 +143,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20260908-use-scene-authority-43"></script>
+    <script src="./app.js?v=20260909-different-design-set-route-47"></script>
   </body>
 </html>
