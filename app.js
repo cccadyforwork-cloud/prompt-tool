@@ -455,13 +455,14 @@ function sanitizeUseContextFields(data = {}) {
 
 function valueMap(sku) {
   const group = productGroups[sku.groupKey] || sku.group || {};
+  const isDifferentDesignSet = sku.productStructureRoute === "assortment";
   const materialFallback = "";
   const colorFallback = "";
   const structureFallback = "";
   const feature1Fallback = "";
   const feature2Fallback = "";
   const variantFallback = "";
-  const dimensionList = dimensionListForSku(sku, group);
+  const dimensionList = isDifferentDesignSet ? "" : dimensionListForSku(sku, group);
   const dimensionFields = dimensionFieldsFromDimensionList(dimensionList, [
     defaultProductName(sku),
     sku.shape,
@@ -481,10 +482,10 @@ function valueMap(sku) {
     productStyle: cleanFieldDisplayValue(sku.productStyle || ""),
     packaging: cleanFieldDisplayValue(sku.packaging || ""),
     cupRange: cleanFieldDisplayValue(sizeRangeValueForSku(sku, {})),
-    topWidth: sku.dims?.topWidth || dimensionFields.topWidth || "",
-    sideLength: sku.dims?.sideLength || dimensionFields.sideLength || "",
-    bottomWidth: sku.dims?.bottomWidth || dimensionFields.bottomWidth || "",
-    weight: weightOrCapacityValueForSku(sku, {}, dimensionFields),
+    topWidth: isDifferentDesignSet ? "" : sku.dims?.topWidth || dimensionFields.topWidth || "",
+    sideLength: isDifferentDesignSet ? "" : sku.dims?.sideLength || dimensionFields.sideLength || "",
+    bottomWidth: isDifferentDesignSet ? "" : sku.dims?.bottomWidth || dimensionFields.bottomWidth || "",
+    weight: isDifferentDesignSet ? "" : weightOrCapacityValueForSku(sku, {}, dimensionFields),
     fit: useContext.fit,
     scene: useContext.scene,
     feature1: cleanFieldDisplayValue(sku.feature1 || feature1Fallback),
@@ -545,7 +546,7 @@ function renderBundleEditor() {
   if (selectedProductStructureRoute === "assortment") {
     const count = Number(sku.skuUnitQuantity || 0);
     const countText = count > 1 ? `当前标题识别为 ${count} 件；` : "";
-    editor.innerHTML = `<h2 id="bundle-title">不同款组合套装确认</h2><p class="bundle-note">${countText}各款外观与结构不在文字参数中展开描述，直接以第 3 页选中的完整组合参考图为产品身份依据。</p><p class="bundle-confirmed">✓ 展示规则：完整套装图呈现所有不同款；使用图按参考图选择真实成员；禁止复制同一款、融合不同款、遗漏成员或凭文字重画结构。</p>`;
+    editor.innerHTML = `<h2 id="bundle-title">不同款组合套装确认</h2><p class="bundle-note">${countText}各款外观与结构不在文字参数中展开描述，直接以第 3 页选中的完整组合参考图为产品身份依据。未按成员分别取证的共享尺寸会保持为空，避免把某一款的长宽厚套到另外两款。</p><p class="bundle-confirmed">✓ 展示规则：完整套装图呈现所有不同款；使用图按参考图选择真实成员；禁止复制同一款、融合不同款、遗漏成员或凭文字重画结构。</p>`;
     return;
   }
   const state = bundleStateForSku(sku); const options = (value) => (supplierSourceFileNames.length ? supplierSourceFileNames : ["未关联 1688 资料"]).map((file) => `<option value="${escapeHtml(file)}"${file === value ? " selected" : ""}>${escapeHtml(file)}</option>`).join("");
@@ -733,17 +734,22 @@ function renderFields(reset = false) {
     return;
   }
   const renderFieldControls = (fieldDefs, useExtractedDefaults) => fieldDefs.map(([key, label, fallback]) => {
+    const suppressSharedAssortmentDimension = sku.productStructureRoute === "assortment"
+      && extractedManualFieldKeys.has(key);
     const shouldUseExtractedDefault = typeof useExtractedDefaults === "function"
       ? useExtractedDefaults(key)
       : useExtractedDefaults;
     const parameterData = { ...sku, ...values };
     const displayLabel = label;
-    const hasSavedOverride = Object.prototype.hasOwnProperty.call(fieldOverrides, key);
+    const hasSavedOverride = !suppressSharedAssortmentDimension
+      && Object.prototype.hasOwnProperty.call(fieldOverrides, key);
     const currentValue = reset ? fieldOverrides[key] ?? "" : byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
     const value = reset
       ? (hasSavedOverride ? cleanFieldDisplayValue(currentValue) : shouldUseExtractedDefault ? values[key] || fallback : cleanFieldDisplayValue(currentValue))
       : (cleanFieldDisplayValue(currentValue) || (shouldUseExtractedDefault ? values[key] : "") || fallback);
-    const cleanValue = ["fit", "scene"].includes(key)
+    const cleanValue = suppressSharedAssortmentDimension
+      ? ""
+      : ["fit", "scene"].includes(key)
       ? sanitizeUseContextFields({ ...values, [key]: cleanFieldDisplayValue(value) })[key]
       : cleanFieldDisplayValue(value);
     const baseDisplayValue = key === "scene"
@@ -760,8 +766,8 @@ function renderFields(reset = false) {
         <p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">通过本地服务联网查找；查不到时不使用兜底场景。</p>`
       : multilineFieldKeys.has(key)
         ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
-        : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}">`;
-    const sourceText = (extractedManualFieldKeys.has(key) || supplierStructuredFieldKeys.has(key)) && displayValue
+        : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}"${suppressSharedAssortmentDimension ? " disabled placeholder=\"不同款需按成员分别取证\"" : ""}>`;
+    const sourceText = !suppressSharedAssortmentDimension && (extractedManualFieldKeys.has(key) || supplierStructuredFieldKeys.has(key)) && displayValue
       ? parameterSourceForData(parameterData, key)
       : "";
     return `
@@ -1207,18 +1213,21 @@ function sourceSummaryRows(sku, template) {
   const products = currentProducts();
   const selectedGroup = productGroups[sku.groupKey] || sku.group || {};
   const dimensionStatus = sku.dims?.source || selectedGroup.evidenceNote || "按当前字段生成";
+  const hasCompetitorEvidence = Boolean(sourcePayload.competitor) || Object.values(referenceImageMetaBySku)
+    .flat()
+    .some((item) => item?.image_type === "amazon_competitor_reference");
   if (!hasExtractedProducts()) {
     return [
       ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
       ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
-      ["参考链接", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
+      ["参考链接", hasCompetitorEvidence ? "已读取" : "未输入", sourceNotes.amazon],
       ["当前输出", `待解析，${template.imageTypes.length} 张图模板`, "解析资料后生成当前产品图组。"],
     ];
   }
   return [
     ["Amazon 模板", sourcePayload.amazonTemplate ? compactSourceStatus(sourcePayload.amazonTemplate) : "未输入", sourceNotes.amazonTemplate],
     ["供应商", sourcePayload.supplier ? compactSourceStatus(sourcePayload.supplier) : "待输入", sourceNotes.alibaba],
-    ["参考链接", sourcePayload.competitor ? compactSourceStatus(sourcePayload.competitor) : "未输入", sourceNotes.amazon],
+    ["参考链接", hasCompetitorEvidence ? "已读取" : "未输入", sourceNotes.amazon],
     ["当前输出", `${products.length} 个产品 / 款式，${template.imageTypes.length} 张图`, dimensionStatus],
   ];
 }
@@ -1348,6 +1357,7 @@ function currentPromptData(sku) {
   }
   const group = productGroups[sku.groupKey] || sku.group || {};
   const productName = promptValue(data.productName, defaultProductName(sku));
+  const isDifferentDesignSet = sku.productStructureRoute === "assortment";
   data.fit = "";
   const liveColor = promptValue(data.color, "");
   const skuColor = promptValue(sku.color || sku.colorEnglish || sku.displayColor, "");
@@ -1366,11 +1376,22 @@ function currentPromptData(sku) {
   data.packagingCount = ensureParameterToken("PRODUCT_COUNT_OR_SET", pack);
   data.singleSpec = `[CURRENT_PRODUCT_OPTION: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
   data.bundleComponents = bundleComponentPromptText(bundleStateForSku(sku)) || base.bundleComponents || sku.bundleComponents || "";
-  data.dimensionList = mergeDimensionListsKeepingFieldEdits(
-    buildDimensionListFromFields(data),
-    base.dimensionList || sku.dimensionList || "",
-    [data.productName, data.structure, data.detailParameter].filter(Boolean).join(" "),
-  );
+  // A mixed-design set cannot safely reuse one global length/width/thickness
+  // triplet: those measurements may describe only one member. Keep dimensions
+  // empty until the UI supports evidence mapped to each individual member.
+  if (isDifferentDesignSet) {
+    data.topWidth = "";
+    data.sideLength = "";
+    data.bottomWidth = "";
+    data.weight = "";
+  }
+  data.dimensionList = isDifferentDesignSet
+    ? ""
+    : mergeDimensionListsKeepingFieldEdits(
+      buildDimensionListFromFields(data),
+      base.dimensionList || sku.dimensionList || "",
+      [data.productName, data.structure, data.detailParameter].filter(Boolean).join(" "),
+    );
   data.specList = `[SPEC_LIST: ${[productSpec, optionSpec !== productSpec ? optionSpec : "", cupRange, pack, data.material, data.dimensionList].filter(Boolean).join(" / ")}]`;
   return data;
 }
@@ -7159,7 +7180,11 @@ async function extractSources() {
       purchase: "",
       amazonTemplate: useSupplierFileProducts ? "" : amazonTemplate.sourceText,
       supplier: supplierSource.text,
-      competitor: "",
+      // Keep a compact presence marker instead of the raw competitor HTML so
+      // reference material cannot leak product facts into current-SKU fields.
+      competitor: competitorFiles.length
+        ? `COMPETITOR_REFERENCE_FILES: ${competitorFiles.map((file) => file.name).join(" | ")}\nCOMPETITOR_REFERENCE_IMAGES: ${competitorReferenceImageUrls.length}`
+        : "",
     };
     fieldOverrides = {};
     fieldOverridesBySku = {};
@@ -11545,16 +11570,20 @@ function renderTaskParameterPanel(data, facts) {
         <div><strong>人工补充参数</strong><span>保存到当前 SKU，并进入全部对应提示词</span></div>
       </div>
       <div class="task-manual-fields">${manualFields.map(([key, label]) => {
-        const sourceText = extractedManualFieldKeys.has(key) && data[key]
+        const suppressSharedAssortmentDimension = facts.isDifferentDesignSet
+          && extractedManualFieldKeys.has(key);
+        const sourceText = !suppressSharedAssortmentDimension && extractedManualFieldKeys.has(key) && data[key]
           ? parameterSourceForData({ ...selectedSku(), ...data }, key)
           : "";
-        const fieldValue = ["topWidth", "sideLength", "bottomWidth", "weight"].includes(key) && data[key]
+        const fieldValue = suppressSharedAssortmentDimension
+          ? ""
+          : ["topWidth", "sideLength", "bottomWidth", "weight"].includes(key) && data[key]
           ? editableParameterValue(data[key], semanticParameterLabel({ ...selectedSku(), ...data }, key))
           : data[key] || "";
         return `
         <label>
           <span>${escapeHtml(taskManualParameterLabel(key, label, data))}</span>
-          <input class="task-manual-input" data-key="${escapeHtml(key)}" value="${escapeHtml(fieldValue)}" placeholder="人工补充">
+          <input class="task-manual-input" data-key="${escapeHtml(key)}" value="${escapeHtml(fieldValue)}" placeholder="${suppressSharedAssortmentDimension ? "不同款需按成员分别取证" : "人工补充"}"${suppressSharedAssortmentDimension ? " disabled" : ""}>
           ${sourceText ? `<small class="parameter-source">来源：${escapeHtml(sourceText)}</small>` : ""}
         </label>
       `;}).join("")}</div>
