@@ -50,7 +50,17 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
 )
-PROXY_HOST_SUFFIXES = ("alicdn.com", "tmall.com", "1688.com", "taobao.com")
+PROXY_HOST_SUFFIXES = (
+    "alicdn.com",
+    "tmall.com",
+    "1688.com",
+    "taobao.com",
+    # Saved Amazon competitor HTML uses this CDN for its five gallery images.
+    # Candidate thumbnails are rendered through /api/source-proxy, so the CDN
+    # must be explicitly allowed here as well as in the HTML extractor.
+    "media-amazon.com",
+    "images-amazon.com",
+)
 
 
 def grsai_base_url() -> str:
@@ -314,7 +324,7 @@ def reference_image_group(image_type: str) -> str:
     return "other"
 
 
-def diversified_reference_urls(assignments: list[dict[str, str]], limit: int = 16) -> list[str]:
+def diversified_reference_urls(assignments: list[dict[str, str]], limit: int = 20) -> list[str]:
     quotas = {
         "hero": 4,
         "detail": 4,
@@ -322,11 +332,11 @@ def diversified_reference_urls(assignments: list[dict[str, str]], limit: int = 1
         "lifestyle": 3,
         "angle": 3,
         "option": 2,
-        "parameter": 2,
+        "parameter": 3,
         "measurement_tool": 0,
         "other": 2,
     }
-    order = ["hero", "detail", "feature", "lifestyle", "angle", "option", "parameter", "other", "measurement_tool"]
+    order = ["parameter", "detail", "feature", "hero", "lifestyle", "angle", "option", "other", "measurement_tool"]
     groups: dict[str, list[dict[str, str]]] = {key: [] for key in order}
     seen: set[str] = set()
     for index, item in enumerate(assignments):
@@ -337,6 +347,23 @@ def diversified_reference_urls(assignments: list[dict[str, str]], limit: int = 1
         group = reference_image_group(item.get("image_type", ""))
         groups.setdefault(group, []).append({**item, "group": group, "order": str(index)})
 
+    def is_alternate_color(item: dict[str, str]) -> bool:
+        value = " ".join((str(item.get("sku_match", "")), str(item.get("reason", "")))).lower()
+        return bool(re.search(
+            r"same[_\s-]*product[_\s-]*alternate[_\s-]*color|alternate[_\s-]*color|"
+            r"color[_\s-]*variant|different[_\s-]*color|同款异色",
+            value,
+        ))
+
+    def priority(item: dict[str, str]) -> tuple[int, int, int, int]:
+        exact = 1 if "exact" in str(item.get("sku_match", "")).lower() else 0
+        high_value = 1 if str(item.get("reference_value", "")).lower() == "high" else 0
+        high_confidence = 1 if str(item.get("confidence", "")).lower() == "high" else 0
+        return exact, high_value, high_confidence, -int(item.get("order", "0"))
+
+    for items in groups.values():
+        items.sort(key=priority, reverse=True)
+
     selected: list[str] = []
     selected_set: set[str] = set()
 
@@ -345,13 +372,31 @@ def diversified_reference_urls(assignments: list[dict[str, str]], limit: int = 1
             selected.append(url)
             selected_set.add(url)
 
+    primary_by_group = {
+        group: [item for item in groups.get(group, []) if not is_alternate_color(item)]
+        for group in order
+    }
     for group in order:
-        for item in groups.get(group, [])[:quotas.get(group, 2)]:
+        for item in primary_by_group[group][:1]:
             add(item["url"])
 
-    for group in ["hero", "detail", "feature", "lifestyle", "angle", "option", "parameter", "other"]:
-        for item in groups.get(group, []):
+    for group in order:
+        for item in primary_by_group[group][1:quotas.get(group, 2)]:
             add(item["url"])
+
+    for group in order:
+        for item in groups.get(group, []):
+            if not is_alternate_color(item) and group != "measurement_tool":
+                add(item["url"])
+
+    alternate_items = [
+        item
+        for group in ["parameter", "detail", "feature", "angle", "option", "other"]
+        for item in groups.get(group, [])
+        if is_alternate_color(item)
+    ]
+    for item in sorted(alternate_items, key=priority, reverse=True)[:2]:
+        add(item["url"])
 
     return selected
 
@@ -920,8 +965,10 @@ Return JSON only:
 
 Hard rules:
 - Product identity and SKU variant must match first. Never map an accessory, dispenser, holder, case, bundle, refill, or other product type to a different product type.
-- If the SKU asks for a color/spec/count, exact visible variant images are highest priority. For a single selected SKU from one supplier listing, keep high-value same-product-family images that show all colors, neutral/silver product structure, product information, details, comparison rows, or feature panels even when the exact SKU color is not isolated.
-- Prefer the exact SKU color when visible, but allow the same product construction in another color as a medium-confidence reference. For example, a green version of the same bag may map to a Pink SKU for structure or feature reference; the reason must state that it is a color variant or same-product-family reference.
+- Treat an explicitly supplied SKU color/spec/count as a hard product-truth constraint even when it is not part of the variation theme. Use sku_match "exact" only when the requested variant is visibly present. Use sku_match "same_product_alternate_color" for a different single-color version of the same construction.
+- Prefer exact-color images. Across one SKU, keep no more than two same-product alternate-color images, and only when each contributes unique structure, detail, feature, option, parameter, or multi-angle evidence missing from exact-color images. Never classify an alternate-color-only image as hero or lifestyle, and never keep several images merely to show the color range.
+- A designed all-color option chart may be high value when it visibly includes the requested color and clearly identifies the same product. Keep at most one such chart. It is not an alternate-color-only image.
+- Product-information posters are high-value references when they explain distinct facts such as magnetic holding/load demonstration, dimensions/specifications, color options, material/construction, or exploded/assembly structure. Keep these information-rich panels ahead of repeated plain product photos, even when the panel also shows multiple colors.
 - Never use color similarity to override a product-identity conflict. A dispenser, holder, accessory, bundle, or different bag construction is not the same product merely because its color matches.
 - Order assignments by usefulness for image generation. Prefer high-value visual references in this mix: clean product overview/hero images, parameter or measurement images, material/detail close-ups, real use/lifestyle scenes, feature demonstration images, and useful multi-angle views.
 - A caliper/ruler photo is measurement evidence, not a good image-generation reference. Mark it as image_type "measurement_tool" and reference_value "low" unless it is the only available proof of a required dimension. Prefer designed parameter charts, product-information posters, detail panels, comparison/option rows, and clear whole-product photos over caliper/ruler photos.
@@ -1001,7 +1048,7 @@ Hard rules:
                 assignment_items_by_sku[sku_id].append(normalized_item)
             assigned_urls.add(image_url)
     mappings = {
-        sku_id: diversified_reference_urls(items, 16)
+        sku_id: diversified_reference_urls(items, 20)
         for sku_id, items in assignment_items_by_sku.items()
     }
     reference_meta: dict[str, list[dict[str, str]]] = {}
@@ -1364,7 +1411,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         if not api_key.startswith("ark-"):
             self._send_json({"mappings": {}, "unmatched": image_urls, "errors": ["ARK_API_KEY unavailable or invalid"]}, 503)
             return
-        cache_key = json.dumps({"schemaVersion": "reference-map-v2", "skus": skus, "imageUrls": image_urls, "model": model}, ensure_ascii=False).casefold()
+        cache_key = json.dumps({"schemaVersion": "reference-map-v4", "skus": skus, "imageUrls": image_urls, "model": model}, ensure_ascii=False).casefold()
         cached = REFERENCE_IMAGE_MAP_CACHE.get(cache_key)
         if cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
             self._send_json(cached[1])

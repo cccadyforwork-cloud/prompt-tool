@@ -143,6 +143,44 @@ let bulkImageGenerationMode = "";
 let generatedSetSaving = false;
 const IMAGE_HISTORY_STORAGE_KEY = "prompt-tool-image-history-v1";
 const WORKSPACE_STORAGE_KEY = "prompt-tool-workspace-v1";
+
+function readTabStorage(key) {
+  try {
+    const tabValue = sessionStorage.getItem(key);
+    if (tabValue !== null) return tabValue;
+
+    // Migrate the previous shared-browser workspace into the first tab opened
+    // after this upgrade. Removing the legacy copy keeps later tabs independent.
+    const legacyValue = localStorage.getItem(key);
+    if (legacyValue !== null) {
+      sessionStorage.setItem(key, legacyValue);
+      localStorage.removeItem(key);
+      return legacyValue;
+    }
+  } catch (error) {
+    console.warn("无法读取当前标签页工作记录", error);
+  }
+  return null;
+}
+
+function writeTabStorage(key, value) {
+  try {
+    sessionStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn("无法保存当前标签页工作记录", error);
+    return false;
+  }
+}
+
+function removeTabStorage(key) {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // The in-memory reset still applies when browser storage is unavailable.
+  }
+}
+
 let persistedImageHistory = loadPersistedImageHistory();
 let availableReferenceImageUrls = [];
 let referenceImagesBySku = {};
@@ -184,7 +222,7 @@ const OCR_FALLBACK_IMAGE_LIMIT = 6;
 const COLLECTOR_MAIN_LATE_LIMIT = 10;
 const COLLECTOR_MAIN_MIDDLE_LIMIT = 10;
 const COLLECTOR_DETAIL_TAIL_LIMIT = 12;
-const MAX_REFERENCE_CANDIDATES = 16;
+const MAX_REFERENCE_CANDIDATES = 20;
 const MAX_REFERENCE_CLASSIFIER_CANDIDATES = 40;
 const MAX_COMPETITOR_REFERENCE_IMAGES = 5;
 const MAX_SELECTED_REFERENCES = 6;
@@ -2919,6 +2957,10 @@ function loadImageMeta(url) {
 
 function sourceProxyUrl(url) {
   const source = String(url || "").trim();
+  // Amazon gallery images are public CDN assets and can render directly in an
+  // <img>. Bypass the supplier proxy so competitor thumbnails still appear if
+  // an already-running backend has not yet reloaded the expanded allowlist.
+  if (/^https?:\/\/[^/]*(?:media-amazon|images-amazon)\.com\/images\/I\//i.test(source)) return source;
   return /^https?:\/\//i.test(source)
     ? `/api/source-proxy?url=${encodeURIComponent(source)}`
     : source;
@@ -3177,6 +3219,68 @@ async function fetchLocalProductAnalysisProxy(facts, imageCandidates, onProgress
   }
 }
 
+function referenceMetaGroup(imageType = "") {
+  const value = String(imageType || "").toLowerCase().replace(/[-\s]+/g, "_");
+  if (/caliper|ruler|measurement_tool/.test(value)) return "measurement_tool";
+  if (/parameter|measurement|dimension|size|spec/.test(value)) return "parameter";
+  if (/detail|close|macro|material|texture|construction|structure|exploded|assembly/.test(value)) return "detail";
+  if (/feature|benefit|demo|function|proof|load|strength|holding/.test(value)) return "feature";
+  if (/life|scene|use|application|environment/.test(value)) return "lifestyle";
+  if (/angle|multi|side|front|back|top/.test(value)) return "angle";
+  if (/comparison|variant|option|color/.test(value)) return "option";
+  if (/hero|overview|product|white|main/.test(value)) return "hero";
+  return "other";
+}
+
+function isAlternateColorReference(item = {}) {
+  return /same[_\s-]*product[_\s-]*alternate[_\s-]*color|alternate[_\s-]*color|color[_\s-]*variant|different[_\s-]*color|同款异色/i.test(
+    [item.sku_match, item.reason].filter(Boolean).join(" "),
+  );
+}
+
+function referenceMetaPriority(item = {}) {
+  const exact = /exact/i.test(String(item.sku_match || "")) ? 100 : 0;
+  const value = /high/i.test(String(item.reference_value || "")) ? 20 : 10;
+  const confidence = /high/i.test(String(item.confidence || "")) ? 5 : 0;
+  const information = /parameter|spec|dimension|feature|detail|structure|exploded|option|comparison|承重|参数|结构|拆解/i.test(
+    [item.image_type, item.reason].filter(Boolean).join(" "),
+  ) ? 3 : 0;
+  return exact + value + confidence + information;
+}
+
+function diversifiedReferenceUrlsFromMeta(metaItems, fallbackUrls, limit = MAX_REFERENCE_CANDIDATES) {
+  const quotas = { hero: 4, detail: 4, feature: 3, lifestyle: 3, angle: 3, option: 2, parameter: 3, other: 2 };
+  const order = ["parameter", "detail", "feature", "hero", "lifestyle", "angle", "option", "other"];
+  const seenMetaUrls = new Set();
+  const indexed = (Array.isArray(metaItems) ? metaItems : [])
+    .map((item, index) => ({ ...item, url: item?.url || "", group: referenceMetaGroup(item?.image_type), index }))
+    .filter((item) => item.url && !seenMetaUrls.has(item.url) && seenMetaUrls.add(item.url))
+    .sort((a, b) => referenceMetaPriority(b) - referenceMetaPriority(a) || a.index - b.index);
+  const selected = [];
+  const selectedSet = new Set();
+  const add = (item) => {
+    if (item?.url && !selectedSet.has(item.url) && selected.length < limit) {
+      selected.push(item.url);
+      selectedSet.add(item.url);
+    }
+  };
+  const primary = indexed.filter((item) => item.group !== "measurement_tool" && !isAlternateColorReference(item));
+  order.forEach((group) => primary.filter((item) => item.group === group).slice(0, 1).forEach(add));
+  order.forEach((group) => primary.filter((item) => item.group === group).slice(1, quotas[group] || 2).forEach(add));
+  primary.forEach(add);
+
+  indexed
+    .filter((item) => isAlternateColorReference(item) && !["hero", "lifestyle", "measurement_tool"].includes(item.group))
+    .slice(0, 2)
+    .forEach(add);
+
+  const knownMetaUrls = new Set(indexed.map((item) => item.url));
+  (Array.isArray(fallbackUrls) ? fallbackUrls : [])
+    .filter((url) => url && !knownMetaUrls.has(url))
+    .forEach((url) => add({ url }));
+  return selected;
+}
+
 async function fetchSkuReferenceImageMapping(products, imageUrls, onProgress, timeoutMs = 300000) {
   const urls = Array.from(new Set((imageUrls || []).filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CLASSIFIER_CANDIDATES);
   if (!products.length || !urls.length) return { mappings: {}, unmatched: urls, errors: ["No SKU or image candidates"] };
@@ -3224,7 +3328,12 @@ async function fetchSkuReferenceImageMapping(products, imageUrls, onProgress, ti
       if (Array.isArray(result?.unmatched)) unmatched.push(...result.unmatched);
     }
     Object.keys(mappings).forEach((skuId) => {
-      mappings[skuId] = Array.from(new Set(mappings[skuId])).slice(0, MAX_REFERENCE_CANDIDATES);
+      const fallbackUrls = Array.from(new Set(mappings[skuId]));
+      mappings[skuId] = diversifiedReferenceUrlsFromMeta(
+        referenceMeta[skuId],
+        fallbackUrls,
+        MAX_REFERENCE_CANDIDATES,
+      );
       const allowedUrls = new Set(mappings[skuId]);
       const seenMetaUrls = new Set();
       referenceMeta[skuId] = referenceMeta[skuId].filter((item) => {
@@ -6122,11 +6231,12 @@ function amazonVariantAttributes(row, columns, theme) {
     .split("/")
     .map((item) => item.trim().toUpperCase())
     .filter(Boolean);
-  const attrs = {};
-  if (!themeParts.length || themeParts.includes("COLOR")) {
-    attrs.color = amazonRowValue(row, columns, "Color", "color[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
-    attrs.colorMap = amazonRowValue(row, columns, "Color Map", "color[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.standardized_values#1");
-  }
+  const attrs = {
+    // Color is a product-truth attribute even when the variation theme is
+    // NUMBER_OF_ITEMS, SIZE, or another non-color dimension.
+    color: amazonRowValue(row, columns, "Color", "color[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value"),
+    colorMap: amazonRowValue(row, columns, "Color Map", "color[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.standardized_values#1"),
+  };
   if (!themeParts.length || themeParts.includes("SIZE")) {
     attrs.size = amazonRowValue(
       row,
@@ -7129,7 +7239,7 @@ async function extractSources() {
       const rejectedCount = Array.isArray(mappingResult?.unmatched) ? mappingResult.unmatched.length : 0;
       referenceMappingStatus = mappingResult?.errors?.length
         ? `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}；竞品图前置 ${competitorReferenceImageUrls.length} 张，1688 智能候选筛选失败，已保留 ${mappedUrls.length} 张均衡抽样图供人工选择：${mappingResult.errors.slice(0, 1).join("；")}`
-        : `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}：竞品图前置 ${competitorReferenceImageUrls.length} 张，1688 链接候选保留 ${mappedUrls.length} 张同款/同类参考图，排除 ${rejectedCount} 张明显无关图片；同款异色允许保留。`;
+        : `1688资料已绑定到 ${explicitSupplierSku.label || explicitSupplierSku.model || explicitSupplierSku.id}：竞品图前置 ${competitorReferenceImageUrls.length} 张，1688 链接候选保留 ${mappedUrls.length} 张按用途去重的参考图，排除 ${rejectedCount} 张明显无关图片；同款异色最多补充 2 张。`;
     } else if (routeId === "vision" || routeId === "web") {
       const mappingResult = await fetchSkuReferenceImageMapping(extractedProducts, supplierReferenceImageUrls, (message) => {
         byId("extractStatus").textContent = message;
@@ -7216,7 +7326,6 @@ function negativePrompt(facts = null) {
   return compactPromptItems([
     "No wrong product, invented specs, unsupported claims, extra logos, Chinese/source text, dense copy, long labels, bullets, text stacking, blur",
     facts?.bundleComponents ? "No missing bundle component, fused hybrid product, swapped component parameters, or treating bundle components as optional variants" : "",
-    "No Asian reference ethnicity; people only European/American if shown",
     "Keep authentic non-Chinese product markings only",
   ], "", 5);
 }
@@ -7354,9 +7463,17 @@ function promptFacts(sku, data) {
       .filter((item) => item.claim && item.evidence && /^https?:\/\//i.test(item.imageUrl))
     : [];
   const titleSpec = stripRepeatedValue(selectedSpec, pack) || productName || selectedSpec;
-  const skuOptionSource = sku.sizeCode && !promptItemsOverlap(productName, sku.sizeCode)
+  const rawSkuOptionSource = sku.sizeCode && !promptItemsOverlap(productName, sku.sizeCode)
     ? sku.sizeCode
     : titleSpec || selectedSpec || sku.sizeCode;
+  const extractedSkuColor = promptValue(sku.color || sku.colorEnglish || sku.displayColor, "");
+  const skuOptionSource = !color && extractedSkuColor
+    ? cleanTokenValue(rawSkuOptionSource)
+      .replace(new RegExp(`\\b${extractedSkuColor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"), "")
+      .replace(/\s*[/|,;]\s*(?=[/|,;]|$)|^\s*[/|,;]\s*/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim()
+    : rawSkuOptionSource;
   const skuOption = compactSkuOptionText(skuOptionSource, {
     productName,
     pack,
@@ -7985,7 +8102,7 @@ function productDetailText(facts, extraItems = [], limit = 8) {
     facts.bundleComponents && `Included components: ${facts.bundleComponents}`,
     facts.packComposition && `Verified pack composition: ${facts.packComposition}`,
     color && !extraIncludesColor && `Color: ${color}`,
-    referenceColorLockText(),
+    referenceColorLockText(facts),
     ...extraItems,
     specificPromptValue(facts.material, "") && !extraIncludesMaterial && `Material: ${facts.material}`,
     facts.cupRange && `Size / range: ${facts.cupRange}`,
@@ -7997,8 +8114,10 @@ function productDetailText(facts, extraItems = [], limit = 8) {
   ], "", limit);
 }
 
-function referenceColorLockText() {
-  return "Match source color exactly; no hue/brightness shift.";
+function referenceColorLockText(facts) {
+  return specificPromptValue(facts?.color, "")
+    ? "Match source color exactly; no hue/brightness shift."
+    : "";
 }
 
 function productIdentityLockText(facts) {
@@ -8042,7 +8161,7 @@ function sceneContextProductDetailText(facts, extraItems = [], limit = 5) {
   return compactSpecificPromptItems([
     `Product: ${facts.productName}`,
     option && `Current option: ${option}`,
-    referenceColorLockText(),
+    referenceColorLockText(facts),
     "Product accuracy: product must stay recognizable and match the source product, but the complete use environment is the main visual priority.",
     ...extraItems,
   ], "", limit);
@@ -8058,7 +8177,7 @@ function overallStyleText(facts, typeId, extra = "", options = {}) {
 
 function isSkuQuantityExplanationImage(templateId, typeId) {
   const roles = {
-    scene: new Set(["4", "7"]),
+    scene: new Set(["4"]),
     spec: new Set(["4", "7", "8"]),
     feature: new Set(["4", "7", "8"]),
     plantTie: new Set(["5"]),
@@ -8071,26 +8190,35 @@ function skuQuantityExplanationRule(facts, templateId, typeId) {
   const count = Number(facts?.skuUnitQuantity || 0);
   if (count < 2 || !isSkuQuantityExplanationImage(templateId, typeId)) return "";
   const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count}-Pack`;
-  return `HIGHEST-PRIORITY SKU FACT FROM THE CURRENT AMAZON TITLE: ${label}, exactly ${count} individual complete product units in this selected SKU. This title-derived quantity overrides supplier-page count, generic template count, layout defaults, and single-unit presentation defaults. Mandatory quantity proof: add one clear English on-image label “${label}” or “${count} Pieces”, and visibly account for exactly ${count} separate complete product units in the main arrangement or a clearly visible pack-contents inset. A detail close-up may focus on one unit only when the same image also shows all ${count} included complete units. Do not show, label, or imply any other quantity.`;
+  return `SUPPORTING SKU QUANTITY FACT FROM THE CURRENT AMAZON TITLE: ${label}, exactly ${count} individual complete product units in this selected SKU. Keep the product's form, material, construction, dimensions, function, and use information as the main visual hierarchy. Show the quantity only once as a compact secondary pack-contents area occupying no more than about 20-25% of the frame, with one clear English label “${label}” or “${count} Pieces”. Do not turn the image into a repeated-unit wall, dominant full-pack grid, or large quantity poster. Do not show, label, or imply any other quantity.`;
+}
+
+function skuQuantityMainImageRule(facts, typeId) {
+  const count = Number(facts?.skuUnitQuantity || 0);
+  if (count < 2 || !isMainImageType(typeId)) return "";
+  const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count}-Pack`;
+  return `MULTI-PACK SUPPORTING INFORMATION RULE: this SKU is ${label}. Keep one or a few representative units large and clearly inspectable so product shape, material, construction, finish, and use remain the primary visual information. The complete included quantity may appear only as a compact secondary grouped arrangement occupying no more than about 20-25% of the frame; it must never become the largest subject, a repeated-unit wall, or a dominant full-pack grid. When the complete set is visible, keep exactly ${count} separate units without fusion, extras, or an incorrect count. For a human-use main image, the action and representative product units remain primary while the remaining included units stay compact and secondary. Because this is a main image, do not add a “${label}” badge, number, caption, or other overlay text.`;
 }
 
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
   const skuQuantityRule = skuQuantityExplanationRule(facts, templateId, typeId);
+  const skuQuantityMainRule = skuQuantityMainImageRule(facts, typeId);
   const sceneAuthorityRule = templateId === "scene" ? useSceneAuthorityRule(facts) : "";
   const referenceControlledSellingPoint = /Selling-point reference priority/i.test([details, style].filter(Boolean).join(" "));
   const referenceMode = referenceControlledSellingPoint ? "selling-point" : "";
   const priorityText = compactPromptItems([
     isMainImageType(typeId) ? mainImageNoAnnotationRule() : "",
     sceneAuthorityRule,
+    skuQuantityMainRule,
     skuQuantityRule,
     bundleFullSetDisplayRule(facts),
     standaloneAccessoryExclusionRule(facts),
     refillBagPackCompositionRule(facts),
     productIdentityBasicRule(facts),
     basic || basicImageRequirements(templateId, typeId),
-  ], "", 8);
+  ], "", 10);
   const visualText = promptVisualSubsections(
-    [details || productDetailText(facts), skuQuantityRule].filter(Boolean).join(" / "),
+    [details || productDetailText(facts), skuQuantityMainRule, skuQuantityRule].filter(Boolean).join(" / "),
     style || overallStyleText(facts, typeId)
   );
   const textRules = compactPromptItems([
@@ -8118,8 +8246,9 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
       standaloneAccessoryExclusionRule(facts) && "No poop-bag dispenser, holder, container, carrying case, lid, clip, loop, leash attachment, or bundled accessory; do not turn refill bags into a dispenser set.",
       facts.packComposition && "No depiction, label, or implication that the total bag count is a count of refill rolls; no 60-roll stack, grid, wall, or quantity display. Show only the verified refill-roll composition when a count is visible.",
       referenceControlledSellingPoint ? sellingPointEvidenceAvoidRule() : "",
-      skuQuantityRule ? `No single-unit-only presentation, wrong unit count, missing quantity label, hidden included unit, fused products, partial extra product, or quantity other than ${facts.skuUnitQuantity}.` : "",
-    ], "", 8)));
+      skuQuantityMainRule ? `No dominant full-pack lineup, repeated-unit wall, large quantity grid, or pack arrangement occupying more than about 20-25% of the frame; no wrong count, fused products, or extra units in the compact secondary pack view.` : "",
+      skuQuantityRule ? `No dominant full-pack lineup, repeated-unit wall, or large quantity poster; keep the labeled pack-contents proof secondary and within about 20-25% of the frame; no wrong count, fused products, or extra units.` : "",
+    ], "", 10)));
   }
   return sections.join("\n\n");
 }
@@ -8263,8 +8392,6 @@ function translatePromptSegment(segment) {
     [/\bKeep authentic non-Chinese product markings only\b/gi, "只保留真实的非中文产品标识"],
     [/\bKeep authentic non-Chinese product\/packaging markings only\b/gi, "只保留真实的非中文产品/包装标识"],
     [/\bKeep authentic product markings\b/gi, "保留真实产品标识"],
-    [/\bNo Asian reference ethnicity\b/gi, "不要亚洲参考人种特征"],
-    [/\bpeople only European\/American if shown\b/gi, "如展示人物，仅使用欧美人物"],
     [/\bReference blueprint slot\b/g, "参考蓝图图位"],
     [/\bReference-derived composition\b/g, "参考提取构图"],
     [/\bReference-derived proof method\b/g, "参考提取证明方式"],
@@ -9127,6 +9254,15 @@ function sellingPointSceneDescription(points, facts = {}, fallback = "verified p
   return sellingPointReferenceSceneRule(points, facts);
 }
 
+function sellingPointProofDominanceRule(points = [], facts = {}) {
+  return [
+    "SELLING-POINT COMPOSITION PRIORITY: the main visual must be the source-supported action, use result, comparison, material/structure close-up, or other visible evidence that proves the current selling point. Give this proof area about 65-75% of the frame and make it the first thing noticed.",
+    "Use the matched current-product reference image's demonstrated action and composition as the primary visual blueprint when it proves the claim. Product-only renders, repeated units, decorative cutouts, icons, and labels are supporting elements only.",
+    "Show only the representative product unit or the few units naturally required to prove the current selling point. Do not include pack-count text, quantity badges, pack-contents diagrams, exact-count arrays, or full-pack presentation in a selling-point image.",
+    "Do not use a large product lineup, repeated-unit wall, centered product array, or quantity-led composition. Do not reduce the actual proof to a tiny corner inset.",
+  ].join(" ");
+}
+
 function sellingPointImageTemplateRule(points, facts = {}, imageName = "this selling-point image") {
   if (!limitedSellingPoints(points, 2).length) {
     return [
@@ -9140,6 +9276,7 @@ function sellingPointImageTemplateRule(points, facts = {}, imageName = "this sel
   return [
     `${imageName}: ${sellingPointHeadlineRule(points)} On-image text may only be these headline groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.`,
     sceneDescription,
+    sellingPointProofDominanceRule(points, facts),
     `Title coverage lock: show one short title group for each verified selling point in this group (${limitedSellingPoints(points, 2).length} total). Visual demonstration is required only when a matching reference image provides it; title plus accurate product display is valid when it does not.`,
     "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, or repeated benefit.",
   ].join(" ");
@@ -9798,15 +9935,10 @@ function parameterIllustrationRule() {
 }
 
 function summaryPosterStyleRule(facts = {}) {
-  const count = Number(facts.skuUnitQuantity || 0);
-  const quantityLabel = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || (count >= 2 ? `${count}-Pack` : "");
-  const packInsetRule = count >= 2
-    ? `Mandatory SKU pack proof: the lower-left product cutout/pack-contents area must show exactly ${count} separate complete product units together and one clear “${quantityLabel}” label; a single-unit-only summary is forbidden.`
-    : "Add an optional circular or softly rounded product cutout inset overlapping the lower-left area of the hero photo, showing one current selling unit clearly on a clean light background.";
   return [
     `${productFirstOptionalHumanRule()} Polished feature summary poster in a premium Amazon lifestyle style.`,
     "Use the approved layout: left side is one large warm lifestyle hero photo occupying about 60-65% width; right side is a vertical column occupying about 35-40% width with 3-4 rounded rectangular product-detail or use-detail inset windows.",
-    packInsetRule,
+    "An optional circular or softly rounded product cutout may overlap the lower-left area of the hero photo, showing one representative current product unit clearly on a clean light background. Keep it compact and do not use it for pack-count, quantity, or full-pack presentation.",
     "Top headline may be a large elegant 2-4 word seasonal/product mood phrase; feature labels sit on small warm rounded tabs inside or near each right-side inset, 1-3 English words max.",
     "Each right inset must show a real visual proof subject from the current product: use scene, decoration, material/texture, lightweight/comfort, or style match; keep product clear and source-accurate.",
     "Summary inset reference rule: when a matching current-product reference image exists for a feature, use that reference image's demonstrated scene/action logic. When no matching reference exists, use an accurate product display/detail view plus the short feature title only; do not invent a demonstration scene, test, action, mechanism, or result.",
@@ -10007,7 +10139,7 @@ function featureModulePrompt(typeId, facts) {
       basic: basicImageRequirements("spec", "5"),
       details: compactSpecificPromptItems([
         `Product: ${facts.productName}`,
-        referenceColorLockText(),
+        referenceColorLockText(facts),
         `Current selected option: ${facts.productName || optionText || facts.selectedSpec}`,
         facts.bundleComponents ? `Included bundle components: ${facts.bundleComponents}` : `Verified options: ${compactVariantText(facts)}`,
         facts.pack && `Count / set label: ${facts.pack}`,
@@ -10419,7 +10551,7 @@ function normalizeGenerationHistoryRecord(record) {
 
 function loadPersistedImageHistory() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(IMAGE_HISTORY_STORAGE_KEY) || "{}");
+    const parsed = JSON.parse(readTabStorage(IMAGE_HISTORY_STORAGE_KEY) || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
@@ -10428,11 +10560,7 @@ function loadPersistedImageHistory() {
 
 function persistImageHistory(cardKey, history) {
   persistedImageHistory[cardKey] = [...history];
-  try {
-    localStorage.setItem(IMAGE_HISTORY_STORAGE_KEY, JSON.stringify(persistedImageHistory));
-  } catch (error) {
-    console.warn("无法保存生图历史记录", error);
-  }
+  writeTabStorage(IMAGE_HISTORY_STORAGE_KEY, JSON.stringify(persistedImageHistory));
 }
 
 function recordGeneratedImages(cardKey, images) {
@@ -11522,6 +11650,8 @@ function renderAll() {
   renderProductParameters();
   renderSourceSummary();
   renderFacts();
+  const productLabel = hasExtractedProducts() ? skuDisplayLabel(selectedSku()) : "新产品";
+  document.title = `${productLabel} · 提示词工具`;
   fieldSnapshot = currentFieldSignature();
   persistWorkspaceSnapshot();
 }
@@ -11545,16 +11675,12 @@ function persistWorkspaceSnapshot() {
     templateId: byId("templateSelect")?.value || DEFAULT_TEMPLATE_ID,
     activeWorkflowPage,
   };
-  try {
-    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(snapshot));
-  } catch (error) {
-    console.warn("无法保存当前工作台", error);
-  }
+  writeTabStorage(WORKSPACE_STORAGE_KEY, JSON.stringify(snapshot));
 }
 
 function restoreWorkspaceSnapshot() {
   try {
-    const snapshot = JSON.parse(localStorage.getItem(WORKSPACE_STORAGE_KEY) || "null");
+    const snapshot = JSON.parse(readTabStorage(WORKSPACE_STORAGE_KEY) || "null");
     if (!snapshot || !Array.isArray(snapshot.extractedProducts) || !snapshot.extractedProducts.length) return null;
     extractedProducts = snapshot.extractedProducts;
     fieldOverridesBySku = snapshot.fieldOverridesBySku && typeof snapshot.fieldOverridesBySku === "object" ? snapshot.fieldOverridesBySku : {};
@@ -11591,11 +11717,7 @@ function restoreWorkspaceSnapshot() {
 }
 
 function clearPersistedWorkspace() {
-  try {
-    localStorage.removeItem(WORKSPACE_STORAGE_KEY);
-  } catch {
-    // Ignore unavailable browser storage; the in-memory reset still applies.
-  }
+  removeTabStorage(WORKSPACE_STORAGE_KEY);
 }
 
 function allPromptsForSku() {
