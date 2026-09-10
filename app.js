@@ -373,12 +373,15 @@ function dimensionFieldsFromDimensionList(dimensionList, context = "") {
     }
     return dimensionValueByLabels(source, legacyLabels);
   };
-  return {
+  const fields = {
     topWidth: valueFor("topWidth", ["SKU Dimension 1", "Base Diameter", "Diameter", "Top Width", "Length", "Folded Size", "Expanded Width"]),
     sideLength: valueFor("sideLength", ["SKU Dimension 2", "Front Diameter", "Knob Diameter", "Side Length", "Width", "Open Diameter", "Expanded Length"]),
-    bottomWidth: valueFor("bottomWidth", ["Projection Depth", "Depth", "Overall Projection", "Bottom Width", "Thickness", "Height", "Open Height"]),
+    bottomWidth: valueFor("bottomWidth", ["SKU Dimension 3", "Projection Depth", "Depth", "Overall Projection", "Bottom Width", "Thickness", "Height", "Open Height"]),
     weight: valueFor("weight", ["Weight", "Weight / Capacity", "Capacity", "Volume", "Quantity"]),
-  }
+  };
+  // This object is later spread over source-specific dimensions. Missing
+  // semantic values must not erase an already verified source field.
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => cleanFieldDisplayValue(value)));
 }
 
 function validSizeRangeValue(value) {
@@ -6229,14 +6232,18 @@ function amazonMeasurementText(row, columns, valueCandidates, unitCandidates) {
 }
 
 // The child SKU title is the product-specific Amazon record. When it gives an
-// explicit size (for example "13 by 8.66 in"), that current-SKU value wins
-// over generic spreadsheet Item Length/Width cells, which can be parcel
-// defaults copied across child rows.
+// explicit 2D or 3D size (for example "13 by 8.66 in" or
+// "5.9 by 3.93 by 2.28 inches"), that current-SKU value wins over generic
+// spreadsheet Item Length/Width cells, which can be parcel defaults copied
+// across child rows.
 function amazonTitleDimensionList(text = "") {
   const source = String(text || "");
-  const match = source.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:by|x|×)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:in|inch|inches)\b/i);
+  const match = source.match(/\b([0-9]+(?:\.[0-9]+)?)\s*(?:by|x|×)\s*([0-9]+(?:\.[0-9]+)?)(?:\s*(?:by|x|×)\s*([0-9]+(?:\.[0-9]+)?))?\s*(?:in|inch|inches)\b/i);
   if (!match) return "";
-  return `[VERIFIED_DIMENSIONS: SKU Dimension 1: ${match[1]} in; SKU Dimension 2: ${match[2]} in]`;
+  const dimensions = [match[1], match[2], match[3]]
+    .filter(Boolean)
+    .map((value, index) => `SKU Dimension ${index + 1}: ${value} in`);
+  return `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]`;
 }
 
 function amazonListingDimensionListText(row, columns, context = "", title = "") {
