@@ -7727,11 +7727,11 @@ function promptIdentityText(facts) {
 }
 
 function mainImageRule() {
-  return "HIGHEST-PRIORITY MAIN-IMAGE TEXT BAN: create a clean photographic image only. Add absolutely no title, words, letters, numbers, captions, labels, badges, icons, arrows, guide lines, rulers, dimensions, measurements, units, specification panels, or infographic elements anywhere in the image. Do not copy text or parameter graphics from reference images. Preserve only markings physically printed on the real product when they are inseparable from the source-accurate product itself. Product occupies about 85% of the frame.";
+  return "HIGHEST-PRIORITY MAIN-IMAGE TEXT AND LAYOUT BAN: create one clean, continuous, full-frame photographic scene only. Add absolutely no title, words, letters, numbers, captions, labels, badges, icons, arrows, guide lines, rulers, dimensions, measurements, units, specification panels, or infographic elements anywhere in the image. No circle, oval, rounded-rectangle, square, white ring, border, mask, magnifier, cutout card, inset window, picture-in-picture, split panel, collage, isolated backdrop, or separately framed secondary product image. Do not copy text, parameter graphics, inset layouts, or collage structures from reference images. Preserve only markings physically printed on the real product when they are inseparable from the source-accurate product itself. Product occupies about 85% of the frame.";
 }
 
 function mainImageNoAnnotationRule() {
-  return "MAIN IMAGE MUST CONTAIN ZERO ADDED TEXT AND ZERO PARAMETER ANNOTATIONS: no title, words, letters, numbers, dimensions, units, measurement arrows, ruler lines, callouts, labels, badges, icons, tables, or specification graphics. Treat any text, dimensions, arrows, or parameter layout visible in an attached reference as forbidden content, not as a layout reference.";
+  return "MAIN IMAGE MUST CONTAIN ZERO ADDED TEXT, ZERO PARAMETER ANNOTATIONS, AND ZERO SEPARATE SUB-IMAGES: no title, words, letters, numbers, dimensions, units, measurement arrows, ruler lines, callouts, labels, badges, icons, tables, or specification graphics. Use one continuous edge-to-edge photographic scene. No circular or geometric inset, white outline or ring, border, magnifier, picture-in-picture, cutout card, split panel, collage, independent mini-background, or separately framed secondary product view. Treat any text, dimensions, arrows, parameter layout, inset, or collage visible in an attached reference as forbidden content, not as a layout reference.";
 }
 
 function isProductInformationImage(typeId) {
@@ -7740,6 +7740,10 @@ function isProductInformationImage(typeId) {
 
 function sceneMainProductScaleRule() {
   return "Scene main image scale: the selected product itself must occupy at least 30% of the image area; crop close enough that the product is easy to inspect; scene, props, model, hands, and environment stay secondary.";
+}
+
+function sceneMainImageIntegratedProductRule() {
+  return "Integrated supporting product rule: an additional appearance of the same current product is allowed only when placed directly and naturally into the same continuous scene as a real physical object, such as resting on the model's clothing, gear, or a scene surface. It must share the main scene's lighting direction, perspective, depth of field, contact shadow, color grading, and edge treatment. Keep it smaller and secondary to the actively used hero product. Do not put it inside any circle, shape, border, white ring, card, inset, magnifier, separate background, picture-in-picture, split panel, collage, or independent second image.";
 }
 
 function multiSceneProductScaleRule() {
@@ -10008,8 +10012,9 @@ function sceneHeroBasicRequirements(facts, heroVariant = "product") {
     "preserve authentic non-Chinese product/packaging markings only",
     variantRule,
     sceneMainProductScaleRule(),
+    sceneMainImageIntegratedProductRule(),
     `verified source scene/background: ${useSceneText(facts, neutralProductSceneFallback(), 2)}`,
-  ], "", 8);
+  ], "", 9);
 }
 function sceneHeroProductDetails(facts, mainScene, heroVariant = "product") {
   if (!mainScene) {
@@ -10030,12 +10035,14 @@ function sceneHeroStyleText(facts, mainScene, heroVariant = "product") {
   const productFirstRule = [
     `Main template A: product-first hero in ${mainScene}.`,
     sceneMainProductScaleRule(),
+    sceneMainImageIntegratedProductRule(),
     "Product is the largest visual subject and the first thing noticed; scene, props, natural light, foreground/background, and negative space support the product.",
     "Show product clearly with premium lifestyle atmosphere; avoid turning it into a plain product-only close-up or isolated studio shot.",
   ].join(" ");
   const humanUseRule = [
     `Main template B: human-use hero in ${mainScene}.`,
     sceneMainProductScaleRule(),
+    sceneMainImageIntegratedProductRule(),
     "A natural person may use, wear, hold, or interact with the product, but the product remains the hero subject.",
     "Use close or medium-close framing so the product is clearly inspectable; human posture, scene context, props, light, and environment explain use without overpowering the product.",
   ].join(" ");
