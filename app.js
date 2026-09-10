@@ -11230,32 +11230,38 @@ async function generateAllImagesForCurrentOutput(referenceMode = "auto") {
   }
 }
 
+function cleanChineseProductFilenameCandidate(value) {
+  const decoded = decodeHtmlEntities(String(value || ""))
+    .replace(/\.(?:html?|xlsx?|xlsm|csv)$/i, "")
+    .replace(/^\s*(?:PRODUCT_TITLE|Product Name|产品名称|商品名称)\s*[:：]\s*/i, "")
+    .replace(/\s*[-–—|｜]\s*(?:阿里巴巴|1688|Amazon(?:\.com)?).*$/i, "")
+    .replace(/\b(?:Amazon|Alibaba|HTML|V\d+)\b/gi, " ")
+    .replace(/[A-Za-z]+/g, " ")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+    .replace(/[^\u3400-\u9fff0-9（）()·\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!/[\u3400-\u9fff]/.test(decoded)) return "";
+  return decoded
+    .replace(/(?:^|\s)\d+\s*(?:件|个|只|套|支|片|包|盒)(?=\s|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 48);
+}
+
 function chineseProductFilenameBase() {
   const sku = selectedSku() || {};
-  const data = currentPromptData(sku);
-  const candidates = [
+  const explicitChineseCandidates = [
     sku.chineseProductName,
     sku.originalProductName,
     sku.sourceProductName,
-    sku.productName,
     sku.sourceName,
-    sku.label,
-    sku.displayLabel,
-    data.productName,
-  ].map((value) => cleanFieldDisplayValue(value)).filter(Boolean);
-  let name = candidates.find((value) => /[\u3400-\u9fff]/.test(value)) || "";
-  if (!name) {
-    const identity = candidates.join(" ").toLowerCase();
-    const localized = [
-      [/dog\s*(?:poop|waste)\s*bags?|pet\s*waste\s*bags?/, "宠物垃圾袋"],
-      [/coffee\s*filters?|filter\s*paper/, "咖啡滤纸"],
-      [/\b(?:metal\s+)?bookmarks?\b/, "金属书签"],
-      [/plant\s*(?:ties?|straps?)/, "植物绑带"],
-      [/resistance\s*bands?|exercise\s*bands?/, "弹力带"],
-      [/(?:sun\s*catcher|suncatcher|crystal\s*(?:pendant|ornament))/, "水晶太阳捕手挂饰"],
-    ].find(([pattern]) => pattern.test(identity));
-    name = localized?.[1] || candidates[0] || "产品套图";
-  }
+  ].map(cleanChineseProductFilenameCandidate).filter(Boolean);
+  const sourceChineseCandidates = [
+    ...(Array.isArray(supplierSourceFileNames) ? supplierSourceFileNames : []),
+    extractFirstMatch(sourcePayload?.supplier || "", [/PRODUCT_TITLE:\s*([^\n]+)/i]),
+  ].map(cleanChineseProductFilenameCandidate).filter(Boolean);
+  const name = explicitChineseCandidates[0] || sourceChineseCandidates[0] || "产品套图";
   return name
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
     .replace(/\s+/g, " ")
@@ -11384,19 +11390,19 @@ async function saveGeneratedSet() {
       if (!response.ok) throw new Error(`第 ${index + 1} 张图片读取失败（HTTP ${response.status}）`);
       const blob = await response.blob();
       const extension = imageExtension(blob.type, item.url);
-      entries.push({ name: `${baseName}-${String(index + 1).padStart(2, "0")}.${extension}`, bytes: new Uint8Array(await blob.arrayBuffer()) });
+      entries.push({ name: `${baseName}${index + 1}.${extension}`, bytes: new Uint8Array(await blob.arrayBuffer()) });
       setSaveGeneratedSetUi(`正在读取 ${index + 1}/${items.length} 张图片…`);
     }
     const zip = buildStoredZip(entries);
     const objectUrl = URL.createObjectURL(zip);
     const anchor = document.createElement("a");
     anchor.href = objectUrl;
-    anchor.download = `${baseName}-选中图组.zip`;
+    anchor.download = `${baseName}.zip`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
-    setSaveGeneratedSetUi(`已保存 ${entries.length} 张选中图片；文件名为“${baseName}-01”起顺序编号。`);
+    setSaveGeneratedSetUi(`已保存 ${entries.length} 张选中图片；压缩包为“${baseName}.zip”，图片从“${baseName}1”起连续编号。`);
   } catch (error) {
     setSaveGeneratedSetUi(error?.message || "选中图片图组保存失败");
   } finally {
@@ -11426,7 +11432,7 @@ async function downloadSelectedGenerationHistory(cardKey) {
         const blob = await response.blob();
         const extension = imageExtension(blob.type, url);
         entries.push({
-          name: `${baseName}-第${String(round).padStart(2, "0")}轮-${String(imageIndex + 1).padStart(2, "0")}.${extension}`,
+          name: `${baseName}${entries.length + 1}.${extension}`,
           bytes: new Uint8Array(await blob.arrayBuffer()),
         });
       }
@@ -11434,7 +11440,7 @@ async function downloadSelectedGenerationHistory(cardKey) {
     const objectUrl = URL.createObjectURL(buildStoredZip(entries));
     const anchor = document.createElement("a");
     anchor.href = objectUrl;
-    anchor.download = `${baseName}-历史记录.zip`;
+    anchor.download = `${baseName}.zip`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
