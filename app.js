@@ -10789,15 +10789,25 @@ function referenceImageCandidatesForCard(type, facts, sku) {
   };
 }
 
+function prioritizeSelectedReferences(state) {
+  const selected = new Set(state.selectedReferences);
+  const available = new Set(state.availableReferences);
+  state.availableReferences = [
+    ...state.selectedReferences.filter((reference) => available.has(reference)),
+    ...state.availableReferences.filter((reference) => !selected.has(reference)),
+  ];
+}
+
 function renderReferenceImages(state) {
   if (!state.availableReferences.length) {
     return `<p class="reference-empty">暂无匹配参考图，可在下方拖入本地图片。</p>`;
   }
+  prioritizeSelectedReferences(state);
   const canExpand = state.availableReferences.length > 8;
   return `
     <div class="reference-picker-summary">
       <span>候选图 ${state.availableReferences.length} 张</span>
-      ${canExpand ? `<button type="button" class="reference-expand-toggle">${state.referencesExpanded ? "收起候选图" : `展开全部 ${state.availableReferences.length} 张`}</button>` : ""}
+      ${canExpand ? `<button type="button" class="reference-expand-toggle">${state.referencesExpanded ? "收起候选区" : "扩大候选区"}</button>` : ""}
     </div>
     <div class="reference-image-grid ${state.referencesExpanded ? "is-expanded" : ""}">${state.availableReferences.map((reference, index) => {
     const checked = state.selectedReferences.includes(reference);
@@ -11483,6 +11493,7 @@ function bindImageGeneratorSection(section) {
         lastReferenceSelectionCardKey = cardKey;
         state.message = state.selectedReferences.length ? `已选择 ${state.selectedReferences.length} 张参考图。` : "未选择参考图。";
       }
+      prioritizeSelectedReferences(state);
       updateImageGenerator(cardKey);
     });
   });
