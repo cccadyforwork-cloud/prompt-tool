@@ -7,6 +7,7 @@ const sourceNotes = {
 
 let bundleStateBySku = {};
 let supplierSourceFileNames = [];
+let amazonTemplateSourceFileName = "";
 
 const productGroups = {};
 
@@ -305,10 +306,17 @@ function populateSupplierSkuBinding(products = []) {
   const select = byId("supplierSkuBinding");
   if (!select) return;
   const previous = select.value;
-  select.innerHTML = `<option value="">自动识别（未指定 SKU）</option>${products.map((sku) => (
+  select.innerHTML = `<option value="">请选择1688资料归属</option>${products.map((sku) => (
     `<option value="${escapeHtml(sku.id)}">${escapeHtml(sku.label || sku.displayLabel || sku.model || sku.id)}</option>`
   )).join("")}`;
-  if (products.some((sku) => sku.id === previous)) select.value = previous;
+  if (products.some((sku) => sku.id === previous)) {
+    select.value = previous;
+  } else if (products.length === 1) {
+    select.value = products[0].id;
+  } else {
+    select.value = "";
+  }
+  select.disabled = products.length <= 1;
   syncProductStructureRouteFromBinding();
 }
 
@@ -7110,7 +7118,6 @@ async function extractSources() {
   const routeName = extractionRoutePreviews[routeId]?.title || extractionRoutePreviews.local.title;
   const structureRouteName = productStructureRoutePreviews[selectedProductStructureRoute]?.title || productStructureRoutePreviews.single.title;
   const amazonTemplateFile = byId("amazonTemplateFile").files[0];
-  const amazonSkuFilter = byId("amazonSkuFilter")?.value || "";
   const supplierFiles = Array.from(byId("supplierFile").files || []);
   const supplierImageListFiles = Array.from(byId("supplierImageListFile").files || []);
   const pastedSupplierImageListText = byId("supplierImageListText")?.value.trim() || "";
@@ -7123,9 +7130,14 @@ async function extractSources() {
   byId("extractStatus").textContent = `正在按“${structureRouteName} / ${routeName}”解析资料...`;
 
   try {
+    amazonTemplateSourceFileName = amazonTemplateFile?.name || "";
     supplierSourceFileNames = supplierFiles.map((file) => file.name).filter(Boolean);
-    const amazonTemplate = await extractAmazonTemplateProducts(amazonTemplateFile, amazonSkuFilter);
+    const amazonTemplate = await extractAmazonTemplateProducts(amazonTemplateFile);
     populateSupplierSkuBinding(amazonTemplate.products);
+    const hasSupplierInputs = Boolean(supplierFiles.length || supplierImageListFiles.length || pastedSupplierImageListText);
+    if (hasSupplierInputs && amazonTemplate.products.length > 1 && !boundSupplierSku(amazonTemplate.products)) {
+      throw new Error("检测到多个 Amazon 子 SKU。请先在“1688资料归属”中明确选择当前1688资料对应的 SKU，再重新解析。");
+    }
     const supplierEntries = await readNamedTextFiles(supplierFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
@@ -7330,8 +7342,8 @@ async function extractSources() {
       ? `Amazon 模板：${useSupplierFileProducts
         ? "多 1688 文件模式已改按文件输出产品，未使用模板款式"
         : mergedAmazonSupplierProducts.length
-            ? `${amazonTemplate.products.length} 个子 SKU 款式；常规 listing 参数优先，卖点以1688证据优先、无证据时豆包联网补全${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`
-            : `${amazonTemplate.products.length} 个子 SKU 款式${amazonSkuFilter ? `，筛选 ${amazonSkuFilter}` : ""}`}。`
+            ? `${amazonTemplate.products.length} 个子 SKU 款式；常规 listing 参数优先，卖点以1688证据优先、无证据时豆包联网补全`
+            : `${amazonTemplate.products.length} 个子 SKU 款式`}。`
       : "";
     const pastedListStatus = pastedSupplierImageListText ? "、已粘贴链接清单" : "";
     const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；采集助手图片清单：${supplierImageListFiles.length} 个文件${pastedListStatus}${supplierSource.collectorCandidateCount ? `、过滤去重后 ${supplierSource.collectorCandidateCount} 张` : ""}；参考链接 HTML：${competitorFiles.length} 个${competitorReferenceImageUrls.length ? `，已抽取竞品候选图 ${competitorReferenceImageUrls.length} 张` : ""}。`;
@@ -11252,7 +11264,8 @@ function cleanChineseProductFilenameCandidate(value) {
     .replace(/\.(?:html?|xlsx?|xlsm|csv)$/i, "")
     .replace(/^\s*(?:PRODUCT_TITLE|Product Name|产品名称|商品名称)\s*[:：]\s*/i, "")
     .replace(/\s*[-–—|｜]\s*(?:阿里巴巴|1688|Amazon(?:\.com)?).*$/i, "")
-    .replace(/\b(?:Amazon|Alibaba|HTML|V\d+)\b/gi, " ")
+    .replace(/\b(?:Amazon|Alibaba|HTML)\b/gi, " ")
+    .replace(/V\d+/gi, " ")
     .replace(/[A-Za-z]+/g, " ")
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
     .replace(/[^\u3400-\u9fff0-9（）()·\s]/g, " ")
@@ -11260,10 +11273,11 @@ function cleanChineseProductFilenameCandidate(value) {
     .trim();
   if (!/[\u3400-\u9fff]/.test(decoded)) return "";
   return decoded
-    .replace(/(?:^|\s)\d+\s*(?:件|个|只|套|支|片|包|盒)(?=\s|$)/g, " ")
+    .replace(/\d+\s*(?:件|个|只|套|支|片|包|盒)(?:装)?\s*$/g, " ")
+    .replace(/(?:亚马逊|阿里巴巴|跨境|现货|厂家直销|外贸|爆款)/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 48);
+    .slice(0, 16);
 }
 
 function chineseProductFilenameBase() {
@@ -11275,6 +11289,7 @@ function chineseProductFilenameBase() {
     sku.sourceName,
   ].map(cleanChineseProductFilenameCandidate).filter(Boolean);
   const sourceChineseCandidates = [
+    amazonTemplateSourceFileName,
     ...(Array.isArray(supplierSourceFileNames) ? supplierSourceFileNames : []),
     extractFirstMatch(sourcePayload?.supplier || "", [/PRODUCT_TITLE:\s*([^\n]+)/i]),
   ].map(cleanChineseProductFilenameCandidate).filter(Boolean);
@@ -11283,7 +11298,7 @@ function chineseProductFilenameBase() {
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
     .replace(/\s+/g, " ")
     .replace(/[-.\s]+$/g, "")
-    .slice(0, 48) || "产品套图";
+    .slice(0, 16) || "产品套图";
 }
 
 function selectedGeneratedImageItemsForCurrentSet() {
@@ -11833,6 +11848,7 @@ function persistWorkspaceSnapshot() {
     availableReferenceImageUrls,
     bundleStateBySku,
     supplierSourceFileNames,
+    amazonTemplateSourceFileName,
     selectedExtractionRoute,
     selectedProductStructureRoute,
     selectedSkuId: byId("skuSelect")?.value || extractedProducts[0]?.id || "",
@@ -11857,6 +11873,7 @@ function restoreWorkspaceSnapshot() {
     availableReferenceImageUrls = Array.isArray(snapshot.availableReferenceImageUrls) ? snapshot.availableReferenceImageUrls : [];
     bundleStateBySku = snapshot.bundleStateBySku && typeof snapshot.bundleStateBySku === "object" ? snapshot.bundleStateBySku : {};
     supplierSourceFileNames = Array.isArray(snapshot.supplierSourceFileNames) ? snapshot.supplierSourceFileNames : [];
+    amazonTemplateSourceFileName = String(snapshot.amazonTemplateSourceFileName || "");
     selectedExtractionRoute = extractionRoutePreviews[snapshot.selectedExtractionRoute] ? snapshot.selectedExtractionRoute : "local";
     selectedProductStructureRoute = productStructureRoutePreviews[snapshot.selectedProductStructureRoute] ? snapshot.selectedProductStructureRoute : "single";
     productStructureRouteManuallySelected = Boolean(productStructureRoutePreviews[snapshot.selectedProductStructureRoute]);
@@ -11929,6 +11946,7 @@ function clearExtractedSourceState({ render = true } = {}) {
   referenceImageMetaBySku = {};
   bundleStateBySku = {};
   supplierSourceFileNames = [];
+  amazonTemplateSourceFileName = "";
   clearPersistedWorkspace();
   if (!render) return;
   renderProductSelect();
@@ -12081,7 +12099,7 @@ function init() {
       byId("extractStatus").textContent = `解析失败：${error.message || "请检查文件格式"}`;
     });
   });
-  ["amazonTemplateFile", "amazonSkuFilter", "supplierFile", "supplierImageListFile", "supplierImageListText", "competitorFile"].forEach((id) => {
+  ["amazonTemplateFile", "supplierFile", "supplierImageListFile", "supplierImageListText", "competitorFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
       clearExtractedSourceState({ render: false });
@@ -12097,14 +12115,13 @@ function init() {
       return;
     }
     try {
-      const result = await extractAmazonTemplateProducts(file, byId("amazonSkuFilter")?.value || "");
+      const result = await extractAmazonTemplateProducts(file);
       populateSupplierSkuBinding(result.products);
     } catch {
       populateSupplierSkuBinding([]);
     }
   };
   byId("amazonTemplateFile")?.addEventListener("change", refreshSupplierBindingOptions);
-  byId("amazonSkuFilter")?.addEventListener("change", refreshSupplierBindingOptions);
   byId("supplierSkuBinding")?.addEventListener("change", () => {
     referenceImagesBySku = {};
     referenceImageMetaBySku = {};

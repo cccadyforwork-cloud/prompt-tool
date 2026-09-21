@@ -48,8 +48,13 @@
           <label for="amazonTemplateFile">Amazon 类目模板 Excel</label>
           <input id="amazonTemplateFile" class="source-file" type="file" accept=".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
 
-          <label for="amazonSkuFilter">指定 Amazon SKU / 行号范围</label>
-          <input id="amazonSkuFilter" type="text" placeholder="例如：7-17 或 FlipFlops-ZD-CloudWhite-8">
+          <div class="source-field-group source-sku-binding-group">
+            <label for="supplierSkuBinding">当前1688资料对应的 Amazon SKU</label>
+            <select id="supplierSkuBinding">
+              <option value="">请选择1688资料归属</option>
+            </select>
+            <p class="input-help">单 SKU 自动绑定；多 SKU 必须明确选择。当前1688 HTML 和图片清单只会绑定到所选 SKU。</p>
+          </div>
 
           <label for="supplierFile">1688 HTML 文件（可多选）</label>
           <input id="supplierFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
@@ -59,14 +64,6 @@
 
           <label for="supplierImageListText">或直接粘贴采集助手图片链接</label>
           <textarea id="supplierImageListText" class="image-list-paste" rows="5" placeholder="可粘贴一行一个图片链接，也可直接粘贴 &lt;img src=&quot;https://...jpg&quot;/&gt; 清单"></textarea>
-
-          <div class="source-field-group source-sku-binding-group">
-            <label for="supplierSkuBinding">当前1688资料对应的 Amazon SKU</label>
-            <select id="supplierSkuBinding">
-              <option value="">自动识别（未指定 SKU）</option>
-            </select>
-            <p class="input-help">多 SKU 时建议明确指定；当前1688 HTML 和图片清单只会绑定到所选 SKU。</p>
-          </div>
 
           <label for="competitorFile">参考链接 HTML 文件（可多选）</label>
           <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
@@ -143,6 +140,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20260910-product-name-download-rule-48"></script>
+    <script src="./app.js?v=20260912-concise-product-name-49"></script>
   </body>
 </html>
