@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import html
 import base64
 import getpass
 import ipaddress
@@ -60,6 +59,14 @@ PROXY_HOST_SUFFIXES = (
     # must be explicitly allowed here as well as in the HTML extractor.
     "media-amazon.com",
     "images-amazon.com",
+)
+
+# Generated image URLs returned by the configured image service may resolve to
+# a local proxy's RFC 2544 fake-IP range (198.18.0.0/15). Keep the general SSRF
+# guard below, but allow these known HTTPS-only result hosts so selected images
+# can still be downloaded through the local proxy.
+GENERATED_IMAGE_HOST_SUFFIXES = (
+    "aitohumanize.com",
 )
 
 
@@ -125,93 +132,21 @@ def allowed_public_image_url(value: str) -> bool:
         return False
     if port not in {None, 80, 443}:
         return False
+    if (
+        parsed.scheme == "https"
+        and port in {None, 443}
+        and any(host == suffix or host.endswith(f".{suffix}") for suffix in GENERATED_IMAGE_HOST_SUFFIXES)
+    ):
+        return True
     try:
         addresses = {item[4][0] for item in socket.getaddrinfo(host, port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)}
     except socket.gaierror:
         return False
     return bool(addresses) and all(ipaddress.ip_address(address).is_global for address in addresses)
 
-# These labels are returned only when the downloaded search evidence contains
-# the corresponding phrases. They are evidence extractors, not fallback scenes.
-SCENE_EVIDENCE_RULES = (
-    ("Construction site hazard marking", (r"construction sites?", r"construction zones?")),
-    ("Warehouse aisle and floor marking", (r"warehouses?", r"aisle marking", r"floor marking")),
-    ("Industrial facility safety marking", (r"industrial facilit(?:y|ies)", r"factory floors?", r"industrial work areas?")),
-    ("Road work and traffic control", (r"road work", r"road construction", r"traffic control", r"road administration")),
-    ("Restricted area access control", (r"restricted areas?", r"restrict access", r"hazardous areas?")),
-    ("Public space safety marking", (r"public spaces?", r"crowd control")),
-    ("Utility and underground line marking", (r"utility projects?", r"underground utilities", r"buried lines?")),
-    ("Home daily use", (r"home use", r"at home", r"household use")),
-    ("Office workplace use", (r"office use", r"workplaces?", r"office setting")),
-    ("Professional studio use", (r"professional studios?", r"studio use")),
-    ("Kitchen food preparation", (r"kitchen preparation", r"food preparation", r"home kitchen")),
-    ("Cafe and coffee bar", (r"coffee shops?", r"coffee bars?", r"caf[eé]s?", r"barista")),
-    ("Gym strength training", (r"gym training", r"strength training", r"fitness training")),
-    ("Physical therapy session", (r"physical therapy", r"rehabilitation session")),
-    ("Yoga or Pilates studio", (r"yoga studio", r"pilates studio", r"pilates class")),
-    ("Florist bouquet wrapping", (r"florist", r"bouquet wrapping", r"flower wrapping")),
-    ("Gift packaging table", (r"gift packaging", r"gift wrapping")),
-    ("Wedding floral preparation", (r"wedding floral", r"wedding flowers?", r"event floral")),
-    ("Bathroom after-shower use", (r"after shower", r"bathroom use", r"shower slippers?")),
-    ("Poolside use", (r"poolside", r"swimming pool")),
-    ("Beach vacation", (r"beach vacation", r"beach use", r"on the beach")),
-    ("Hotel and spa stay", (r"hotel and spa", r"spa use", r"hotel slippers?")),
-    ("Rainy city commute", (r"rainy commute", r"city commute", r"commuting in the rain")),
-    ("Sunny outdoor shade", (r"sun shade", r"sun protection", r"outdoor shade")),
-    ("Camping and outdoor travel", (r"camping", r"outdoor travel", r"travel use")),
-)
-
-
 def clean_text(value: object, limit: int = 180) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit]
-
-
-def strip_search_markup(source: str) -> str:
-    source = re.sub(r"<script\b[^>]*>.*?</script>", " ", source, flags=re.I | re.S)
-    source = re.sub(r"<style\b[^>]*>.*?</style>", " ", source, flags=re.I | re.S)
-    source = re.sub(r"<[^>]+>", " ", source)
-    return re.sub(r"\s+", " ", html.unescape(source)).strip()
-
-
-def fetch_search_evidence(query: str) -> tuple[list[str], str, list[str]]:
-    errors: list[str] = []
-    evidence_blocks: list[str] = []
-    useful_sources: list[str] = []
-    encoded = urllib.parse.urlencode({"q": f"{query} common uses applications environments", "source": "web"})
-    urls = (
-        ("Brave Search", f"https://search.brave.com/search?{encoded}"),
-        ("Bing", f"https://www.bing.com/search?{encoded}&cc=us&setlang=en-US&ensearch=1"),
-    )
-    for source_name, url in urls:
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                body = response.read(600_000).decode("utf-8", errors="replace")
-            evidence = strip_search_markup(body)
-            if len(evidence) < 200:
-                errors.append(f"{source_name}: empty response")
-                continue
-            if extract_scenes(evidence):
-                useful_sources.append(source_name)
-                evidence_blocks.append(evidence)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, socket.timeout) as error:
-            errors.append(f"{source_name}: {error}")
-    return useful_sources, " ".join(evidence_blocks), errors
-
-
-def extract_scenes(evidence: str, limit: int = 5) -> list[str]:
-    lower = evidence.lower()
-    scenes: list[str] = []
-    for label, patterns in SCENE_EVIDENCE_RULES:
-        if any(re.search(pattern, lower, flags=re.I) for pattern in patterns):
-            scenes.append(label)
-        if len(scenes) >= limit:
-            break
-    return scenes
 
 
 def response_output_text(payload: dict[str, object]) -> str:
@@ -423,9 +358,6 @@ def expanded_dimension_values(label: str, value: str, evidence: str) -> list[tup
         "Overall Projection": "Projection Depth",
         "Wall Projection": "Projection Depth",
         "Projection": "Projection Depth",
-        "Suction Cup Diameter": "Base Diameter",
-        "Backplate Diameter": "Base Diameter",
-        "Knob Diameter": "Front Diameter",
     }.get(normalized_label, normalized_label)
     normalized_value = clean_text(value, 40)
     is_measurement_label = normalized_label in {
@@ -466,12 +398,12 @@ Return JSON only in this exact shape:
 {{"english_product_keyword":"Marketplace-standard English product keyword","search_queries":["English query actually searched"],"scenes":[{{"scene":"Concise English scene phrase","evidence_url":"https://...","evidence_quote":"Short supporting phrase from the source"}}]}}
 
 Rules:
-- The English product keyword must identify the exact product type, not a broad category.
+- The English product keyword must identify the exact product type from the supplied facts.
 - Return 1 to 4 English search queries that all contain the English product keyword.
 - Return 3 to 5 distinct scenes only when each scene has direct web evidence.
 - Each scene must be 2 to 8 English words and describe a visible use environment or occasion.
 - The URL and quote must directly support that specific scene.
-- Do not infer from product category, do not use generic fallback scenes, and do not invent contexts.
+- Do not infer from unstated product-type assumptions, do not use generic fallback scenes, and do not invent contexts.
 - If reliable evidence is absent, still return the English keyword and queries, but return "scenes":[].
 """
     request_payload = {
@@ -571,8 +503,9 @@ You MUST call web search. Return JSON only:
 
 Rules:
 - Return 1 to 4 distinct selling points only when each has direct web evidence.
-- Arrange the claims as two coherent image groups with at most two claims per group: items 1-2 explain the distinctive mechanism and installation/use convenience; items 3-4 explain verified performance plus compatibility, durability, environment resistance, or reuse.
-- Merge synonymous claims instead of spending multiple slots on the same benefit. “Quick installation”, “easy installation”, and “no-drill installation” are one idea; “strong suction”, “stable hold”, and “does not fall” are one idea.
+- Never return "Multiple optional colors" as a selling point.
+- Arrange the claims as two coherent image groups with at most two claims per group, ordered by the strength and distinctness of the supplied evidence.
+- Merge synonymous claims instead of spending multiple slots on the same benefit.
 - Each claim must be 3 to 12 English words and describe a product property or benefit, not a scene.
 - The URL and quote must directly support that claim.
 - Exclude price, shipping, promotions, generic praise, unverifiable superlatives, and unsupported safety claims.
@@ -634,6 +567,8 @@ Rules:
         claim = clean_text(item.get("claim"), 120)
         evidence_url = clean_text(item.get("evidence_url"), 500)
         evidence_quote = clean_text(item.get("evidence_quote"), 300)
+        if re.sub(r"[^a-z0-9]+", " ", claim.casefold()).strip() == "multiple optional colors":
+            continue
         word_count = len(re.findall(r"[A-Za-z]+", claim))
         if not re.fullmatch(r"[\x00-\x7F]{6,120}", claim) or not 3 <= word_count <= 12:
             continue
@@ -671,9 +606,7 @@ Return JSON only:
 Rules:
 - Use only dimensions visibly printed in the images.
 - Never use package, shipping, carton, box, bag, folded storage, rolled storage, or logistics dimensions.
-- For tape, grip tape, overgrip, handle wrap, adhesive tape, or similar roll products, map the flat unfolded product as Length, Width, and Thickness.
 - Preserve every clearly printed product measurement and every separate arrow value in a parameter/reference image; common structured fields are not a maximum list. If an arrow's meaning is visually clear, use a concise English label such as Base Diameter, Front Diameter, Stem Depth, or Overall Projection. If the value is unquestionably a product measurement but the exact part name is unclear, retain it as Visible Dimension 1, Visible Dimension 2, etc. rather than dropping the value.
-- For a wall hook, suction hook, wall hanger, or similar mounted product, preserve all separately shown diameters and depth/projection measurements. Chinese “总出墙/总出墙高度/出墙高度” means the installed product's Overall Projection from the wall; do not omit it or relabel it as package height.
 - If a three-part spec is shown, map it as Length x Width x Thickness unless the image explicitly says otherwise.
 - Return every clearly visible product measurement, up to 8 dimensions. Keep separately printed component measurements as separate items. If no clear product dimension evidence is visible, return "dimensions":[].
 """,
@@ -762,7 +695,7 @@ Locally extracted supplier text:
 {local_evidence}
 
 Return JSON only in this exact shape:
-{{"product_name":{{"value":"Perforated ribbed racket overgrip","evidence":"双色打孔龙骨手胶","image_ref":"Image 1"}},"attributes":[{{"field":"Material","value":"Sweat-absorbing PU + EVA cushioning strip","evidence":"材质：吸汗PU+EVA减震条","image_ref":"Image 1"}}],"dimensions":[{{"label":"Length","value":"1100 mm","evidence":"规格 1100*25*1(mm)","image_ref":"Image 1"}}],"selling_points":[{{"claim":"Sweat-absorbing perforated grip","evidence":"吸汗 透气 防滑","image_ref":"Image 2"}}],"use_scenes":[{{"scene":"Badminton racket handle wrapping","evidence":"适用范围：羽毛球拍","image_ref":"Image 3"}}]}}
+{{"product_name":{{"value":"Exact product name","evidence":"Visible product name","image_ref":"Image 1"}},"attributes":[{{"field":"Material","value":"Verified material","evidence":"Visible material text","image_ref":"Image 1"}}],"dimensions":[{{"label":"Length","value":"100 mm","evidence":"Visible 100 mm label","image_ref":"Image 1"}}],"selling_points":[{{"claim":"Verified concise benefit","evidence":"Visible supporting phrase","image_ref":"Image 2"}}],"use_scenes":[{{"scene":"Verified use environment","evidence":"Visible use phrase","image_ref":"Image 3"}}]}}
 
 Rules:
 - Use only facts visibly stated or unmistakably shown in the attached images for this exact product.
@@ -772,16 +705,13 @@ Rules:
 - Allowed attribute fields: Material, Color, Technology, Structure, DetailFeatures, Fit, ProductCount, InstallationSteps.
 - Use InstallationSteps only when an attached image explicitly shows an ordered or numbered installation/use method. Return verified actions in order, separated by " > "; do not infer missing steps.
 - Material must name only explicitly visible material or composition. Do not guess a material from appearance.
-- Technology, Structure, DetailFeatures, and Fit must be explicit in an image; do not convert generic category knowledge into facts.
+- Technology, Structure, DetailFeatures, and Fit must be explicit in an image; do not convert unstated assumptions into facts.
 - Dimensions must describe the product itself in its fully expanded/open state. Never use package, shipping, carton, box, bag, folded storage, rolled storage, or logistics dimensions.
-- For tape, grip tape, overgrip, handle wrap, or similar roll products, map a three-part specification as Length x Width x Thickness unless the image explicitly labels it otherwise.
 - Preserve every clearly printed product measurement and separate arrow value in a parameter/reference image; the common structured fields are not a maximum list. Use a concise visual part label when clear, otherwise keep the value as Visible Dimension 1, Visible Dimension 2, etc. rather than dropping it.
-- For a wall hook, suction hook, wall hanger, or similar mounted product, preserve all separately shown diameters and depth/projection measurements. Chinese “总出墙/总出墙高度/出墙高度” is the overall installed Projection Depth measured outward from the wall. It is a product dimension, not packaging, and must be returned when visibly printed.
 - Selling points must be product properties or benefits visibly supported by the image, not use scenes, promotions, generic praise, or invented performance.
 - Organize selling points into exactly two coherent image groups, with at most two concise claims per group. Return the flat selling_points array in group order: items 1-2 are Group 1 and items 3-4 are Group 2.
-- Group 1 explains the product's distinctive mechanism plus installation/use convenience. Group 2 explains verified performance plus compatibility, durability, environment resistance, or reuse.
-- Merge closely related phrases instead of repeating synonyms. “Quick installation”, “easy installation”, and “no-drill installation” occupy one claim; “strong suction”, “stable hold”, and “does not fall” occupy one claim.
-- For a suction wall hook with direct image evidence, prefer Group 1 = vacuum twist-lock suction + quick no-drill installation; Group 2 = strong waterproof load-bearing hold + removable multi-surface reuse. Omit any part that lacks direct image evidence.
+- Order selling points by evidence strength and keep the two image groups distinct without applying a product-type template.
+- Merge closely related phrases instead of repeating synonyms.
 - Use scenes must be explicit applications or suitable objects shown or written in an image. Do not invent generic lifestyle scenes.
 - Every returned item must identify its supporting image as Image 1, Image 2, etc. in image_ref. If an item lacks direct image evidence, omit it.
 - Prefer the most informative, product-specific facts. Return at most 7 attributes, 8 dimensions, 4 selling points, and 5 use scenes. Empty values and arrays are preferred to guessing.

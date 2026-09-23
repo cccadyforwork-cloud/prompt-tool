@@ -13,7 +13,7 @@
         document.documentElement.dataset.theme = "dark";
       }
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260908-checkbox-align-28">
+    <link rel="stylesheet" href="./styles.css?v=20260922-page01-two-column-34">
   </head>
   <body>
     <header class="workflow-app-header">
@@ -40,41 +40,12 @@
 
     <main class="workflow-shell">
       <section class="workflow-page is-active" data-workflow-panel="source">
-        <div class="workflow-page-heading"><div><p class="eyebrow">Page 01</p><h2>资料解析</h2><p>左侧输入与选择解析路线，右侧同步核对当前 SKU 实际提取出的参数。</p></div><button type="button" class="workflow-next" data-workflow-next="parameters">确认解析参数，下一步 →</button></div>
+        <div class="workflow-page-heading"><div><p class="eyebrow">Page 01</p><h2>资料解析</h2><p>左侧确认商品结构和信息提取方式，右侧输入资料并核对当前 SKU 的提取结果。</p></div><button type="button" class="workflow-next" data-workflow-next="parameters">确认解析参数，下一步 →</button></div>
         <div class="workflow-columns source-parameter-columns">
-          <div class="workflow-column">
-            <section class="control-group" aria-labelledby="source-title">
-          <h2 id="source-title">资料输入</h2>
-          <label for="amazonTemplateFile">Amazon 类目模板 Excel</label>
-          <input id="amazonTemplateFile" class="source-file" type="file" accept=".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
-
-          <div class="source-field-group source-sku-binding-group">
-            <label for="supplierSkuBinding">当前1688资料对应的 Amazon SKU</label>
-            <select id="supplierSkuBinding">
-              <option value="">请选择1688资料归属</option>
-            </select>
-            <p class="input-help">单 SKU 自动绑定；多 SKU 必须明确选择。当前1688 HTML 和图片清单只会绑定到所选 SKU。</p>
-          </div>
-
-          <label for="supplierFile">1688 HTML 文件（可多选）</label>
-          <input id="supplierFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
-
-          <label for="supplierImageListFile">1688 采集助手图片清单（可选）</label>
-          <input id="supplierImageListFile" class="source-file" type="file" accept=".txt,.html,.htm,text/plain,text/html" multiple>
-
-          <label for="supplierImageListText">或直接粘贴采集助手图片链接</label>
-          <textarea id="supplierImageListText" class="image-list-paste" rows="5" placeholder="可粘贴一行一个图片链接，也可直接粘贴 &lt;img src=&quot;https://...jpg&quot;/&gt; 清单"></textarea>
-
-          <label for="competitorFile">参考链接 HTML 文件（可多选）</label>
-          <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
-
-          <button id="extractSources" type="button" class="secondary">解析资料并提取产品信息</button>
-          <p id="extractStatus" class="status" role="status" aria-live="polite"></p>
-            </section>
-
+          <div class="workflow-column source-flow-column">
             <section class="control-group product-structure-route-group" aria-labelledby="product-structure-route-title">
           <div class="route-heading-row">
-            <h2 id="product-structure-route-title">商品组合路线</h2>
+            <div class="source-module-heading"><span class="source-step">01</span><div><h2 id="product-structure-route-title">商品组合路线</h2><p>先确认当前 Amazon SKU 的商品结构。</p></div></div>
             <span class="preview-badge">SKU 结构</span>
           </div>
           <p class="route-intro">先确定当前 Amazon SKU 是单品、主体配件套装，还是由多个不同款商品组成的固定组合，再选择下方的信息提取方式。</p>
@@ -92,29 +63,63 @@
           <article id="productStructureRoutePreview" class="extraction-route-preview product-structure-route-preview" role="tabpanel" aria-live="polite"></article>
             </section>
 
+            <div class="source-flow-arrow" aria-hidden="true">↓</div>
+
             <section class="control-group extraction-route-group" aria-labelledby="extraction-route-title">
           <div class="route-heading-row">
-            <h2 id="extraction-route-title">信息提取路线</h2>
+            <div class="source-module-heading"><span class="source-step">02</span><div><h2 id="extraction-route-title">信息提取路线</h2><p>选择本次资料的分析深度。</p></div></div>
             <span class="preview-badge">解析方式</span>
           </div>
-          <p class="route-intro">先选择路线，再点击上方“解析资料并提取产品信息”。</p>
+          <p class="route-intro">先选择路线，再在资料输入完成后统一开始解析。</p>
           <div class="extraction-route-tabs" role="tablist" aria-label="信息提取路线">
             <button id="route-local" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="local">
               <span>01</span> 本地分析
             </button>
-            <button id="route-vision" class="route-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="extractionRoutePreview" data-extraction-route="vision">
+            <button id="route-vision" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="vision">
               <span>02</span> 豆包识图
             </button>
-            <button id="route-web" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="web">
+            <button id="route-web" class="route-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="extractionRoutePreview" data-extraction-route="web">
               <span>03</span> 联网补充
             </button>
           </div>
           <article id="extractionRoutePreview" class="extraction-route-preview" role="tabpanel" aria-live="polite"></article>
             </section>
+
           </div>
-          <div class="workflow-column">
-            <div class="top-strip workflow-result-title"><div><p class="eyebrow">Extracted Parameters</p><h2 id="currentTitle">产品资料提炼</h2></div><div class="badge-row" id="badges"></div></div>
-            <div id="sourceSummary" class="source-summary" aria-label="资料来源摘要"></div>
+          <div class="workflow-column source-output-column">
+            <section class="control-group source-input-group" aria-labelledby="source-title">
+          <div class="route-heading-row">
+            <div class="source-module-heading"><span class="source-step">03</span><div><h2 id="source-title">资料输入</h2><p>上传商品资料，并粘贴采集助手导出的图片链接。</p></div></div>
+            <span class="preview-badge">输入资料</span>
+          </div>
+
+          <label for="amazonTemplateFile">Amazon 模板 Excel</label>
+          <input id="amazonTemplateFile" class="source-file" type="file" accept=".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
+
+          <div class="source-field-group source-sku-binding-group">
+            <label for="supplierSkuBinding">当前 1688 资料对应的 Amazon SKU</label>
+            <select id="supplierSkuBinding">
+              <option value="">请选择 1688 资料归属</option>
+            </select>
+            <p class="input-help">单 SKU 自动绑定；多 SKU 必须明确选择。当前 1688 HTML 和图片链接只会绑定到所选 SKU。</p>
+          </div>
+
+          <label for="supplierFile">1688 HTML 文件（可多选）</label>
+          <input id="supplierFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
+
+          <label for="supplierImageListText" class="source-link-label">1688 采集助手图片链接 <span>仅粘贴链接</span></label>
+          <textarea id="supplierImageListText" class="image-list-paste" rows="6" placeholder="一行一个图片链接，也可直接粘贴 &lt;img src=&quot;https://...jpg&quot;/&gt; 清单"></textarea>
+
+          <label for="competitorFile">参考链接 HTML 文件（可选，可多选）</label>
+          <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
+
+          <button id="extractSources" type="button" class="source-parse-action">解析资料并提取产品信息</button>
+          <p class="source-parse-note">完成上面 3 个步骤后，在这里统一开始解析。</p>
+          <p id="extractStatus" class="status" role="status" aria-live="polite"></p>
+            </section>
+
+            <div class="source-flow-arrow" aria-hidden="true">↓</div>
+
             <section class="control-group extracted-parameter-panel" aria-labelledby="product-params-title"><h2 id="product-params-title">资料提取出的产品参数</h2><p class="workflow-section-note">这里是第 1 页的输出，也是第 2 页生成提示词的输入。</p><div id="productParamList" class="product-param-list"></div></section>
           </div>
         </div>
@@ -134,12 +139,12 @@
       </section>
 
       <section class="workflow-page" data-workflow-panel="studio">
-        <div class="workflow-page-heading studio-heading"><div><p class="eyebrow">Page 03</p><h2>提示词与图组</h2><p>每个图片任务保持提示词、参考图和生成结果一一对应。</p></div><div class="studio-global-actions"><button id="copyCurrent" type="button" class="secondary">复制全部提示词</button><button id="generateAllImagesAuto" type="button">自动选参考图生成</button><button id="generateAllImagesManual" type="button" class="secondary">按人工选图生成</button><button id="saveGeneratedSet" type="button" class="secondary">一键保存选中图片图组</button></div></div>
+        <div class="workflow-page-heading studio-heading"><div><p class="eyebrow">Page 03</p><h2>提示词与图组</h2><p>每个图片任务保持提示词、参考图和生成结果一一对应。</p></div><div class="studio-global-actions"><button id="copyCurrent" type="button" class="secondary">复制全部提示词</button><button id="generateAllImagesAuto" type="button">自动选参考图生成</button><button id="generateAllImagesManual" type="button" class="secondary">按人工选图生成</button><button id="saveGeneratedSet" type="button" class="download-primary">选择图片后下载</button></div></div>
         <p id="bulkGenerationStatus" class="status studio-status" role="status" aria-live="polite"></p><p id="saveGeneratedSetStatus" class="status studio-status" role="status" aria-live="polite"></p><p id="copyStatus" class="status studio-status" role="status" aria-live="polite"></p>
         <section class="product-prompt-panel studio-prompt-panel" aria-labelledby="product-prompts-title"><div class="section-header"><div><p class="eyebrow">Prompt ↔ Image Set</p><h2 id="product-prompts-title">当前产品图组</h2></div><p>左侧为当前提示词，右侧为其参考图和生成结果。</p></div><div id="productPromptGrid" class="product-prompt-grid"></div></section>
       </section>
     </main>
 
-    <script src="./app.js?v=20260912-concise-product-name-49"></script>
+    <script src="./app.js?v=20260922-page01-two-column-58"></script>
   </body>
 </html>
