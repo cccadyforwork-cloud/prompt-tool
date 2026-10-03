@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>工作台 01 · 资料输入小改预览</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090d13; --panel:#111722; --line:#293348; --text:#f4f7fb; --muted:#91a0b8; --blue:#7ba9ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:1040px; background:radial-gradient(circle at 18% 0,rgba(63,104,177,.17),transparent 31%),var(--bg); color:var(--text); font:14px/1.5 Inter,"PingFang SC","Microsoft YaHei",sans-serif; }
+    button,input,select,textarea { font:inherit; }
+    .shell { width:min(1320px,calc(100% - 48px)); margin:0 auto; padding:28px 0 48px; }
+    .top { display:flex; justify-content:space-between; align-items:end; margin-bottom:18px; }
+    .eyebrow { margin:0 0 5px; color:var(--blue); font-size:11px; font-weight:800; letter-spacing:.13em; }
+    h1 { margin:0; font-size:26px; }
+    .top p:last-child { margin:7px 0 0; color:var(--muted); }
+    .badge { padding:7px 11px; border:1px solid #3a5176; border-radius:999px; background:#142139; color:#c8dbff; }
+    .layout { display:grid; grid-template-columns:.82fr 1.18fr; gap:16px; align-items:start; }
+    .stack { display:grid; gap:14px; }
+    .card { border:1px solid var(--line); border-radius:18px; background:linear-gradient(180deg,#131a26,#0e141e); overflow:hidden; box-shadow:0 18px 44px rgba(0,0,0,.2); }
+    .head { padding:17px 19px 14px; border-bottom:1px solid var(--line); }
+    .head-row { display:flex; align-items:center; gap:10px; }
+    .num { display:grid; place-items:center; width:27px; height:27px; border-radius:8px; background:#263954; color:#dce8ff; font-weight:800; }
+    .head h2 { margin:0; font-size:17px; }
+    .head p { margin:6px 0 0 37px; color:var(--muted); font-size:12px; }
+    .body { padding:17px 19px 20px; }
+    .tabs { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; }
+    .tab { padding:10px 7px; border:1px solid var(--line); border-radius:10px; text-align:center; color:#aab7c9; background:#0d141e; }
+    .tab.on { color:white; border-color:#4d76ae; background:#192b45; }
+    .route { margin-top:12px; padding:13px; border-radius:11px; background:#0d141e; color:#aab7ca; font-size:12px; }
+    .route b { display:block; margin-bottom:4px; color:white; font-size:14px; }
+    .compact .head { padding:12px 16px 10px; }
+    .compact .head p { margin-top:3px; }
+    .compact .body { padding:11px 16px 13px; }
+    .compact .tab { padding:7px 5px; }
+    .compact .route { margin-top:8px; padding:9px 11px; }
+    .compact .route b { display:inline; margin:0 7px 0 0; font-size:12px; }
+    .field + .field { margin-top:16px; }
+    label,.label { display:block; margin-bottom:8px; font-weight:700; }
+    .required { margin-left:7px; color:#9ce1c2; font-size:11px; font-weight:600; }
+    .upload,.textarea { width:100%; border:1px dashed #455570; border-radius:11px; padding:12px 13px; background:#0b111a; color:#b8c4d5; }
+    .upload span { color:var(--muted); font-size:12px; }
+    .match-box { padding:13px; border:1px solid #32415b; border-radius:13px; background:#0d1521; }
+    .match-title { display:flex; justify-content:space-between; align-items:center; margin-bottom:9px; }
+    .match-title small { color:var(--muted); }
+    .choices { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; }
+    .choice { position:relative; min-height:82px; padding:11px; border:1px solid var(--line); border-radius:10px; background:#111927; color:var(--text); text-align:left; cursor:pointer; }
+    .choice.selected { border-color:var(--blue); background:#182b47; box-shadow:inset 3px 0 0 var(--blue); }
+    .choice b { display:block; margin-bottom:4px; font-size:13px; }
+    .choice small { display:block; color:var(--muted); line-height:1.35; }
+    .choice .check { position:absolute; top:8px; right:8px; color:var(--blue); opacity:0; }
+    .choice.selected .check { opacity:1; }
+    .scope-detail { margin-top:9px; padding:10px 11px; border-radius:9px; background:#101f1b; color:#bce7d4; font-size:12px; }
+    .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .textarea { min-height:78px; }
+    .primary { width:100%; margin-top:17px; padding:12px; border:0; border-radius:11px; color:white; background:linear-gradient(135deg,#4f7fcf,#315c9e); font-weight:800; }
+    .hint { margin:8px 0 0; color:var(--muted); font-size:12px; text-align:center; }
+    .output { min-height:150px; display:grid; place-items:center; color:var(--muted); text-align:center; }
+    @media(max-width:1100px){.shell{width:calc(100% - 26px)}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div><p class="eyebrow">PAGE 01 · SMALL CHANGE PREVIEW</p><h1>资料解析</h1><p>保持现有工作台结构，只在资料输入中补充1688匹配方式。</p></div>
+      <span class="badge">小改预览 · 正式页面未替换</span>
+    </header>
+    <section class="layout">
+      <div class="stack">
+        <article class="card compact">
+          <header class="head"><div class="head-row"><span class="num">01</span><h2>商品组合路线</h2></div><p>保持当前布局与选择方式。</p></header>
+          <div class="body"><div class="tabs"><div class="tab on">单品路线</div><div class="tab">套装路线</div><div class="tab">不同款组合</div></div><div class="route"><b>单品路线</b>当前 SKU + 对应1688资料 → 单品参数 → 单品图组</div></div>
+        </article>
+        <article class="card compact">
+          <header class="head"><div class="head-row"><span class="num">02</span><h2>信息提取路线</h2></div><p>保持本地分析、豆包识图和联网补充三种路线。</p></header>
+          <div class="body"><div class="tabs"><div class="tab">本地分析</div><div class="tab">豆包识图</div><div class="tab on">联网补充</div></div><div class="route"><b>豆包联网补充</b>1688证据优先；缺失卖点再联网，最后才使用竞品分析。</div></div>
+        </article>
+        <article class="card">
+          <header class="head"><div class="head-row"><span class="num">03</span><h2>资料输入</h2></div></header>
+          <div class="body">
+            <div class="field"><label>Amazon 模板 Excel <span class="required">必需</span></label><div class="upload"><b>选择 Excel 文件</b><br><span>读取 Parent SKU、Child SKU、标题和颜色等变体信息</span></div></div>
+            <div class="field"><span class="label">1688 HTML 文件</span><div class="upload"><b>选择1688 HTML</b><br><span>可多选；用于提取当前商品事实和图片</span></div></div>
+            <div class="field match-box">
+              <div class="match-title"><b>1688资料匹配方式</b><small>新增选项</small></div>
+              <div class="choices">
+                <button class="choice selected" data-mode="parent"><span class="check">✓</span><b>父体共享</b><small>同父体的全部 Child 共享通用参数</small></button>
+                <button class="choice" data-mode="child"><span class="check">✓</span><b>指定 Child SKU</b><small>只写入选中的一个子 SKU</small></button>
+                <button class="choice" data-mode="auto"><span class="check">✓</span><b>自动匹配</b><small>不唯一时停止并要求人工选择</small></button>
+              </div>
+              <div class="scope-detail" id="scopeDetail">将共享给：KEY-TAG-PARENT 下的 5 个 Child SKU；各自标题和颜色保持不变。</div>
+            </div>
+            <div class="field"><span class="label">采集助手图片链接</span><div class="textarea">一行一个图片链接……</div></div>
+            <div class="field"><label>参考链接 HTML 文件 <span class="required">可选</span></label><div class="upload"><b>选择竞品 HTML</b><br><span>只作构图参考和允许字段的末级兜底</span></div></div>
+            <button class="primary">解析资料并提取产品信息</button>
+            <p class="hint">匹配方式、1688参数和图片使用同一个资料作用域。</p>
+          </div>
+        </article>
+      </div>
+      <div class="stack">
+        <article class="card">
+          <header class="head"><div class="head-row"><h2>资料提取出的产品参数</h2></div><p>保持现有输出区域不变。</p></header>
+          <div class="output">解析后在这里显示当前 SKU 的主参数</div>
+        </article>
+      </div>
+    </section>
+  </main>
+  <script>
+    const detail = {
+      parent: "将共享给：KEY-TAG-PARENT 下的 5 个 Child SKU；各自标题和颜色保持不变。",
+      child: "请选择一个 Child SKU；1688参数与图片只进入该 SKU，其他 SKU 保持隔离。",
+      auto: "系统只在商品与款式存在唯一高置信度匹配时写入；无法确认则停止解析。",
+    };
+    document.querySelectorAll(".choice").forEach((button) => button.addEventListener("click", () => {
+      document.querySelectorAll(".choice").forEach((item) => item.classList.toggle("selected", item === button));
+      document.querySelector("#scopeDetail").textContent = detail[button.dataset.mode];
+    }));
+  </script>
+</body>
+</html>
