@@ -11434,11 +11434,13 @@ function setSaveGeneratedSetUi(message = "") {
     button.disabled = generatedSetSaving || !selectedCount;
     button.textContent = generatedSetSaving
       ? "正在整理选中图片…"
-      : selectedCount === 1
-        ? "下载选中图片（1）"
-        : selectedCount > 1
-          ? `打包下载选中图组（${selectedCount}）`
-          : "选择图片后下载";
+      : boundWorkspace && storeParentOrigin
+        ? selectedCount ? `交接 S3 候选图组（${selectedCount} 张）` : "勾选图片后交接 S3 候选图组"
+        : selectedCount === 1
+          ? "下载选中图片（1）"
+          : selectedCount > 1
+            ? `打包下载选中图组（${selectedCount}）`
+            : "选择图片后下载";
   }
   if (byId("saveGeneratedSetStatus")) byId("saveGeneratedSetStatus").textContent = message;
 }
@@ -11452,7 +11454,25 @@ async function saveGeneratedSet() {
   }
   generatedSetSaving = true;
   setSaveGeneratedSetUi(`正在读取 0/${items.length} 张图片…`);
-  const baseName = chineseProductFilenameBase();
+  const bridge = boundWorkspace && storeParentOrigin;
+  let context = null;
+  if (bridge) {
+    try {
+      const contextUrl = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
+        + `/image-candidates/context?sku=${encodeURIComponent(boundWorkspace.sku)}`;
+      const response = await fetch(contextUrl, { cache: "no-store" });
+      context = await response.json();
+      if (!response.ok || !context.ok || context.sku !== boundWorkspace.sku || !context.product_name) {
+        throw new Error(context.error || "运营系统尚无当前子体的已确认中文品名，请先核对 S1 定价资料。");
+      }
+    } catch (error) {
+      setSaveGeneratedSetUi(`无法交接当前子体：${error?.message || "运营系统未连接"}`);
+      generatedSetSaving = false;
+      setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
+      return;
+    }
+  }
+  const baseName = bridge ? context.product_name : chineseProductFilenameBase();
   const entries = [];
   try {
     for (let index = 0; index < items.length; index += 1) {
@@ -11464,6 +11484,22 @@ async function saveGeneratedSet() {
       const extension = imageExtension(blob.type, item.url);
       entries.push({ name: `${baseName}${index + 1}.${extension}`, extension, bytes: new Uint8Array(await blob.arrayBuffer()) });
       setSaveGeneratedSetUi(`正在读取 ${index + 1}/${items.length} 张图片…`);
+    }
+    if (bridge) {
+      const zip = buildStoredZip(entries);
+      const uploadUrl = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
+        + `/image-candidates/import?sku=${encodeURIComponent(boundWorkspace.sku)}`
+        + `&expected_revision=${encodeURIComponent(context.revision)}`;
+      setSaveGeneratedSetUi(`正在将 ${entries.length} 张图交接到运营系统 S3 候选区；不会下载到桌面…`);
+      const response = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/zip", "X-Workflow-Import": "prompt-tool-selected-v1" },
+        body: zip,
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || `交接失败（HTTP ${response.status}）`);
+      setSaveGeneratedSetUi(`已交接 ${entries.length} 张到 ${context.sku} 的 S3 候选区；请在运营系统比较并确认采用，确认前不会下载到桌面。`);
+      return;
     }
     if (entries.length === 1) {
       downloadBlob(imageBlobFromEntry(entries[0]), entries[0].name);
