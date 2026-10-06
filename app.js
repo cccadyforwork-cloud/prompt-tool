@@ -131,17 +131,70 @@ const NO_REFERENCE_SELLING_POINT_MESSAGE = "没有参考卖点信息";
 
 let promptStore = [];
 let imageGenerationByCard = {};
+let savedReferenceSelectionByCard = {};
+const referenceVisualFingerprintCache = new Map();
+const referenceVisualDedupeSignatureBySku = new Map();
 let lastReferenceSelectionCardKey = "";
 let activePromptCardKey = "";
+const expandedParameterPrompts = new Set();
 let activeWorkflowPage = "source";
 let bulkImageGenerationRunning = false;
 let bulkImageGenerationMode = "";
 let generatedSetSaving = false;
 const IMAGE_HISTORY_STORAGE_KEY = "prompt-tool-image-history-v1";
 const WORKSPACE_STORAGE_KEY = "prompt-tool-workspace-v1";
+const workspaceParams = new URLSearchParams(window.location.search);
+const workspaceProjectId = workspaceParams.get("store_project_id") || "";
+const workspaceSku = workspaceParams.get("store_sku") || "";
+const storeParentOriginParam = workspaceParams.get("store_parent_origin") || "";
+const storeParentOrigin = /^http:\/\/(?:127\.0\.0\.1|localhost):8770$/.test(storeParentOriginParam)
+  ? storeParentOriginParam : "";
+const boundWorkspace = /^[A-Za-z0-9_-]{1,100}$/.test(workspaceProjectId)
+  && workspaceSku.length > 0 && workspaceSku.length <= 120 && !/[\u0000-\u001f]/.test(workspaceSku)
+  ? { projectId: workspaceProjectId, sku: workspaceSku }
+  : null;
+let legacyWorkspaceMigrationChecked = false;
+
+function productMatchesBoundSku(product, sku = boundWorkspace?.sku) {
+  const id = String(product?.id || "");
+  return Boolean(sku && (id === sku || id.endsWith(`-${sku}`)));
+}
+
+function snapshotMatchesBoundSku(snapshot) {
+  return Boolean(boundWorkspace && Array.isArray(snapshot?.extractedProducts)
+    && snapshot.extractedProducts.some((product) => productMatchesBoundSku(product)
+      && product.id === snapshot.selectedSkuId));
+}
+
+function scopedStorageKey(key) {
+  return `${key}:project=${encodeURIComponent(boundWorkspace.projectId)}:sku=${encodeURIComponent(boundWorkspace.sku)}`;
+}
+
+function migrateCurrentTabWorkspace() {
+  if (!boundWorkspace || legacyWorkspaceMigrationChecked) return;
+  legacyWorkspaceMigrationChecked = true;
+  try {
+    if (localStorage.getItem(scopedStorageKey(WORKSPACE_STORAGE_KEY)) !== null) return;
+    const legacy = sessionStorage.getItem(WORKSPACE_STORAGE_KEY) || localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (!legacy) return;
+    const snapshot = JSON.parse(legacy);
+    // Only adopt the already-open task when its selected child SKU is identical.
+    // Never silently copy another product's tab into this project/SKU workspace.
+    if (!snapshotMatchesBoundSku(snapshot)) return;
+    localStorage.setItem(scopedStorageKey(WORKSPACE_STORAGE_KEY), legacy);
+    const history = sessionStorage.getItem(IMAGE_HISTORY_STORAGE_KEY) || localStorage.getItem(IMAGE_HISTORY_STORAGE_KEY);
+    if (history) localStorage.setItem(scopedStorageKey(IMAGE_HISTORY_STORAGE_KEY), history);
+  } catch (error) {
+    console.warn("无法迁移当前标签页工作记录", error);
+  }
+}
 
 function readTabStorage(key) {
   try {
+    if (boundWorkspace) {
+      migrateCurrentTabWorkspace();
+      return localStorage.getItem(scopedStorageKey(key));
+    }
     const tabValue = sessionStorage.getItem(key);
     if (tabValue !== null) return tabValue;
 
@@ -161,6 +214,10 @@ function readTabStorage(key) {
 
 function writeTabStorage(key, value) {
   try {
+    if (boundWorkspace) {
+      localStorage.setItem(scopedStorageKey(key), value);
+      return true;
+    }
     sessionStorage.setItem(key, value);
     return true;
   } catch (error) {
@@ -171,9 +228,70 @@ function writeTabStorage(key, value) {
 
 function removeTabStorage(key) {
   try {
+    if (boundWorkspace) {
+      localStorage.removeItem(scopedStorageKey(key));
+      return;
+    }
     sessionStorage.removeItem(key);
   } catch {
     // The in-memory reset still applies when browser storage is unavailable.
+  }
+}
+
+async function prefillStoreSourceInputs() {
+  if (!boundWorkspace || !storeParentOrigin) return;
+  const sources = [
+    { kind: "amazon_template", inputId: "amazonTemplateFile", label: "Amazon 上品表" },
+    { kind: "supplier_html", inputId: "supplierFile", label: "1688 页面" },
+  ];
+  const loaded = [];
+  for (const source of sources) {
+    const input = byId(source.inputId);
+    if (!input || input.files?.length) continue;
+    const url = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`
+      + `?kind=${encodeURIComponent(source.kind)}&sku=${encodeURIComponent(boundWorkspace.sku)}`;
+    try {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) continue;
+      const encodedName = response.headers.get("X-Source-Filename") || "";
+      const filename = decodeURIComponent(encodedName);
+      if (!filename || /[\\/\u0000-\u001f]/.test(filename)) continue;
+      const buffer = await response.arrayBuffer();
+      if (input.files?.length) continue; // Do not replace a file the operator chose while fetching.
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([buffer], filename, { type: response.headers.get("Content-Type") || "" }));
+      input.files = transfer.files;
+      if (input.files?.[0]?.name === filename) loaded.push(`${source.label}：${filename}`);
+    } catch (error) {
+      console.warn(`未能接入${source.label}`, error);
+    }
+  }
+  if (loaded.length) {
+    const note = document.querySelector(".source-parse-note");
+    if (note) note.textContent = `已从运营工作流接入 ${loaded.join("；")}。请先核对资料，再手动点击“解析资料并提取产品信息”。`;
+  }
+}
+
+async function restoreLocalRecoveryIfNeeded() {
+  if (!boundWorkspace || readTabStorage(WORKSPACE_STORAGE_KEY)) return false;
+  const markerKey = scopedStorageKey("prompt-tool-recovery-applied-v1");
+  try {
+    if (localStorage.getItem(markerKey)) return false;
+    const filename = `${boundWorkspace.projectId}--${boundWorkspace.sku}.json`;
+    const response = await fetch(`/.local-recovery/${encodeURIComponent(filename)}`, {cache: "no-store"});
+    if (!response.ok) return false;
+    const recovery = await response.json();
+    if (recovery.projectId !== boundWorkspace.projectId || recovery.sku !== boundWorkspace.sku
+      || !snapshotMatchesBoundSku(recovery.snapshot)) return false;
+    if (!writeTabStorage(WORKSPACE_STORAGE_KEY, JSON.stringify(recovery.snapshot))) return false;
+    if (recovery.imageHistory && typeof recovery.imageHistory === "object" && !Array.isArray(recovery.imageHistory)) {
+      writeTabStorage(IMAGE_HISTORY_STORAGE_KEY, JSON.stringify(recovery.imageHistory));
+    }
+    localStorage.setItem(markerKey, new Date().toISOString());
+    return true;
+  } catch (error) {
+    console.warn("无法恢复本机旧工作记录", error);
+    return false;
   }
 }
 
@@ -258,13 +376,82 @@ function showWorkflowPage(pageName) {
     panel.classList.toggle("is-active", panel.dataset.workflowPanel === activeWorkflowPage);
   });
   persistWorkspaceSnapshot();
+  scheduleAutomaticVisualPlan();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function initWorkflowNavigation() {
   document.querySelectorAll("[data-workflow-page]").forEach((button) => button.addEventListener("click", () => showWorkflowPage(button.dataset.workflowPage)));
-  document.querySelectorAll("[data-workflow-next]").forEach((button) => button.addEventListener("click", () => showWorkflowPage(button.dataset.workflowNext)));
+  document.querySelectorAll("[data-workflow-next]").forEach((button) => button.addEventListener("click", () => {
+    if (button.id === "confirmParameterOutputs") void confirmParameterOutputs();
+    else showWorkflowPage(button.dataset.workflowNext);
+  }));
   showWorkflowPage(activeWorkflowPage);
+}
+
+async function confirmParameterOutputs() {
+  const button = byId("confirmParameterOutputs");
+  const status = byId("parameterConfirmationStatus");
+  if (!button || button.disabled) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在确认参数与卖点图方案…";
+  try {
+    if (!hasExtractedProducts()) throw new Error("请先在第 01 页解析产品资料。");
+    captureFieldOverrides();
+    renderAll();
+    const sku = selectedSku();
+    const template = selectedTemplate();
+    const fieldSignature = currentFieldSignature();
+    const facts = promptFacts(sku, currentPromptData(sku));
+    const context = visualPlanContext(facts);
+    const planSignature = JSON.stringify(context);
+    if (context.groups.length && !currentVisualPlans(facts).length) {
+      status.textContent = "正在规划当前卖点图，请稍候…";
+      const inFlightSignature = visualPlanRequests.get(sku.id);
+      await planSellingPointImages();
+      if (inFlightSignature && inFlightSignature !== planSignature
+        && selectedSku()?.id === sku.id && selectedTemplate().id === template.id
+        && currentFieldSignature() === fieldSignature) {
+        await planSellingPointImages();
+      }
+    }
+    captureFieldOverrides();
+    renderAll();
+    if (selectedSku()?.id !== sku.id || selectedTemplate().id !== template.id || currentFieldSignature() !== fieldSignature) {
+      throw new Error("确认期间产品或参数发生变化，请再点一次确认。");
+    }
+    const latestData = currentPromptData(sku);
+    const latestFacts = promptFacts(sku, latestData);
+    if (JSON.stringify(visualPlanContext(latestFacts)) !== planSignature) {
+      throw new Error("确认期间卖点图依据发生变化，请再点一次确认。");
+    }
+    const plans = currentVisualPlans(latestFacts);
+    for (let index = 0; index < context.groups.length; index += 1) {
+      const plan = plans.find((entry) => entry.groupIndex === index);
+      if (plan?.status !== "ready") {
+        throw new Error(plan?.reason || visualPlanMessages.get(sku.id) || "当前卖点图方案尚未完成，请检查方案后重试。");
+      }
+    }
+    for (const type of template.imageTypes) {
+      const item = promptStore.find((entry) => entry.key === promptCardKey(sku, template, type));
+      const expected = bracketPromptVariables(promptFor(template.id, type.id, sku, latestData), latestFacts, type.id);
+      if (!item || item.promptEn !== expected) throw new Error("提示词尚未同步最新参数，请再点一次确认。");
+      const points = sellingPointGroupForImageTitle(template.id, type.id, latestFacts);
+      if (!points.length) continue;
+      const plan = visualPlanForPoints(points, latestFacts);
+      if (!plan || !item.promptEn.includes("Execute this specific whole-set visual plan") || !item.promptEn.includes(plan.label)) {
+        throw new Error(`${type.name} 的卖点图方案尚未进入提示词，请检查方案后重试。`);
+      }
+    }
+    status.textContent = "已确认，参数与卖点图方案均已进入最新提示词。";
+    showWorkflowPage("studio");
+  } catch (error) {
+    status.textContent = error?.message || "确认未完成，请检查参数和卖点图方案。";
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
 }
 
 function loadScriptOnce(src, globalName) {
@@ -303,6 +490,10 @@ async function loadXlsx() {
 
 function selectedSku() {
   const allProducts = currentProducts();
+  if (boundWorkspace) {
+    const boundSku = allProducts.find((sku) => productMatchesBoundSku(sku));
+    if (boundSku) return boundSku;
+  }
   return allProducts.find((sku) => sku.id === byId("skuSelect").value) || allProducts[0];
 }
 
@@ -616,13 +807,22 @@ function fillSelects() {
 
 function renderProductSelect(selectedId = byId("skuSelect")?.value) {
   const products = currentProducts();
+  const select = byId("skuSelect");
   if (!hasExtractedProducts()) {
-    byId("skuSelect").innerHTML = `<option value="${emptyExtractedProduct.id}">${escapeHtml(emptyExtractedProduct.label)}</option>`;
+    select.innerHTML = `<option value="${emptyExtractedProduct.id}">${escapeHtml(emptyExtractedProduct.label)}</option>`;
     return;
   }
-  byId("skuSelect").innerHTML = products.map((sku) => `<option value="${sku.id}">${escapeHtml(skuDisplayLabel(sku))}</option>`).join("");
+  select.innerHTML = products.map((sku) => `<option value="${sku.id}">${escapeHtml(skuDisplayLabel(sku))}</option>`).join("");
+  const boundProduct = boundWorkspace && products.find((sku) => productMatchesBoundSku(sku));
+  if (boundProduct) {
+    select.value = boundProduct.id;
+    select.disabled = true;
+    select.title = `运营系统当前子体 SKU：${boundWorkspace.sku}`;
+    return;
+  }
+  select.disabled = false;
   if (selectedId && products.some((sku) => sku.id === selectedId)) {
-    byId("skuSelect").value = selectedId;
+    select.value = selectedId;
   }
 }
 
@@ -730,6 +930,7 @@ function initProductStructureRoute() {
       if (hasExtractedProducts()) {
         applyProductStructureRoute(extractedProducts);
         imageGenerationByCard = {};
+        savedReferenceSelectionByCard = {};
         renderAll();
       }
     });
@@ -1918,6 +2119,81 @@ async function fetchDetailHtml(detailUrls, onProgress) {
 
 function imageCandidateUrl(candidate) {
   return typeof candidate === "string" ? normalizeImageUrl(candidate) : normalizeImageUrl(candidate?.url);
+}
+
+function referenceImageIdentity(url) {
+  if (/^data:image\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url, window.location.href);
+    const filename = decodeURIComponent(parsed.pathname.split("/").pop() || "")
+      .replace(/\._[^.]+(?=\.[a-z0-9]+$)/i, "")
+      .toLowerCase();
+    return filename.length >= 8 ? filename : `${parsed.origin}${parsed.pathname}`.toLowerCase();
+  } catch {
+    return String(url || "");
+  }
+}
+
+function uniqueReferenceImageUrls(urls, limit = MAX_REFERENCE_CANDIDATES) {
+  const seen = new Set();
+  const result = [];
+  for (const url of urls || []) {
+    if (!url || !/^(?:https?:\/\/|data:image\/)/i.test(url)) continue;
+    const identity = referenceImageIdentity(url);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    result.push(url);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+async function referenceVisualFingerprint(url) {
+  if (!/^https?:\/\//i.test(url)) return null;
+  if (!referenceVisualFingerprintCache.has(url)) {
+    referenceVisualFingerprintCache.set(url, (async () => {
+      try {
+        const image = await loadImageForCanvas(`/api/source-proxy?url=${encodeURIComponent(url)}`);
+        const canvas = document.createElement("canvas");
+        canvas.width = 32;
+        canvas.height = 32;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return null;
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, 32, 32);
+        context.drawImage(image, 0, 0, 32, 32);
+        return context.getImageData(0, 0, 32, 32).data;
+      } catch {
+        return null;
+      }
+    })());
+  }
+  return referenceVisualFingerprintCache.get(url);
+}
+
+function sameReferenceImagePixels(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 4) {
+    difference += Math.abs(left[index] - right[index]);
+    difference += Math.abs(left[index + 1] - right[index + 1]);
+    difference += Math.abs(left[index + 2] - right[index + 2]);
+  }
+  return difference / (left.length * 0.75) < 8;
+}
+
+async function visuallyUniqueReferenceUrls(urls) {
+  const candidates = uniqueReferenceImageUrls(urls);
+  const fingerprints = await Promise.all(candidates.map(referenceVisualFingerprint));
+  const kept = [];
+  const keptFingerprints = [];
+  candidates.forEach((url, index) => {
+    const pixels = fingerprints[index];
+    if (keptFingerprints.some((existing) => sameReferenceImagePixels(existing, pixels))) return;
+    kept.push(url);
+    keptFingerprints.push(pixels);
+  });
+  return kept;
 }
 
 function imageCandidateScore(candidate, fallbackIndex = 0) {
@@ -3249,14 +3525,25 @@ function isAlternateColorReference(item = {}) {
   );
 }
 
+function isSimilarColorReference(item = {}) {
+  return String(item.sku_match || "").toLowerCase() === "same_product_similar_color";
+}
+
+function isMixedColorReference(item = {}) {
+  return /multi[\s-]*colou?r|mixed[\s-]*colou?r|assorted[\s-]*colou?r|rainbow|all[\s-]*colou?r|various colou?rs|colou?r range|多色|混色|彩色|颜色混合/i.test(
+    [item.image_type, item.reason].filter(Boolean).join(" "),
+  );
+}
+
 function referenceMetaPriority(item = {}) {
   const exact = /exact/i.test(String(item.sku_match || "")) ? 100 : 0;
+  const similar = isSimilarColorReference(item) ? 50 : 0;
   const value = /high/i.test(String(item.reference_value || "")) ? 20 : 10;
   const confidence = /high/i.test(String(item.confidence || "")) ? 5 : 0;
   const information = /parameter|spec|dimension|feature|detail|structure|exploded|option|comparison|承重|参数|结构|拆解/i.test(
     [item.image_type, item.reason].filter(Boolean).join(" "),
   ) ? 3 : 0;
-  return exact + value + confidence + information;
+  return exact + similar + value + confidence + information;
 }
 
 function diversifiedReferenceUrlsFromMeta(metaItems, fallbackUrls, limit = MAX_REFERENCE_CANDIDATES) {
@@ -3275,8 +3562,12 @@ function diversifiedReferenceUrlsFromMeta(metaItems, fallbackUrls, limit = MAX_R
       selectedSet.add(item.url);
     }
   };
-  const primary = indexed.filter((item) => item.group !== "measurement_tool" && !isAlternateColorReference(item));
+  const primary = indexed.filter((item) => item.group !== "measurement_tool" && !isAlternateColorReference(item) && !isSimilarColorReference(item));
   order.forEach((group) => primary.filter((item) => item.group === group).slice(0, 1).forEach(add));
+  indexed
+    .filter((item) => isSimilarColorReference(item) && item.group !== "measurement_tool")
+    .slice(0, 6)
+    .forEach(add);
   order.forEach((group) => primary.filter((item) => item.group === group).slice(1, quotas[group] || 2).forEach(add));
   primary.forEach(add);
 
@@ -5604,10 +5895,11 @@ function amazonListingStructureText({ text = "", material = "", style = "", item
 
 function amazonTitleUnitQuantity(title) {
   const source = String(title || "");
-  const direct = source.match(/(?:^|[^a-z0-9])([2-9]\d*)\s*[-_x×]?\s*(packs?|sets?|pieces?|pcs?|counts?|units?)(?=$|[^a-z])/i);
-  const reverse = source.match(/(?:^|[^a-z0-9])(pack|set)\s+of\s+([2-9]\d*)(?=$|[^a-z0-9])/i);
-  const count = Number(direct?.[1] || reverse?.[2] || 0);
-  const rawUnit = String(direct?.[2] || reverse?.[1] || "").toLowerCase();
+  const direct = source.match(/(?:^|[^a-z0-9])([1-9]\d*)\s*[-_x×]?\s*(packs?|sets?|pieces?|pcs?|counts?|units?)(?=$|[^a-z])/i);
+  const reverse = source.match(/(?:^|[^a-z0-9])(pack|set)\s+of\s+([1-9]\d*)(?=$|[^a-z0-9])/i);
+  const chinese = source.match(/(?:^|[^\d])([1-9]\d*)\s*(件|颗|粒|片|只|个)\s*装?/);
+  const count = Number(direct?.[1] || reverse?.[2] || chinese?.[1] || 0);
+  const rawUnit = String(direct?.[2] || reverse?.[1] || (chinese ? "pieces" : "")).toLowerCase();
   if (!Number.isInteger(count) || count < 2 || count > 999 || !rawUnit) return null;
   const unit = rawUnit.replace(/s$/, "");
   const label = unit === "pack"
@@ -5716,7 +6008,11 @@ function amazonTitleContainsFieldMetadata(value) {
 }
 
 function amazonListingBaseProductName(listing = {}) {
-  const titleName = compactAmazonTitle(listing.title || "");
+  const titleName = compactAmazonTitle(listing.title || "")
+    .replace(amazonTitleUnitQuantity(listing.title || "")
+      ? /^\d+\s*[-_x×]?\s*(?:packs?|sets?|pieces?|pcs?|counts?|units?)\b[\s,:-]*/i
+      : /$^/, "")
+    .trim();
   if (titleName && !amazonTitleContainsFieldMetadata(titleName)) return titleName;
 
   const productTypeName = compactEnglishWords(
@@ -6632,7 +6928,7 @@ async function extractSources() {
     competitorProductWeight = competitorMeasurements.productWeight;
     competitorCapacity = competitorMeasurements.capacity;
     const competitorReferenceImageCandidates = extractAmazonCompetitorImageCandidates(competitorHtml);
-    const competitorReferenceImageUrls = competitorReferenceImageCandidates.map(imageCandidateUrl).filter(Boolean);
+    const competitorReferenceImageUrls = uniqueReferenceImageUrls(competitorReferenceImageCandidates.map(imageCandidateUrl), MAX_COMPETITOR_REFERENCE_IMAGES);
     const competitorReferenceMeta = competitorReferenceImageUrls.map((url) => ({
       url,
       image_type: "amazon_competitor_reference",
@@ -6742,35 +7038,25 @@ async function extractSources() {
         ? await fetchSkuReferenceImageMapping(resolvedTargetProducts, supplierReferenceImageUrls, (message) => {
           byId("extractStatus").textContent = message;
         })
-        : { mappings: Object.fromEntries(resolvedTargetProducts.map((product) => [product.id, supplierReferenceImageUrls])), referenceMeta: {}, unmatched: [], errors: [] };
+        : { mappings: {}, referenceMeta: {}, unmatched: supplierReferenceImageUrls, errors: [] };
       if (extractionGeneration !== requestedGeneration) return;
       const allowedUrls = new Set(supplierReferenceImageUrls);
-      const fallbackPool = supplierReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES);
-      const fallbackMeta = fallbackPool.map((url) => ({
-        url,
-        image_type: "supplier_manual_review",
-        reference_value: "medium",
-        confidence: "unverified",
-        sku_match: "manual_review_required",
-        best_for: ["manual_selection"],
-        reason: "1688图片匹配未完成，仅保留在人工候选池；不得自动视为当前颜色或款式证据。",
-      }));
       referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => {
         if (!targetIdSet.has(sku.id)) return [sku.id, []];
-        const intelligentlyMappedUrls = Array.from(new Set(Array.isArray(mappingResult?.mappings?.[sku.id])
+        const intelligentlyMappedUrls = uniqueReferenceImageUrls(Array.isArray(mappingResult?.mappings?.[sku.id])
           ? mappingResult.mappings[sku.id]
-          : []))
+          : [])
           .filter((url) => allowedUrls.has(url))
           .slice(0, MAX_REFERENCE_CANDIDATES);
-        const supplierUrls = mappingResult?.errors?.length ? fallbackPool : intelligentlyMappedUrls;
-        return [sku.id, Array.from(new Set([...competitorReferenceImageUrls, ...supplierUrls])).slice(0, MAX_REFERENCE_CANDIDATES)];
+        const supplierUrls = mappingResult?.errors?.length ? [] : intelligentlyMappedUrls;
+        return [sku.id, uniqueReferenceImageUrls([...competitorReferenceImageUrls, ...supplierUrls])];
       }));
       referenceImageMetaBySku = Object.fromEntries(extractedProducts.map((sku) => {
         if (!targetIdSet.has(sku.id)) return [sku.id, []];
         return [sku.id, [
           ...competitorReferenceMeta,
           ...(mappingResult?.errors?.length
-            ? fallbackMeta
+            ? []
             : (Array.isArray(mappingResult?.referenceMeta?.[sku.id]) ? mappingResult.referenceMeta[sku.id] : [])),
         ]];
       }));
@@ -6779,25 +7065,26 @@ async function extractSources() {
       const scopeLabel = resolvedBindingScope.kind === "parent"
         ? `父体 ${resolvedBindingScope.parentSku} 的 ${resolvedTargetProducts.length} 个子 SKU`
         : (resolvedTargetProducts[0].label || resolvedTargetProducts[0].model || resolvedTargetProducts[0].id);
-      referenceMappingStatus = mappingResult?.errors?.length
-        ? `1688资料已绑定到 ${scopeLabel}；严格图片匹配失败，已保留 ${fallbackPool.length} 张均衡抽样图作为人工候选，不自动认定颜色/款式：${mappingResult.errors.slice(0, 1).join("；")}`
-        : `1688资料已绑定到 ${scopeLabel}：候选合计 ${assignmentCount} 张，排除 ${rejectedCount} 张明显无关图片；共享结构图可复用，颜色图仍按子 SKU 分配。`;
+      referenceMappingStatus = !shouldVisionFilterReferences
+        ? `1688资料已绑定到 ${scopeLabel}；本地分析不识别图片颜色，已保留竞品候选图。可手动补充当前 SKU 图片。`
+        : mappingResult?.errors?.length
+          ? `1688资料已绑定到 ${scopeLabel}；供应商图片匹配失败，暂不放入候选图，避免混入错误颜色。竞品图仍保留：${mappingResult.errors.slice(0, 1).join("；")}`
+          : `1688资料已绑定到 ${scopeLabel}：候选合计 ${assignmentCount} 张，排除 ${rejectedCount} 张颜色或身份不符的图片；供应商图按子 SKU 颜色分配。`;
     } else if (routeId === "vision" || routeId === "web") {
       const mappingResult = await fetchSkuReferenceImageMapping(extractedProducts, supplierReferenceImageUrls, (message) => {
         byId("extractStatus").textContent = message;
       });
       if (extractionGeneration !== requestedGeneration) return;
       const allowedUrls = new Set(supplierReferenceImageUrls);
-      const fallbackPool = supplierReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES);
       referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [
         sku.id,
-        Array.from(new Set([
+        uniqueReferenceImageUrls([
           ...competitorReferenceImageUrls,
           ...(mappingResult?.errors?.length
-            ? fallbackPool
+            ? []
             : (Array.isArray(mappingResult?.mappings?.[sku.id]) ? mappingResult.mappings[sku.id] : [])
               .filter((url) => allowedUrls.has(url))),
-        ])).slice(0, MAX_REFERENCE_CANDIDATES),
+        ]),
       ]));
       referenceImageMetaBySku = Object.fromEntries(extractedProducts.map((sku) => [
         sku.id,
@@ -6810,17 +7097,17 @@ async function extractSources() {
       const supplierAssignmentCount = Object.values(mappingResult?.mappings || {}).reduce((sum, urls) => sum + (Array.isArray(urls) ? urls.length : 0), 0);
       const unmatchedCount = Array.isArray(mappingResult?.unmatched) ? mappingResult.unmatched.length : 0;
       referenceMappingStatus = mappingResult?.errors?.length
-        ? `SKU 参考图严格匹配未完成，已为各 SKU 保留 ${fallbackPool.length} 张均衡抽样1688图片供人工选择，不自动认定颜色/款式：${mappingResult.errors.slice(0, 1).join("；")}`
-        : `SKU 参考图：竞品图前置 ${competitorReferenceImageUrls.length} 张，1688 建立 ${supplierAssignmentCount} 个严格匹配，候选合计 ${assignmentCount} 张，排除 ${unmatchedCount} 张无法确认或存在冲突的图片。`;
+        ? `SKU 参考图匹配未完成；供应商图片暂不放入候选图，避免混入错误颜色，竞品图仍保留：${mappingResult.errors.slice(0, 1).join("；")}`
+        : `SKU 参考图：竞品图加入候选 ${competitorReferenceImageUrls.length} 张，1688 建立 ${supplierAssignmentCount} 个匹配，候选合计 ${assignmentCount} 张，排除 ${unmatchedCount} 张无法确认或存在冲突的图片。`;
     } else if (extractedProducts.length === 1) {
-      referenceImagesBySku = { [extractedProducts[0].id]: availableReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES) };
+      referenceImagesBySku = { [extractedProducts[0].id]: competitorReferenceImageUrls };
       referenceImageMetaBySku = { [extractedProducts[0].id]: competitorReferenceMeta };
-      referenceMappingStatus = `单 SKU 资料：保留 ${referenceImagesBySku[extractedProducts[0].id].length} 张当前商品参考图。`;
+      referenceMappingStatus = `本地分析不识别图片颜色；已保留 ${competitorReferenceImageUrls.length} 张竞品候选图，可手动补充当前 SKU 的参考图。`;
     } else {
-      referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [sku.id, competitorReferenceImageUrls.slice(0, MAX_REFERENCE_CANDIDATES)]));
+      referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [sku.id, competitorReferenceImageUrls]));
       referenceImageMetaBySku = Object.fromEntries(extractedProducts.map((sku) => [sku.id, competitorReferenceMeta]));
       referenceMappingStatus = competitorReferenceImageUrls.length
-        ? `本地分析路线不调用豆包进行 SKU 图片匹配；已将 ${competitorReferenceImageUrls.length} 张竞品图放入候选图前面。`
+        ? `本地分析路线不调用豆包进行 SKU 图片匹配；已将 ${competitorReferenceImageUrls.length} 张竞品图放入候选图。`
         : "本地分析路线不调用豆包进行 SKU 图片匹配；多 SKU 参考图保持为空，可手动拖入。";
     }
     renderProductSelect(resolvedTargetProducts[0]?.id || extractedProducts[0]?.id);
@@ -7003,8 +7290,17 @@ function promptFacts(sku, data) {
   const cupType = promptValue(cupTypeValue(group.promptName || sku.shape || selectedSpec), "");
   const rawPack = productCountValue(data);
   const pack = isMixedBundle ? removeGenericPieceCount(rawPack) : rawPack;
-  const skuUnitQuantity = isMixedBundle || isDifferentDesignSet ? 0 : Number(sku.skuUnitQuantity || 0);
-  const skuUnitQuantityLabel = isMixedBundle || isDifferentDesignSet ? "" : cleanFieldDisplayValue(sku.skuUnitQuantityLabel || "");
+  const editedQuantity = amazonTitleUnitQuantity(rawPack);
+  const skuUnitQuantity = isMixedBundle || isDifferentDesignSet
+    ? 0
+    : hasFieldOverride("pack")
+      ? editedQuantity?.count || 0
+      : Number(sku.skuUnitQuantity || editedQuantity?.count || 0);
+  const skuUnitQuantityLabel = isMixedBundle || isDifferentDesignSet
+    ? ""
+    : hasFieldOverride("pack")
+      ? editedQuantity?.label || ""
+      : cleanFieldDisplayValue(sku.skuUnitQuantityLabel || editedQuantity?.label || "");
   const material = promptValue(data.material, "");
   const color = promptValue(data.color, "");
   const fit = "";
@@ -7789,10 +8085,13 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     productIdentityBasicRule(facts),
     basic || basicImageRequirements(templateId, typeId),
   ], "", 10);
-  const visualText = promptVisualSubsections(
-    [details || productDetailText(facts), skuQuantityMainRule, skuQuantityRule].filter(Boolean).join(" / "),
-    style || overallStyleText(facts, typeId)
-  );
+  const visualDetails = [details || productDetailText(facts), skuQuantityMainRule, skuQuantityRule].filter(Boolean).join(" / ");
+  const visualStyle = style || overallStyleText(facts, typeId);
+  // A reviewed selling-point plan must survive prompt formatting intact; the
+  // general clause grouping caps each category and can otherwise drop its label.
+  const visualText = referenceControlledSellingPoint
+    ? `PRODUCT FACTS: ${normalizePromptLines(visualDetails).replace(/\n+/g, " / ")}\nSCENE & COMPOSITION:\nSELLING-POINT PLAN: ${normalizePromptLines(visualStyle).replace(/\n+/g, " / ")}`
+    : promptVisualSubsections(visualDetails, visualStyle);
   const textRules = compactPromptItems([
     isMainImageType(typeId) ? mainImageNoAnnotationRule() : noChineseTextRule(),
     isMainImageType(typeId) ? "" : typeId === "3B"
@@ -8614,18 +8913,35 @@ function sellingPointsShareUnifiedEvidence(firstPoint, secondPoint, facts = {}) 
   return Boolean(first?.imageUrl && second?.imageUrl && first.imageUrl === second.imageUrl);
 }
 
-function sellingPointDisplayGroups(facts = {}) {
-  const points = uniqueSellingPoints(sellingPointCandidates(facts, 6), 4);
-  const groups = [];
-  for (let index = 0; index < points.length; index += 1) {
-    const group = [points[index]];
-    if (points[index + 1] && sellingPointsShareUnifiedEvidence(points[index], points[index + 1], facts)) {
-      group.push(points[index + 1]);
-      index += 1;
+const sellingPointSlotIdsByTemplate = {
+  scene: ["5", "6"],
+  feature: ["6", "7"],
+  spec: ["6"],
+  reference: ["4"],
+  plantTie: ["4"],
+};
+
+function sellingPointImageSelection(facts = {}, sku = selectedSku(), template = selectedTemplate()) {
+  const points = sellingPointCandidates(facts, 6);
+  const slots = (sellingPointSlotIdsByTemplate[template.id] || [])
+    .map((id) => template.imageTypes.find((type) => type.id === id))
+    .filter(Boolean);
+  const saved = sku?.sellingPointImageChoices?.[template.id] || [];
+  const indices = [];
+  slots.forEach((_, slotIndex) => {
+    const savedKey = saved[slotIndex];
+    let pointIndex = savedKey ? points.findIndex((point) => comparablePromptItem(point) === savedKey) : -1;
+    if (pointIndex < 0 || indices.includes(pointIndex)) {
+      pointIndex = points.findIndex((_, index) => !indices.includes(index));
     }
-    groups.push(group);
-  }
-  return groups;
+    indices.push(pointIndex);
+  });
+  return { points, slots, indices };
+}
+
+function sellingPointDisplayGroups(facts = {}) {
+  const { points, indices } = sellingPointImageSelection(facts);
+  return indices.filter((index) => index >= 0).map((index) => [points[index]]);
 }
 
 function sellingPointGroups(facts, groupIndex = 0) {
@@ -8639,7 +8955,14 @@ function clampSellingPointTitle(value, fallback = "Info") {
     .trim();
   const fallbackClean = String(fallback || "Info").replace(/[^a-z0-9\s&-]/gi, " ").replace(/\s+/g, " ").trim() || "Info";
   const source = clean || fallbackClean;
-  return source.split(/\s+/).slice(0, 4).join(" ");
+  const words = source.split(/\s+/);
+  if (words.length <= 4) return source;
+  const firstFour = words.slice(0, 4);
+  // Do not leave a dangling connector at the end of a short image label.
+  if (/^(?:and|or|with|for|of|to|in|on|&)$/i.test(firstFour[3])) {
+    return words.slice(1, 5).join(" ");
+  }
+  return firstFour.join(" ");
 }
 
 function sellingPointWords(point) {
@@ -8748,13 +9071,35 @@ function sellingPointProofDominanceRule(points = [], facts = {}) {
 }
 
 const visualPlanRequests = new Map();
+const visualPlanRequestPromises = new Map();
 const visualPlanMessages = new Map();
+const automaticVisualPlanAttempts = new Set();
+let automaticVisualPlanTimer = null;
+
+function sellingPointVisualRoute(templateId, groupIndex, groupCount) {
+  if (groupCount < 2 || !["scene", "feature"].includes(templateId)) return "flexible";
+  return groupIndex === 0 ? "scene_use" : "product_proof";
+}
+
+function sellingPointVisualRouteLabel(route) {
+  if (route === "scene_use") return "场景化使用证明";
+  if (route === "product_proof") return "产品本体证明";
+  return "按事实选择展示方式";
+}
+
+function sellingPointVisualRouteRule(route) {
+  if (route === "scene_use") return "VISUAL ROUTE LOCK — SCENE USE: prove this selected selling point through a visible, source-supported use interaction in the current verified Use Scene. Show enough of the surrounding activity to read as an actual use scene while keeping the current product and relevant contact/detail clear and prominent. A static product close-up on a scene-themed surface, a pre-completed arrangement, or a decorative lifestyle background does not satisfy this route. Do not invent a use, prop, mechanism, or performance result.";
+  if (route === "product_proof") return "VISUAL ROUTE LOCK — PRODUCT PROOF: prove this selected selling point with the current product itself as the main subject: a source-supported close-up of structure, material, surface, detail, or a verified property demonstration. Do not use a person or lifestyle scene as the main proof. Waterproof, durability, and other performance demonstrations require explicit evidence for this SKU; never invent them. Avoid a decorative product lineup.";
+  return "Use the source-supported proof method that most clearly demonstrates the selected selling point while preserving the exact current product.";
+}
 
 function visualPlanContext(facts) {
   const product = Object.fromEntries(["productName", "material", "color", "structure", "surfaceFinish", "scene", "dimensions", "productWeight", "capacity", "pack", "bundleComponents", "isDifferentDesignSet"].map((key) => [key, facts[key] || ""]));
-  const groups = sellingPointDisplayGroups(facts).slice(0, ["scene", "feature"].includes(selectedTemplate().id) ? 2 : 1);
+  if (facts.applicableRange) product.applicableRange = facts.applicableRange;
+  const groups = sellingPointDisplayGroups(facts);
+  const routes = groups.map((_, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length));
   const evidence = facts.sellingPointVisualEvidence || [];
-  return { product, groups, evidence, template: selectedTemplate().id, plannerVersion: 3 };
+  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 5 };
 }
 
 function currentVisualPlans(facts) {
@@ -8767,18 +9112,50 @@ function visualPlanForPoints(points, facts) {
   return currentVisualPlans(facts).find((plan) => plan.groupIndex === index);
 }
 
+function scheduleAutomaticVisualPlan() {
+  clearTimeout(automaticVisualPlanTimer);
+  automaticVisualPlanTimer = null;
+  if (!["parameters", "studio"].includes(activeWorkflowPage) || !hasExtractedProducts()) return;
+  const sku = selectedSku();
+  if (!sku) return;
+  const facts = promptFacts(sku, currentPromptData(sku));
+  const context = visualPlanContext(facts);
+  if (!context.groups.length || currentVisualPlans(facts).length || visualPlanRequests.has(sku.id)) return;
+  const signature = JSON.stringify(context);
+  const attemptKey = `${sku.id}:${signature}`;
+  if (automaticVisualPlanAttempts.has(attemptKey)) return;
+  visualPlanMessages.set(sku.id, "当前卖点图方案即将自动规划…");
+  const status = byId("planSellingPointImages")?.parentElement?.querySelector('[role="status"]');
+  if (status) status.textContent = visualPlanMessages.get(sku.id);
+  automaticVisualPlanTimer = setTimeout(() => {
+    automaticVisualPlanTimer = null;
+    const currentSku = selectedSku();
+    if (!currentSku || currentSku.id !== sku.id || !["parameters", "studio"].includes(activeWorkflowPage)) return;
+    const currentFacts = promptFacts(currentSku, currentPromptData(currentSku));
+    if (JSON.stringify(visualPlanContext(currentFacts)) !== signature || currentVisualPlans(currentFacts).length) return;
+    automaticVisualPlanAttempts.add(attemptKey);
+    void planSellingPointImages();
+  }, 2500);
+}
+
 async function planSellingPointImages() {
   const sku = selectedSku();
-  if (!sku || visualPlanRequests.has(sku.id)) return;
+  if (!sku) return;
+  if (visualPlanRequests.has(sku.id)) return visualPlanRequestPromises.get(sku.id);
   const context = visualPlanContext(promptFacts(sku, currentPromptData(sku)));
   if (!context.groups.length) return;
   const signature = JSON.stringify(context);
-  visualPlanRequests.set(sku.id, true);
+  let resolvePending;
+  visualPlanRequestPromises.set(sku.id, new Promise((resolve) => { resolvePending = resolve; }));
+  clearTimeout(automaticVisualPlanTimer);
+  automaticVisualPlanTimer = null;
+  automaticVisualPlanAttempts.add(`${sku.id}:${signature}`);
+  visualPlanRequests.set(sku.id, signature);
   visualPlanMessages.set(sku.id, "正在一起规划卖点图的动作、细节和图间区别…");
-  renderParameterPromptGrid();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 200000);
   try {
+    renderParameterPromptGrid();
     const response = await fetch("/api/visual-plans", {method: "POST", headers: {"Content-Type": "application/json"}, body: signature, signal: controller.signal});
     const result = await response.json();
     if (!response.ok || !Array.isArray(result.plans)) throw new Error(result.error || "规划失败");
@@ -8789,13 +9166,32 @@ async function planSellingPointImages() {
     }
     sku.sellingPointVisualPlan = {signature, plans: result.plans};
     visualPlanMessages.set(sku.id, result.plans.some((plan) => plan.status === "blocked") ? "部分方案需要补充依据，已阻止对应卖点图生成。" : "方案已写入对应卖点图提示词，可以逐项核对后生成。");
+    const plannedFacts = promptFacts(sku, currentPromptData(sku));
+    promptStore.forEach((item) => {
+      const state = imageGenerationByCard[item.key];
+      if (state?.status !== "needs_plan") return;
+      const points = sellingPointGroupForImageTitle(selectedTemplate().id, item.type.id, plannedFacts);
+      const plan = points.length ? visualPlanForPoints(points, plannedFacts) : null;
+      if (plan?.status === "ready") {
+        state.status = "idle";
+        state.message = "卖点图方案已就绪，可以生成图片。";
+      } else if (plan?.reason) {
+        state.message = plan.reason;
+      }
+    });
     renderAll();
   } catch (error) {
     visualPlanMessages.set(sku.id, error.name === "AbortError" ? "规划超时，请重试。" : error.message);
   } finally {
     clearTimeout(timeout);
     visualPlanRequests.delete(sku.id);
-    renderParameterPromptGrid();
+    try {
+      renderParameterPromptGrid();
+      scheduleAutomaticVisualPlan();
+    } finally {
+      visualPlanRequestPromises.delete(sku.id);
+      resolvePending();
+    }
   }
 }
 
@@ -8804,16 +9200,22 @@ function visualPlanReviewHtml(facts) {
   if (!context.groups.length) return "";
   const plans = currentVisualPlans(facts);
   const busy = visualPlanRequests.has(selectedSku().id);
-  return `<section class="control-group visual-plan-review"><h3>整套卖点图方案</h3>
-    <p class="workflow-section-note">先确定每张图如何表达，再生成图片。修改参数或切换模板后需重新规划。</p>
-    <button id="planSellingPointImages" type="button" class="secondary" ${busy ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划卖点图" : "规划卖点图"}</button>
-    <p role="status">${escapeHtml(visualPlanMessages.get(selectedSku().id) || (plans.length ? "当前方案已应用到提示词。" : "尚无适用于当前参数的方案。"))}</p>
-    ${plans.map((plan) => `<article class="visual-plan-card"><h4>${escapeHtml(context.groups[plan.groupIndex].join(" + "))}</h4>
-      <p>${plan.status === "ready" ? `图片短标题：${escapeHtml(plan.label)}` : `待确认：${escapeHtml(plan.reason)}`}</p>
-      ${plan.status === "ready" ? `<dl>${[["goal", "本图表达"], ["subject", "主体与状态"], ["action", "动作 / 细节"], ["composition", "构图重点"], ["basis", "事实依据"], ["difference", "与其他图的区别"]].map(([key, label]) => `<div><dt>${label}</dt><dd>${escapeHtml(plan[key])}</dd></div>`).join("")}</dl>` : "<p>该方案未通过事实复核，不会写入生图任务。</p>"}
-      <details><summary>修订或暂停此方案</summary><div class="field-list" data-plan-editor="${plan.groupIndex}">
+  const template = selectedTemplate();
+  const selection = sellingPointImageSelection(facts);
+  return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>整套卖点图方案</h3>
+    <p class="workflow-section-note">人工选择每张图的卖点；自动规划后可展开核对。</p></div>
+    <button id="planSellingPointImages" type="button" class="secondary" ${busy ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划" : "立即规划"}</button></div>
+    <div class="visual-plan-choice-grid">${selection.slots.map((type, index) => `<label><span>${escapeHtml(type.name)} · ${sellingPointVisualRouteLabel(context.routes[index] || "flexible")}</span><select data-selling-point-slot="${index}" ${selection.points.length ? "" : "disabled"}>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}" ${selection.indices[index] === pointIndex ? "selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>`).join("")}</div>
+    <p class="visual-plan-status" role="status">${escapeHtml(visualPlanMessages.get(selectedSku().id) || (plans.length ? "当前方案已应用到提示词。" : "尚无适用于当前参数的方案。"))}</p>
+    ${plans.map((plan) => {
+      const points = context.groups[plan.groupIndex] || [];
+      const type = template.imageTypes.find((candidate) => JSON.stringify(sellingPointGroupForImageTitle(template.id, candidate.id, facts)) === JSON.stringify(points));
+      return `<details class="visual-plan-card"><summary class="visual-plan-card-summary"><span class="visual-plan-slot">${escapeHtml(type?.name || `卖点图 ${plan.groupIndex + 1}`)} · ${sellingPointVisualRouteLabel(context.routes[plan.groupIndex])}</span><strong>${escapeHtml(points.join(" + "))}</strong><span class="visual-plan-short-label">${plan.status === "ready" ? escapeHtml(plan.label) : "待确认"}</span></summary><div class="visual-plan-card-body">
+      ${plan.status === "ready" ? `<dl>${[["goal", "本图表达"], ["subject", "主体与状态"], ["action", "动作 / 细节"], ["composition", "构图重点"], ["basis", "事实依据"], ["difference", "与其他图的区别"]].map(([key, label]) => `<div><dt>${label}</dt><dd>${escapeHtml(plan[key])}</dd></div>`).join("")}</dl>` : `<p>待确认：${escapeHtml(plan.reason)}。该方案不会进入生图任务。</p>`}
+      <details class="visual-plan-editor"><summary>修订或暂停此方案</summary><div class="field-list" data-plan-editor="${plan.groupIndex}">
       ${[["action", "具体动作"], ["composition", "构图"], ["basis", "依据"], ["difference", "图间区别"], ["visual_prompt", "画面指令（英文）"], ["reason", "暂停原因（留空则启用方案）"]].map(([key, label]) => `<div><label for="plan-${plan.groupIndex}-${key}">${label}</label><textarea id="plan-${plan.groupIndex}-${key}" data-plan-field="${key}" rows="3">${escapeHtml(plan[key])}</textarea></div>`).join("")}
-      <button type="button" data-save-visual-plan="${plan.groupIndex}">保存此方案</button></div></details></article>`).join("")}
+      <button type="button" data-save-visual-plan="${plan.groupIndex}">保存此方案</button></div></details></div></details>`;
+    }).join("")}
     </section>`;
 }
 
@@ -8821,7 +9223,8 @@ function sellingPointImageTemplateRule(points, facts = {}, imageName = "this sel
   const plan = visualPlanForPoints(points, facts);
   if (plan?.status === "ready") {
     const others = currentVisualPlans(facts).filter((item) => item.groupIndex !== plan.groupIndex && item.status === "ready");
-    return `SELLING-POINT SOURCE DIRECTION: ${imageName}: Execute this specific whole-set visual plan as the authoritative composition: ${plan.visual_prompt}. On-image text must be exactly "${plan.label}", with no subtitle or additional claim. Preserve current SKU identity and verified facts. No decorative full-pack lineup. ${others.length ? `Other images already cover these demonstrations; do not repeat their central action or product state: ${others.map((item) => item.visual_prompt).join(" / ")}.` : ""} ${sellingPointEvidenceAvoidRule()}`;
+    const route = visualPlanContext(facts).routes[plan.groupIndex];
+    return `SELLING-POINT SOURCE DIRECTION: ${imageName}: Execute this specific whole-set visual plan as the authoritative composition: ${plan.visual_prompt}. ${sellingPointVisualRouteRule(route)} On-image text must be exactly "${plan.label}", with no subtitle or additional claim. Preserve current SKU identity and verified facts. No decorative full-pack lineup. ${others.length ? `Other images already cover these demonstrations; do not repeat their central action or product state: ${others.map((item) => item.visual_prompt).join(" / ")}.` : ""} ${sellingPointEvidenceAvoidRule()}`;
   }
   if (!limitedSellingPoints(points, 2).length) {
     return [
@@ -10089,6 +10492,7 @@ function renderFacts() {
 
 function imageGenerationState(cardKey) {
   if (!imageGenerationByCard[cardKey]) {
+    const savedSelection = savedReferenceSelectionByCard[cardKey];
     const history = Array.isArray(persistedImageHistory[cardKey])
       ? persistedImageHistory[cardKey].map(normalizeGenerationHistoryRecord).filter(Boolean)
       : [];
@@ -10102,8 +10506,10 @@ function imageGenerationState(cardKey) {
       history,
       selectedHistoryIds: [],
       availableReferences: latest?.referenceSnapshot || [],
-      selectedReferences: latest?.referenceSnapshot?.slice(0, MAX_SELECTED_REFERENCES) || [],
-      referenceSelectionInitialized: Boolean(latest),
+      selectedReferences: Array.isArray(savedSelection)
+        ? savedSelection.slice(0, MAX_SELECTED_REFERENCES)
+        : (latest?.referenceSnapshot?.slice(0, MAX_SELECTED_REFERENCES) || []),
+      referenceSelectionInitialized: Array.isArray(savedSelection) || Boolean(latest),
       referencesExpanded: false,
       generatedPromptSnapshot: latest?.promptSnapshot || "",
       generatedReferenceSnapshot: latest?.referenceSnapshot || [],
@@ -10208,9 +10614,23 @@ function referenceMetaItemsForSku(skuId) {
   return values.filter((item) => item && /^https?:\/\//i.test(item.url || ""));
 }
 
-function taskMatchedReferenceUrls(type, skuId, fallbackUrls) {
+function supplierReferenceUrlsForSku(skuId) {
+  const competitorUrls = new Set(referenceMetaItemsForSku(skuId)
+    .filter((item) => item.image_type === "amazon_competitor_reference")
+    .map((item) => item.url));
+  return uniqueReferenceImageUrls([
+    ...availableReferenceImageUrls,
+    ...(Array.isArray(referenceImagesBySku[skuId]) ? referenceImagesBySku[skuId] : []),
+  ].filter((url) => !competitorUrls.has(url)), MAX_REFERENCE_CLASSIFIER_CANDIDATES);
+}
+
+function taskMatchedReferenceUrls(type, skuId) {
   const desired = new Set(referencePurposeForPromptType(type?.id));
-  const meta = referenceMetaItemsForSku(skuId);
+  const meta = referenceMetaItemsForSku(skuId).filter((item) =>
+    item.image_type !== "amazon_competitor_reference"
+    && String(item.sku_match || "").toLowerCase() === "exact"
+    && /^(?:high|medium)$/i.test(String(item.confidence || ""))
+    && !/^(?:low|none|unusable)$/i.test(String(item.reference_value || "")));
   const exactOrUseful = (item) => {
     const bestFor = [
       ...(Array.isArray(item.best_for) ? item.best_for : []),
@@ -10222,56 +10642,142 @@ function taskMatchedReferenceUrls(type, skuId, fallbackUrls) {
   const exactSku = meta
     .filter((item) => /exact|high/i.test([item.sku_match, item.confidence, item.reference_value].filter(Boolean).join(" ")))
     .map((item) => item.url);
-  return Array.from(new Set([...preferred, ...exactSku, ...fallbackUrls])).filter((url) => /^https?:\/\//i.test(url));
+  return Array.from(new Set([...preferred, ...exactSku])).filter((url) => /^https?:\/\//i.test(url));
 }
 
 function referenceImageCandidatesForCard(type, facts, sku) {
   const points = sellingPointGroupForImageTitle(selectedTemplate().id, type.id, facts);
-  const mapped = Array.isArray(referenceImagesBySku[sku?.id]) ? referenceImagesBySku[sku.id] : [];
+  const meta = referenceMetaItemsForSku(sku?.id);
+  const metaByUrl = new Map(meta.map((item) => [item.url, item]));
+  const competitorUrls = new Set(meta
+    .filter((item) => item.image_type === "amazon_competitor_reference")
+    .map((item) => item.url));
+  const mapped = Array.isArray(referenceImagesBySku[sku?.id])
+    ? uniqueReferenceImageUrls(referenceImagesBySku[sku.id].filter((url) => {
+      if (competitorUrls.has(url)) return true;
+      const item = metaByUrl.get(url);
+      const match = String(item?.sku_match || "").toLowerCase();
+      return !isMixedColorReference(item) && (match === "exact" || match === "same_product_similar_color");
+    }))
+    : [];
   const mappedSet = new Set(mapped);
+  const verifiedExactUrls = new Set(referenceMetaItemsForSku(sku?.id)
+    .filter((item) => item.image_type !== "amazon_competitor_reference"
+      && String(item.sku_match || "").toLowerCase() === "exact"
+      && /^(?:high|medium)$/i.test(String(item.confidence || "")))
+    .map((item) => item.url));
   const matched = matchedSellingPointVisualEvidence(points, facts).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
   const evidence = (facts.sellingPointVisualEvidence || []).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
-  const taskMatched = taskMatchedReferenceUrls(type, sku?.id, Array.from(new Set([...matched, ...evidence, ...mapped])));
-  const meta = referenceMetaItemsForSku(sku?.id);
+  const taskMatched = taskMatchedReferenceUrls(type, sku?.id);
   const assortmentIdentity = facts.isDifferentDesignSet
     ? meta.filter((item) => {
       const description = [item.image_type, ...(Array.isArray(item.best_for) ? item.best_for : [])].join(" ");
       const confidence = [item.sku_match, item.confidence, item.reference_value].filter(Boolean).join(" ");
-      return /hero|overview|main|white|product|multi.?angle/i.test(description) && /exact|high/i.test(confidence);
+      return /hero|overview|main|white|product|multi.?angle/i.test(description)
+        && String(item.sku_match || "").toLowerCase() === "exact"
+        && /high|medium/i.test(confidence);
     }).map((item) => item.url)
     : [];
   const identityFirst = facts.isDifferentDesignSet
-    ? Array.from(new Set([...assortmentIdentity, mapped[0]].filter(Boolean)))
+    ? Array.from(new Set(assortmentIdentity.filter(Boolean)))
     : [];
   return {
-    matched: Array.from(new Set([...identityFirst, ...matched, ...taskMatched].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES),
-    all: Array.from(new Set([...identityFirst, ...taskMatched, ...matched, ...evidence, ...mapped].filter((url) => /^https?:\/\//i.test(url)))).slice(0, MAX_REFERENCE_CANDIDATES),
+    matched: Array.from(new Set([...identityFirst, ...matched, ...taskMatched]
+      .filter((url) => url && verifiedExactUrls.has(url) && mappedSet.has(url)))).slice(0, MAX_SELECTED_REFERENCES),
+    all: uniqueReferenceImageUrls([
+      ...mapped.filter((url) => competitorUrls.has(url)),
+      ...identityFirst,
+      ...taskMatched,
+      ...matched,
+      ...evidence,
+      ...mapped.filter((url) => !competitorUrls.has(url)),
+    ]),
   };
+}
+
+function scheduleReferenceVisualDeduplication(skuId, urls) {
+  const candidates = uniqueReferenceImageUrls(urls);
+  if (candidates.length < 2) return;
+  const signature = candidates.join("\n");
+  if (referenceVisualDedupeSignatureBySku.get(skuId) === signature) return;
+  referenceVisualDedupeSignatureBySku.set(skuId, signature);
+  void visuallyUniqueReferenceUrls(candidates).then((unique) => {
+    if (referenceVisualDedupeSignatureBySku.get(skuId) !== signature || unique.length === candidates.length) return;
+    const removed = new Set(candidates.filter((url) => !unique.includes(url)));
+    referenceImagesBySku[skuId] = (referenceImagesBySku[skuId] || []).filter((url) => !removed.has(url));
+    referenceImageMetaBySku[skuId] = (referenceImageMetaBySku[skuId] || []).filter((item) => !removed.has(item?.url));
+    referenceVisualDedupeSignatureBySku.set(skuId, unique.join("\n"));
+    refreshPromptSurfaces();
+    persistWorkspaceSnapshot();
+  });
 }
 
 function prioritizeSelectedReferences(state) {
   const selected = new Set(state.selectedReferences);
   const available = new Set(state.availableReferences);
+  const competitorUrls = new Set(referenceMetaItemsForSku(selectedSku()?.id)
+    .filter((item) => item.image_type === "amazon_competitor_reference")
+    .map((item) => item.url));
   state.availableReferences = [
-    ...state.selectedReferences.filter((reference) => available.has(reference)),
-    ...state.availableReferences.filter((reference) => !selected.has(reference)),
+    ...state.availableReferences.filter((reference) => competitorUrls.has(reference)),
+    ...state.selectedReferences.filter((reference) => available.has(reference) && !competitorUrls.has(reference)),
+    ...state.availableReferences.filter((reference) => !selected.has(reference) && !competitorUrls.has(reference)),
   ];
 }
 
+function referenceCandidateBadge(item, reference) {
+  if (/^data:image\//i.test(reference)) return "手动上传";
+  if (!item) return "待人工核对";
+  if (item.image_type === "amazon_competitor_reference") return "竞品图·构图参考";
+  const match = String(item.sku_match || "").toLowerCase();
+  if (match === "exact") return "当前 SKU";
+  if (match === "same_product_similar_color") return "相近色·人工选择";
+  if (isAlternateColorReference(item)) return "异色·结构参考";
+  return "待人工核对";
+}
+
 function renderReferenceImages(state) {
+  const canRematchSupplier = ["vision", "web"].includes(selectedExtractionRoute)
+    && supplierReferenceUrlsForSku(selectedSku()?.id).length > 0;
   if (!state.availableReferences.length) {
-    return `<p class="reference-empty">暂无匹配参考图，可在下方拖入本地图片。</p>`;
+    return `
+      <div class="reference-picker-summary">
+        <div class="reference-picker-primary">
+          <span class="reference-candidate-count">候选图 <strong>0</strong> 张</span>
+          <button type="button" class="clear-reference-selection" disabled>一键取消勾选</button>
+        </div>
+        ${canRematchSupplier ? '<button type="button" class="rematch-supplier-references" title="从已上传的1688产品详情页HTML图片中，按当前SKU颜色重新筛选；不会生成图片">重新筛选1688图片</button>' : ""}
+      </div>
+      <p class="reference-empty">暂无匹配参考图，可在下方拖入本地图片。</p>`;
   }
   prioritizeSelectedReferences(state);
   const canExpand = state.availableReferences.length > 8;
+  const metaByUrl = new Map(referenceMetaItemsForSku(selectedSku()?.id).map((item) => [item.url, item]));
+  const hasSimilarColorImage = state.availableReferences.some((url) => isSimilarColorReference(metaByUrl.get(url)));
+  const hasVerifiedSkuImage = referenceMetaItemsForSku(selectedSku()?.id)
+    .some((item) => item.image_type !== "amazon_competitor_reference"
+      && String(item.sku_match || "").toLowerCase() === "exact"
+      && state.availableReferences.includes(item.url));
+  const reviewNotice = hasVerifiedSkuImage
+    ? ""
+    : '<p class="reference-empty">当前 SKU 没有已确认的同款参考图。请人工核对候选图的颜色和款式后再选择。</p>';
   return `
     <div class="reference-picker-summary">
-      <span>候选图 ${state.availableReferences.length} 张</span>
-      ${canExpand ? `<button type="button" class="reference-expand-toggle">${state.referencesExpanded ? "收起候选区" : "扩大候选区"}</button>` : ""}
+      <div class="reference-picker-primary">
+        <span class="reference-candidate-count">候选图 <strong>${state.availableReferences.length}</strong> 张</span>
+        <button type="button" class="clear-reference-selection" ${state.selectedReferences.length ? "" : "disabled"}>一键取消勾选</button>
+      </div>
+      <div class="reference-picker-actions">
+        ${canRematchSupplier ? '<button type="button" class="rematch-supplier-references" title="从已上传的1688产品详情页HTML图片中，按当前SKU颜色重新筛选；不会生成图片">重新筛选1688图片</button>' : ""}
+        ${canExpand ? `<button type="button" class="reference-expand-toggle">${state.referencesExpanded ? "收起候选区" : "扩大候选区"}</button>` : ""}
+      </div>
     </div>
+    ${reviewNotice}
+    ${hasSimilarColorImage ? '<p class="reference-empty">相近色仅作为候选图，需人工确认后勾选；不会自动选入参考图。</p>' : ""}
     <div class="reference-image-grid ${state.referencesExpanded ? "is-expanded" : ""}">${state.availableReferences.map((reference, index) => {
     const checked = state.selectedReferences.includes(reference);
     const previewUrl = /^data:image\//i.test(reference) ? reference : sourceProxyUrl(reference);
+    const badge = referenceCandidateBadge(metaByUrl.get(reference), reference);
     return `
       <div class="reference-image-option ${checked ? "is-selected" : ""}" title="参考图 ${index + 1}">
         <label>
@@ -10279,6 +10785,7 @@ function renderReferenceImages(state) {
           <img src="${escapeHtml(previewUrl)}" alt="参考图 ${index + 1}" loading="lazy">
           <span>${checked ? "已选择" : "选择"}</span>
         </label>
+        <small class="reference-image-source">${escapeHtml(badge)}</small>
         <button type="button" class="preview-reference-image" data-reference-index="${index}" aria-label="放大查看参考图 ${index + 1}" title="放大查看">⌕</button>
         <button type="button" class="delete-reference-image" data-reference-index="${index}" aria-label="删除参考图 ${index + 1}" title="删除参考图">×</button>
       </div>
@@ -10356,6 +10863,7 @@ function renderImageGenerator(cardKey) {
         <button type="button" class="generate-image" ${isBusy ? "disabled" : ""}>${isBusy ? "生成中…" : "生成图片"}</button>
       </div>
       <p class="image-generation-status" role="status" aria-live="polite">${escapeHtml(state.message)}</p>
+      ${state.status === "needs_plan" ? '<button type="button" class="go-to-visual-plan">前往第 02 页规划卖点图</button>' : ""}
       ${historyHtml ? `<div class="generation-history">${historyHtml}</div>` : ""}
     </section>
   `;
@@ -10480,6 +10988,8 @@ function updateImageGenerator(cardKey) {
       outputNode.classList.toggle("is-dirty", changed);
       const label = taskState.status === "queued"
         ? "等待本轮生成"
+        : taskState.status === "needs_plan"
+          ? "待规划卖点图"
         : taskState.status === "failed"
           ? "本轮生成失败"
           : changed
@@ -10557,7 +11067,7 @@ async function generateImageForCard(cardKey) {
   if (points.length) {
     const plan = visualPlanForPoints(points, facts);
     if (plan?.status !== "ready") {
-      state.status = "failed";
+      state.status = "needs_plan";
       state.message = plan?.reason || "请先在 02 页规划当前卖点图，再生成。";
       updateImageGenerator(cardKey);
       return;
@@ -10604,11 +11114,14 @@ function refreshCurrentGenerationSummary() {
   if (!items.length) return;
   const successCount = items.filter((item) => imageGenerationState(item.key).status === "success").length;
   const failedCount = items.filter((item) => imageGenerationState(item.key).status === "failed").length;
-  const pendingCount = Math.max(0, items.length - successCount - failedCount);
+  const needsPlanCount = items.filter((item) => imageGenerationState(item.key).status === "needs_plan").length;
+  const pendingCount = Math.max(0, items.length - successCount - failedCount - needsPlanCount);
   if (successCount === items.length) {
     setBulkGenerationUi(`当前图组 ${successCount} 张图片全部成功。`);
   } else if (failedCount) {
-    setBulkGenerationUi(`当前图组：成功 ${successCount} 张，失败 ${failedCount} 张，待生成 ${pendingCount} 张。`);
+    setBulkGenerationUi(`当前图组：成功 ${successCount} 张，失败 ${failedCount} 张${needsPlanCount ? `，待规划 ${needsPlanCount} 张` : ""}，待生成 ${pendingCount} 张。`);
+  } else if (needsPlanCount) {
+    setBulkGenerationUi(`当前图组：成功 ${successCount} 张，待规划 ${needsPlanCount} 张，待生成 ${pendingCount} 张。`);
   } else if (successCount) {
     setBulkGenerationUi(`当前图组已生成 ${successCount}/${items.length} 张。`);
   }
@@ -10635,13 +11148,13 @@ function automaticReferencesForPromptItem(item) {
   const data = currentPromptData(sku);
   const facts = promptFacts(sku, data);
   const candidates = referenceImageCandidatesForCard(item.type, facts, sku);
-  const preferred = candidates.matched.length ? candidates.matched : candidates.all;
-  return Array.from(new Set(preferred)).slice(0, MAX_SELECTED_REFERENCES);
+  return Array.from(new Set(candidates.matched)).slice(0, MAX_SELECTED_REFERENCES);
 }
 
 function imageTaskStatusLabel(state) {
   if (state.status === "queued") return "待生成";
   if (["submitting", "processing"].includes(state.status)) return "生成中";
+  if (state.status === "needs_plan") return "待规划";
   if (state.status === "failed") return "生成失败";
   if (state.status === "success") return "已生成";
   return state.images.length ? "已生成" : "待生成";
@@ -10714,10 +11227,11 @@ async function generateAllImagesForCurrentOutput(referenceMode = "auto") {
     bulkImageGenerationRunning = false;
     bulkImageGenerationMode = "";
     const successCount = items.filter((item) => imageGenerationState(item.key).status === "success").length;
-    const failedCount = items.length - successCount;
+    const needsPlanCount = items.filter((item) => imageGenerationState(item.key).status === "needs_plan").length;
+    const failedCount = items.length - successCount - needsPlanCount;
     setBulkGenerationUi(
-      failedCount
-        ? `批量生成完成：成功 ${successCount} 张，失败 ${failedCount} 张；可查看各卡片错误并单独重试。`
+      failedCount || needsPlanCount
+        ? `批量生成完成：成功 ${successCount} 张${needsPlanCount ? `，待规划 ${needsPlanCount} 张` : ""}${failedCount ? `，失败 ${failedCount} 张` : ""}。${needsPlanCount ? "请到第 02 页规划卖点图后再生成。" : "可查看各卡片错误并单独重试。"}`
         : `批量生成完成：${successCount} 张图片全部成功。`,
       items.length,
       items.length,
@@ -10740,6 +11254,7 @@ function cleanChineseProductFilenameCandidate(value) {
   if (!/[\u3400-\u9fff]/.test(decoded)) return "";
   return decoded
     .replace(/\d+\s*(?:件|个|只|套|支|片|包|盒)(?:装)?\s*$/g, " ")
+    .replace(/\d+\s*$/g, " ")
     .replace(/(?:亚马逊|阿里巴巴|跨境|现货|厂家直销|外贸|爆款)/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -10748,6 +11263,7 @@ function cleanChineseProductFilenameCandidate(value) {
 
 function chineseProductFilenameBase() {
   const sku = selectedSku() || {};
+  const amazonTemplateName = cleanChineseProductFilenameCandidate(amazonTemplateSourceFileName);
   const explicitChineseCandidates = [
     sku.chineseProductName,
     sku.originalProductName,
@@ -10755,11 +11271,10 @@ function chineseProductFilenameBase() {
     sku.sourceName,
   ].map(cleanChineseProductFilenameCandidate).filter(Boolean);
   const sourceChineseCandidates = [
-    amazonTemplateSourceFileName,
     ...(Array.isArray(supplierSourceFileNames) ? supplierSourceFileNames : []),
     extractFirstMatch(sourcePayload?.supplier || "", [/PRODUCT_TITLE:\s*([^\n]+)/i]),
   ].map(cleanChineseProductFilenameCandidate).filter(Boolean);
-  const name = explicitChineseCandidates[0] || sourceChineseCandidates[0] || "产品套图";
+  const name = amazonTemplateName || explicitChineseCandidates[0] || sourceChineseCandidates[0] || "产品套图";
   return name
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
     .replace(/\s+/g, " ")
@@ -11009,6 +11524,50 @@ async function downloadSelectedGenerationHistory(cardKey) {
 function bindImageGeneratorSection(section) {
   const cardKey = section.dataset.cardKey;
   const state = imageGenerationState(cardKey);
+  section.querySelector(".rematch-supplier-references")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const sku = selectedSku();
+    const data = currentPromptData(sku);
+    const supplierUrls = supplierReferenceUrlsForSku(sku.id);
+    if (!supplierUrls.length) return;
+    button.disabled = true;
+    state.message = `正在按 ${data.color || sku.color || "当前颜色"} 重新匹配 ${supplierUrls.length} 张供应商图片…`;
+    const status = section.querySelector(".image-generation-status");
+    if (status) status.textContent = state.message;
+    const result = await fetchSkuReferenceImageMapping([{
+      ...sku,
+      productName: data.productName || sku.productName,
+      colorEnglish: data.color || sku.colorEnglish || sku.color,
+      pack: data.pack || sku.pack,
+      structure: data.structure || sku.structure,
+    }], supplierUrls, (message) => {
+      if (status) status.textContent = message;
+    });
+    const competitorMeta = referenceMetaItemsForSku(sku.id)
+      .filter((item) => item.image_type === "amazon_competitor_reference");
+    const competitorUrls = competitorMeta.map((item) => item.url);
+    const matchedUrls = result?.errors?.length ? [] : (result?.mappings?.[sku.id] || []);
+    referenceImagesBySku[sku.id] = uniqueReferenceImageUrls([...competitorUrls, ...matchedUrls]);
+    referenceImageMetaBySku[sku.id] = [
+      ...competitorMeta,
+      ...(result?.errors?.length ? [] : (result?.referenceMeta?.[sku.id] || [])),
+    ];
+    state.message = result?.errors?.length
+      ? `供应商图匹配失败，竞品候选图已保留：${result.errors[0]}`
+      : matchedUrls.length
+        ? `已找到 ${matchedUrls.length} 张与 ${data.color || sku.color || "当前颜色"} 相关的供应商候选图；请人工核对后勾选。`
+        : `未找到与 ${data.color || sku.color || "当前颜色"} 相关的供应商图；竞品候选图已保留。`;
+    refreshPromptSurfaces();
+    persistWorkspaceSnapshot();
+  });
+  section.querySelector(".clear-reference-selection")?.addEventListener("click", () => {
+    state.selectedReferences = [];
+    savedReferenceSelectionByCard[cardKey] = [];
+    lastReferenceSelectionCardKey = cardKey;
+    state.message = "已取消当前任务的全部候选图勾选。";
+    updateImageGenerator(cardKey);
+    persistWorkspaceSnapshot();
+  });
   section.querySelector(".reference-expand-toggle")?.addEventListener("click", () => {
     state.referencesExpanded = !state.referencesExpanded;
     updateImageGenerator(cardKey);
@@ -11039,6 +11598,8 @@ function bindImageGeneratorSection(section) {
       }
       prioritizeSelectedReferences(state);
       updateImageGenerator(cardKey);
+      savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
+      persistWorkspaceSnapshot();
     });
   });
   section.querySelectorAll(".delete-reference-image").forEach((button) => {
@@ -11051,6 +11612,8 @@ function bindImageGeneratorSection(section) {
       state.selectedReferences = state.selectedReferences.filter((item) => item !== reference);
       state.message = "已删除该参考图。";
       updateImageGenerator(cardKey);
+      savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
+      persistWorkspaceSnapshot();
     });
   });
   section.querySelectorAll(".preview-reference-image").forEach((button) => {
@@ -11107,6 +11670,10 @@ function bindImageGeneratorSection(section) {
     updateImageGenerator(cardKey);
   });
   section.querySelector(".generate-image")?.addEventListener("click", () => generateImageForCard(cardKey));
+  section.querySelector(".go-to-visual-plan")?.addEventListener("click", () => {
+    showWorkflowPage("parameters");
+    byId("planSellingPointImages")?.scrollIntoView({behavior: "smooth", block: "center"});
+  });
 }
 
 function bindImageGeneratorEvents() {
@@ -11253,11 +11820,17 @@ function renderProductPromptGrid() {
     return { id: type.id, key, index, type, language, promptEn, prompt, empty: !promptEn.trim() };
   });
 
+  if (promptStore.length) {
+    scheduleReferenceVisualDeduplication(sku.id, referenceImageCandidatesForCard(promptStore[0].type, facts, sku).all);
+  }
+
   promptStore.forEach((item) => {
     const type = item.type;
     const state = imageGenerationState(item.key);
     const referenceCandidates = referenceImageCandidatesForCard(type, facts, sku);
-    state.availableReferences = Array.from(new Set([...referenceCandidates.all, ...state.availableReferences])).slice(0, MAX_REFERENCE_CANDIDATES);
+    const manuallyUploaded = state.availableReferences.filter((url) => /^data:image\//i.test(url));
+    state.availableReferences = uniqueReferenceImageUrls([...referenceCandidates.all, ...manuallyUploaded]);
+    state.selectedReferences = state.selectedReferences.filter((url) => state.availableReferences.includes(url));
     if (!state.referenceSelectionInitialized) {
       state.selectedReferences = referenceCandidates.matched.slice(0, MAX_SELECTED_REFERENCES);
       state.referenceSelectionInitialized = true;
@@ -11314,12 +11887,34 @@ function renderParameterPromptGrid() {
       <article class="prompt-card parameter-prompt-detail">
         <div class="prompt-card-head"><div><span>${escapeHtml(displayLabel)}</span><h3>${escapeHtml(activeItem.type.name)}</h3></div><div class="prompt-actions"><button type="button" class="copy-prompt" data-prompt-key="${escapeHtml(activeItem.key)}">复制</button><button type="button" class="language-toggle" data-prompt-key="${escapeHtml(activeItem.key)}">${activeItem.language === "zh" ? "切英文" : "切中文"}</button></div></div>
         <div class="parameter-prompt-link"><span>左侧当前 SKU 参数</span><b>→</b><span>${escapeHtml(activeItem.id)} 对应提示词</span></div>
-        <section class="task-prompt-panel"><div class="task-input-heading"><div><strong>完整提示词</strong><span>左侧任何参数修改都会重新计算此处内容</span></div></div><pre class="prompt-preview">${highlightPromptVariables(activeItem.prompt, facts, activeItem.type.id)}</pre></section>
+        <section class="task-prompt-panel parameter-prompt-preview-panel ${expandedParameterPrompts.has(activeItem.key) ? "is-expanded" : ""}"><div class="task-input-heading"><div><strong>完整提示词</strong><span>左侧任何参数修改都会重新计算此处内容</span></div><button type="button" class="parameter-prompt-expand" aria-expanded="${expandedParameterPrompts.has(activeItem.key)}">${expandedParameterPrompts.has(activeItem.key) ? "收起提示词" : "展开完整提示词"}</button></div><pre class="prompt-preview">${highlightPromptVariables(activeItem.prompt, facts, activeItem.type.id)}</pre></section>
       </article>
     </div>
   `;
   bindPromptTaskSelection(grid);
   bindPromptTextControls(grid);
+  grid.querySelector(".parameter-prompt-expand")?.addEventListener("click", () => {
+    if (expandedParameterPrompts.has(activeItem.key)) expandedParameterPrompts.delete(activeItem.key);
+    else expandedParameterPrompts.add(activeItem.key);
+    renderParameterPromptGrid();
+  });
+  grid.querySelectorAll("[data-selling-point-slot]").forEach((select) => select.addEventListener("change", () => {
+    const selection = sellingPointImageSelection(promptFacts(sku, currentPromptData(sku)), sku, selectedTemplate());
+    const slotIndex = Number(select.dataset.sellingPointSlot);
+    const pointIndex = Number(select.value);
+    if (!selection.slots[slotIndex] || !selection.points[pointIndex]) return;
+    const indices = [...selection.indices];
+    const previousIndex = indices[slotIndex];
+    const otherSlot = indices.findIndex((index, position) => position !== slotIndex && index === pointIndex);
+    if (otherSlot >= 0) indices[otherSlot] = previousIndex;
+    indices[slotIndex] = pointIndex;
+    sku.sellingPointImageChoices = {
+      ...(sku.sellingPointImageChoices || {}),
+      [selectedTemplate().id]: indices.map((index) => index >= 0 ? comparablePromptItem(selection.points[index]) : ""),
+    };
+    visualPlanMessages.delete(sku.id);
+    renderAll();
+  }));
   byId("planSellingPointImages")?.addEventListener("click", planSellingPointImages);
   grid.querySelectorAll("[data-save-visual-plan]").forEach((button) => button.addEventListener("click", () => {
     const index = Number(button.dataset.saveVisualPlan);
@@ -11338,8 +11933,12 @@ function renderPrompt() {
 }
 
 function renderAll() {
+  if (!byId("confirmParameterOutputs")?.disabled && byId("parameterConfirmationStatus")) {
+    byId("parameterConfirmationStatus").textContent = "";
+  }
   renderBundleEditor();
   renderProductParameters();
+  scheduleAutomaticVisualPlan();
   renderFacts();
   const productLabel = hasExtractedProducts() ? skuDisplayLabel(selectedSku()) : "新产品";
   document.title = `${productLabel} · 提示词工具`;
@@ -11349,6 +11948,7 @@ function renderAll() {
 
 function persistWorkspaceSnapshot() {
   if (!hasExtractedProducts()) return;
+  if (boundWorkspace && !productMatchesBoundSku(selectedSku())) return;
   const snapshot = {
     savedAt: new Date().toISOString(),
     extractedProducts,
@@ -11357,6 +11957,11 @@ function persistWorkspaceSnapshot() {
     referenceImagesBySku,
     referenceImageMetaBySku,
     availableReferenceImageUrls,
+    referenceSelectionsByCard: {
+      ...savedReferenceSelectionByCard,
+      ...Object.fromEntries(Object.entries(imageGenerationByCard).map(([key, state]) => [key,
+        state.selectedReferences.filter((url) => /^https?:\/\//i.test(url)).slice(0, MAX_SELECTED_REFERENCES)])),
+    },
     bundleStateBySku,
     supplierSourceFileNames,
     amazonTemplateSourceFileName,
@@ -11381,6 +11986,7 @@ function restoreWorkspaceSnapshot() {
   try {
     const snapshot = JSON.parse(readTabStorage(WORKSPACE_STORAGE_KEY) || "null");
     if (!snapshot || !Array.isArray(snapshot.extractedProducts) || !snapshot.extractedProducts.length) return null;
+    if (boundWorkspace && !snapshotMatchesBoundSku(snapshot)) return null;
     extractedProducts = snapshot.extractedProducts;
     fieldOverridesBySku = snapshot.fieldOverridesBySku && typeof snapshot.fieldOverridesBySku === "object" ? snapshot.fieldOverridesBySku : {};
     extractedProducts = extractedProducts.map((sku) => {
@@ -11423,6 +12029,8 @@ function restoreWorkspaceSnapshot() {
     referenceImagesBySku = snapshot.referenceImagesBySku && typeof snapshot.referenceImagesBySku === "object" ? snapshot.referenceImagesBySku : {};
     referenceImageMetaBySku = snapshot.referenceImageMetaBySku && typeof snapshot.referenceImageMetaBySku === "object" ? snapshot.referenceImageMetaBySku : {};
     availableReferenceImageUrls = Array.isArray(snapshot.availableReferenceImageUrls) ? snapshot.availableReferenceImageUrls : [];
+    savedReferenceSelectionByCard = snapshot.referenceSelectionsByCard && typeof snapshot.referenceSelectionsByCard === "object"
+      ? snapshot.referenceSelectionsByCard : {};
     bundleStateBySku = snapshot.bundleStateBySku && typeof snapshot.bundleStateBySku === "object" ? snapshot.bundleStateBySku : {};
     supplierSourceFileNames = Array.isArray(snapshot.supplierSourceFileNames) ? snapshot.supplierSourceFileNames : [];
     amazonTemplateSourceFileName = String(snapshot.amazonTemplateSourceFileName || "");
@@ -11501,6 +12109,7 @@ function clearExtractedSourceState({ render = true } = {}) {
   sellingPointDraftDirty = false;
   promptStore = [];
   imageGenerationByCard = {};
+  savedReferenceSelectionByCard = {};
   lastReferenceSelectionCardKey = "";
   bulkImageGenerationRunning = false;
   availableReferenceImageUrls = [];
@@ -11630,12 +12239,14 @@ function initThemeToggle() {
   });
 }
 
-function init() {
+async function init() {
   window.renderAll = renderAll;
   window.promptForSku = promptFor;
   initThemeToggle();
   initWorkflowNavigation();
   fillSelects();
+  await restoreLocalRecoveryIfNeeded();
+  persistedImageHistory = loadPersistedImageHistory();
   const restoredWorkspace = restoreWorkspaceSnapshot();
   initProductStructureRoute();
   initExtractionRoutePreview();
@@ -11643,7 +12254,11 @@ function init() {
   renderAll();
   if (restoredWorkspace) {
     showWorkflowPage(restoredWorkspace.activeWorkflowPage || "studio");
-    byId("extractStatus").textContent = `已恢复 ${extractedProducts.length} 个产品 / 款式及其生图记录。`;
+    byId("extractStatus").textContent = boundWorkspace
+      ? `已恢复运营项目 ${boundWorkspace.projectId} · 子体 ${boundWorkspace.sku} 的资料和生图记录。`
+      : `已恢复 ${extractedProducts.length} 个产品 / 款式及其生图记录。`;
+  } else if (boundWorkspace) {
+    byId("extractStatus").textContent = `当前运营项目 ${boundWorkspace.projectId} · 子体 ${boundWorkspace.sku} 尚无已保存资料；请在此处解析当前子体，或先刷新原内嵌页面迁移旧记录。`;
   }
   startFieldWatcher();
 
@@ -11694,6 +12309,7 @@ function init() {
     referenceImagesBySku = {};
     referenceImageMetaBySku = {};
     imageGenerationByCard = {};
+    savedReferenceSelectionByCard = {};
     productStructureRouteManuallySelected = false;
     syncProductStructureRouteFromBinding(true);
     renderAll();
@@ -11730,6 +12346,7 @@ function init() {
   byId("generateAllImagesAuto")?.addEventListener("click", () => generateAllImagesForCurrentOutput("auto"));
   byId("generateAllImagesManual")?.addEventListener("click", () => generateAllImagesForCurrentOutput("manual"));
   byId("saveGeneratedSet")?.addEventListener("click", saveGeneratedSet);
+  await prefillStoreSourceInputs();
 }
 
 init();
