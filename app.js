@@ -12347,6 +12347,9 @@ async function init() {
   byId("generateAllImagesManual")?.addEventListener("click", () => generateAllImagesForCurrentOutput("manual"));
   byId("saveGeneratedSet")?.addEventListener("click", saveGeneratedSet);
   await prefillStoreSourceInputs();
+  // Assigning FileList programmatically does not fire change. Populate the
+  // supplier-binding choices from the S1 template without starting extraction.
+  if (byId("amazonTemplateFile")?.files?.length) await refreshSupplierBindingOptions();
 }
 
 init();
