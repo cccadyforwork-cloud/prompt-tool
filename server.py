@@ -1292,13 +1292,14 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         if len(identity) < 2 or not image_urls:
             self._send_json({"product_name": {}, "attributes": [], "dimensions": [], "selling_points": [], "use_scenes": [], "sources": [], "message": "没有可识别的商品详情图信息"})
             return
-        cache_key = json.dumps({"schemaVersion": "base-product-name-v2", "identity": identity, "localEvidence": local_evidence, "imageUrls": image_urls}, ensure_ascii=False).casefold()
+        model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
+        force_refresh = payload.get("forceRefresh") is True
+        cache_key = json.dumps({"schemaVersion": "base-product-name-v2", "model": model, "identity": identity, "localEvidence": local_evidence, "imageUrls": image_urls}, ensure_ascii=False).casefold()
         cached = PRODUCT_ANALYSIS_CACHE.get(cache_key)
-        if cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
+        if not force_refresh and cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
             self._send_json(cached[1])
             return
         api_key = os.environ.get("ARK_API_KEY", "").strip()
-        model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
         if not api_key.startswith("ark-"):
             self._send_json({
                 "product_name": {},

@@ -2244,6 +2244,147 @@ ul {
   overflow-wrap: anywhere;
 }
 
+.selling-point-sources {
+  display: grid;
+  gap: 5px;
+  margin: 7px 0 2px;
+}
+
+.selling-point-source-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 9px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.selling-point-source-row small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.selling-point-review {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--surface-2);
+}
+
+.selling-point-review-head,
+.selling-point-candidate,
+.selling-point-review-actions,
+.selling-point-add {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.selling-point-review-head {
+  justify-content: space-between;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.selling-point-review-head span,
+.selling-point-history-row small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.selling-point-review-active {
+  margin: 9px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.selling-point-candidate-list {
+  display: grid;
+  gap: 6px;
+}
+
+.selling-point-candidate {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 7px 9px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.selling-point-candidate input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px;
+  min-height: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.selling-point-candidate span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.selling-point-candidate strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.selling-point-candidate small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.selling-point-review-actions > button,
+.selling-point-add > button {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  margin-top: 8px;
+  border-radius: 10px;
+  padding: 7px;
+  font-size: 11px;
+}
+
+.selling-point-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  margin-top: 8px;
+}
+
+.selling-point-add > button {
+  flex: 0 0 58px;
+}
+
+.selling-point-history {
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.selling-point-history-row {
+  margin-top: 7px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.selling-point-history-row p {
+  margin: 4px 0 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
 .task-prompt-panel .prompt-preview {
   max-height: none;
   min-height: 0;
@@ -2641,6 +2782,7 @@ ul {
 .reference-image-option label {
   display: block;
   height: 100%;
+  margin: 0;
   cursor: pointer;
 }
 
@@ -2689,29 +2831,11 @@ ul {
   background: var(--surface-2);
 }
 
-.reference-image-option span {
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  border-radius: 999px;
-  padding: 2px 6px;
-  color: #fff;
-  background: rgba(16, 22, 40, 0.74);
-  font-size: 9px;
-  font-weight: 800;
-}
-
-.reference-image-option.is-selected span {
-  border: 1px solid rgba(255, 255, 255, 0.86);
-  background: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
-}
-
 .reference-image-source {
   position: absolute;
   bottom: 4px;
   left: 4px;
-  max-width: calc(100% - 48px);
+  max-width: calc(100% - 8px);
   overflow: hidden;
   border-radius: 4px;
   padding: 2px 4px;
@@ -2814,6 +2938,25 @@ ul {
 
 .studio-prompt-panel .reference-image-option.is-selected .preview-reference-image {
   left: 52px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .studio-prompt-panel .reference-image-option .preview-reference-image,
+  .studio-prompt-panel .reference-image-option .delete-reference-image {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-4px);
+    transition: opacity 150ms ease, transform 150ms ease;
+  }
+
+  .studio-prompt-panel .reference-image-option:hover .preview-reference-image,
+  .studio-prompt-panel .reference-image-option:hover .delete-reference-image,
+  .studio-prompt-panel .reference-image-option:focus-within .preview-reference-image,
+  .studio-prompt-panel .reference-image-option:focus-within .delete-reference-image {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
 }
 
 .reference-drop-zone {

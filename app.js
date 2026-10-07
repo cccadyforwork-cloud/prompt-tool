@@ -111,7 +111,7 @@ const fields = [
 ];
 
 const manualFields = [
-  ["pack", "Product Count / Set", ""],
+  ["pack", "Product Count", ""],
   ["applicableRange", "Applicable Range", ""],
   ["surfaceFinish", "Surface Finish / Process", ""],
   ["productDimensions", "Product Dimensions", ""],
@@ -121,11 +121,15 @@ const manualFields = [
 
 const allFields = [...fields, ...manualFields];
 const manualFieldKeys = new Set(manualFields.map(([key]) => key));
-const extractedManualFieldKeys = new Set(["applicableRange", "surfaceFinish", "productDimensions", "productWeight", "capacity"]);
+const extractedManualFieldKeys = new Set(["pack", "applicableRange", "surfaceFinish", "productDimensions", "productWeight", "capacity"]);
 const assortmentScopedParameterKeys = new Set(["productDimensions", "productWeight", "capacity"]);
 const supplierStructuredFieldKeys = new Set(["material", "applicableRange"]);
 const multilineFieldKeys = new Set(["scene", "sellingPoints", "productDimensions"]);
 const sellingPointFieldKeys = new Set(["sellingPoints"]);
+const SELLING_POINT_SOURCE_VISION = "1688 页面图片 · 豆包识图提取";
+const SELLING_POINT_SOURCE_WEB = "豆包联网补充";
+const SELLING_POINT_SOURCE_MANUAL = "人工填写/修改";
+const SELLING_POINT_SOURCE_UNKNOWN = "来源未追踪（旧记录）";
 const NO_REFERENCE_SCENE_MESSAGE = "没有参考场景信息";
 const NO_REFERENCE_SELLING_POINT_MESSAGE = "没有参考卖点信息";
 
@@ -143,6 +147,7 @@ let bulkImageGenerationMode = "";
 let generatedSetSaving = false;
 const IMAGE_HISTORY_STORAGE_KEY = "prompt-tool-image-history-v1";
 const WORKSPACE_STORAGE_KEY = "prompt-tool-workspace-v1";
+const SELLING_POINT_REVIEW_STORAGE_KEY = "prompt-tool-selling-point-review-v1";
 const workspaceParams = new URLSearchParams(window.location.search);
 const workspaceProjectId = workspaceParams.get("store_project_id") || "";
 const workspaceSku = workspaceParams.get("store_sku") || "";
@@ -322,6 +327,7 @@ let sourcePayload = {
 let fieldOverrides = {};
 let fieldOverridesBySku = {};
 let appliedSellingPointOverridesBySku = {};
+let sellingPointReviewsBySku = {};
 let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
 let sellingPointInputRevision = 0;
@@ -771,7 +777,7 @@ function valueMap(sku) {
   const useContext = sanitizeUseContextFields(sku);
   return {
     productName: cleanFieldDisplayValue(defaultProductName(sku)),
-    pack: cleanFieldDisplayValue(sku.pack || ""),
+    pack: cleanFieldDisplayValue(sku.skuUnitQuantityLabel || sku.pack || ""),
     material: cleanFieldDisplayValue(sku.material || materialFallback),
     color: cleanFieldDisplayValue(sku.color || colorFallback),
     structure: cleanFieldDisplayValue(sku.structure || structureFallback),
@@ -788,8 +794,8 @@ function valueMap(sku) {
     ], 4).join("\n"),
     surfaceFinish: explicitSurfaceFinishValues(sku.surfaceFinish || ""),
     bundleComponents: cleanFieldDisplayValue(sku.bundleComponents || ""),
-    productCountToken: ensureParameterToken("PRODUCT_COUNT_OR_SET", sku.pack || ""),
-    singleSpec: sku.singleSpec || `[CURRENT_PRODUCT_OPTION: ${group.promptName || "[PRODUCT_SPEC]"}, ${sku.pack || "[PRODUCT_COUNT_OR_SET]"}]`,
+    productCountToken: ensureParameterToken("PRODUCT_COUNT", sku.skuUnitQuantityLabel || sku.pack || ""),
+    singleSpec: sku.singleSpec || `[CURRENT_PRODUCT_OPTION: ${group.promptName || "[PRODUCT_SPEC]"}, ${sku.pack || "[PRODUCT_COUNT]"}]`,
     specList: sku.specList || `[SPEC_LIST: ${(group.promptSpecs || ["[SPECIFICATION_LIST]"]).join(" / ")}]`,
     variantList: sku.variantList || variantFallback,
     dimensionList,
@@ -1038,6 +1044,7 @@ function renderFields(reset = false) {
     if (manualFieldList) manualFieldList.innerHTML = `<p class="empty-state">解析资料后可手动补充数量、尺寸、重量等参数。</p>`;
     return;
   }
+  const sellingPointReview = sellingPointReviewForSku(sku);
   const renderFieldControls = (fieldDefs, useExtractedDefaults) => fieldDefs.map(([key, label, fallback]) => {
     const suppressSharedAssortmentDimension = sku.productStructureRoute === "assortment"
       && assortmentScopedParameterKeys.has(key);
@@ -1074,10 +1081,10 @@ function renderFields(reset = false) {
         ? `<textarea id="field-${key}" class="product-dimensions-input" data-key="${key}" rows="7" placeholder="每行一个尺寸，例如 Length: 5.9 in">${escapeHtml(displayValue)}</textarea>
           <p class="scene-enrich-status">每行保留“部位名称: 数值 + 单位”；可直接增加或删除尺寸行。</p>`
       : multilineFieldKeys.has(key)
-        ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4">${escapeHtml(displayValue)}</textarea>`
+        ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4"${key === "sellingPoints" && sellingPointReview?.locked ? " disabled" : ""}>${escapeHtml(displayValue)}</textarea>`
         : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}"${suppressSharedAssortmentDimension ? " disabled placeholder=\"不同款需按成员分别取证\"" : ""}>`;
     const conflictText = cleanFieldDisplayValue(parameterData?.fieldConflicts?.[key] || "");
-    const sourceText = !suppressSharedAssortmentDimension
+    const sourceText = key === "sellingPoints" ? "" : !suppressSharedAssortmentDimension
       ? conflictText
           ? `来源冲突，等待人工确认：${conflictText}`
           : displayValue
@@ -1088,24 +1095,28 @@ function renderFields(reset = false) {
       <div>
         <label for="field-${key}">${displayLabel}</label>
         ${fieldControl}
+        ${key === "pack" ? '<p class="parameter-source">每个 SKU 默认售卖 1 Pack；这里填写包内数量与单位，如 10 Pcs 或 10 Rolls。</p>' : ""}
         ${sourceText ? `<p class="parameter-source">来源：${escapeHtml(sourceText)}</p>` : ""}
+        ${key === "sellingPoints" ? `<div id="sellingPointSourceList">${sellingPointSourcesHtml(sku, displayValue)}</div>` : ""}
       </div>
     `;
   }).join("");
   const fieldControls = renderFieldControls(fields, true);
   const manualFieldControls = renderFieldControls(manualFields, (key) => extractedManualFieldKeys.has(key));
   fieldList.innerHTML = `${fieldControls}
+    ${sellingPointReviewHtml(sku)}
     <div id="sellingPointApplyWrap" class="selling-point-apply-wrap${sellingPointDraftDirty ? "" : " is-hidden"}">
       <button id="applySellingPoints" type="button" class="ghost selling-point-apply">确认生成卖点图提示词</button>
       <p class="selling-point-apply-note">卖点已修改，点击后更新右侧卖点图场景和提示词。</p>
     </div>
   `;
   if (manualFieldList) manualFieldList.innerHTML = manualFieldControls;
-  document.querySelectorAll("#fieldList input, #fieldList textarea, #manualFieldList input, #manualFieldList textarea").forEach((input) => {
+  document.querySelectorAll("#fieldList [data-key], #manualFieldList [data-key]").forEach((input) => {
     ["input", "change"].forEach((eventName) => input.addEventListener(eventName, handleFieldInput));
   });
   byId("applySellingPoints")?.addEventListener("click", applySellingPointChanges);
   byId("enrichUseScenes")?.addEventListener("click", enrichUseScenesOnline);
+  bindSellingPointReviewControls(sku);
   updateSellingPointApplyState();
 }
 
@@ -1140,6 +1151,253 @@ function splitSellingPointText(value) {
     .split(/\n+|[;；]\s*|\s+\+\s+|\s+\/\s+/)
     .map((item) => item.trim())
     .filter((item) => item && !isDefaultExcludedSellingPoint(item));
+}
+
+function sellingPointEntriesForText(sku, text) {
+  const saved = Array.isArray(sku?.sellingPointEntries) ? sku.sellingPointEntries : [];
+  return splitSellingPointText(text).map((claim) => {
+    const match = saved.find((entry) => cleanFieldDisplayValue(entry?.claim) === claim);
+    const visualEvidence = (sku?.sellingPointVisualEvidence || []).find((item) => cleanFieldDisplayValue(item?.claim) === claim);
+    return match
+      ? {
+        claim,
+        source: cleanFieldDisplayValue(match.source) || SELLING_POINT_SOURCE_UNKNOWN,
+        evidence: cleanFieldDisplayValue(match.evidence || visualEvidence?.evidence),
+        imageUrl: /^https?:\/\//i.test(match.imageUrl || visualEvidence?.imageUrl || "") ? (match.imageUrl || visualEvidence?.imageUrl) : "",
+      }
+      : { claim, source: SELLING_POINT_SOURCE_UNKNOWN };
+  });
+}
+
+function sellingPointReviewKey(sku) {
+  if (boundWorkspace && productMatchesBoundSku(sku)) return boundWorkspace.sku;
+  return String(sku?.model || sku?.id || "");
+}
+
+function normalizeSellingPointEntries(entries) {
+  const seen = new Set();
+  return (Array.isArray(entries) ? entries : []).map((entry) => ({
+    claim: cleanFieldDisplayValue(entry?.claim),
+    source: cleanFieldDisplayValue(entry?.source) || SELLING_POINT_SOURCE_UNKNOWN,
+    evidence: cleanFieldDisplayValue(entry?.evidence),
+    imageUrl: /^https?:\/\//i.test(entry?.imageUrl || "") ? entry.imageUrl : "",
+  })).filter((entry) => {
+    const key = entry.claim.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 12);
+}
+
+function loadSellingPointReviews() {
+  try {
+    const saved = JSON.parse(readTabStorage(SELLING_POINT_REVIEW_STORAGE_KEY) || "{}");
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistSellingPointReviews() {
+  writeTabStorage(SELLING_POINT_REVIEW_STORAGE_KEY, JSON.stringify(sellingPointReviewsBySku));
+}
+
+function appendSellingPointReviewHistory(review, kind, entries) {
+  const normalized = normalizeSellingPointEntries(entries);
+  const history = Array.isArray(review.history) ? review.history : [];
+  const last = history[history.length - 1];
+  if (last?.kind === kind && JSON.stringify(last.entries) === JSON.stringify(normalized)) return;
+  const version = Number(review.nextVersion || last?.version || 0) + 1;
+  review.nextVersion = version;
+  review.history = [...history, { version, kind, at: new Date().toISOString(), entries: normalized }].slice(-20);
+}
+
+function sellingPointReviewForSku(sku, create = true) {
+  const key = sellingPointReviewKey(sku);
+  if (!key) return null;
+  let review = sellingPointReviewsBySku[key];
+  if (!review && create) {
+    const text = fieldOverridesBySku[sku.id]?.sellingPoints || sku.sellingPoints || "";
+    const entries = normalizeSellingPointEntries(sellingPointEntriesForText(sku, text));
+    review = { locked: false, selectedEntries: [], candidateEntries: entries, checkedClaims: entries.map((item) => item.claim), history: [], nextVersion: 0 };
+    if (entries.length) appendSellingPointReviewHistory(review, "候选", entries);
+    sellingPointReviewsBySku[key] = review;
+    persistSellingPointReviews();
+  }
+  return review || null;
+}
+
+function addSellingPointCandidates(sku, entries, { replace = false } = {}) {
+  const review = sellingPointReviewForSku(sku);
+  if (!review) return;
+  const incoming = normalizeSellingPointEntries(entries);
+  if (!incoming.length) return;
+  const previous = normalizeSellingPointEntries(review.candidateEntries);
+  const changed = JSON.stringify(incoming) !== JSON.stringify(normalizeSellingPointEntries(review.latestEntries || previous));
+  review.candidateEntries = replace
+    ? incoming
+    : normalizeSellingPointEntries([...incoming, ...previous]);
+  if (!Array.isArray(review.checkedClaims) || !review.checkedClaims.length && !review.locked) {
+    review.checkedClaims = incoming.map((item) => item.claim);
+  }
+  if (changed) {
+    review.latestEntries = incoming;
+    appendSellingPointReviewHistory(review, "候选", incoming);
+  }
+  persistSellingPointReviews();
+}
+
+function applyLockedSellingPointReview(sku) {
+  const review = sellingPointReviewForSku(sku, false);
+  if (!review?.locked || !review.selectedEntries?.length) return false;
+  const selected = normalizeSellingPointEntries(review.selectedEntries);
+  const text = selected.map((item) => item.claim).join("\n");
+  sku.sellingPoints = text;
+  sku.sellingPointEntries = selected;
+  sku.sellingPointVisualEvidence = selected.filter((entry) => entry.evidence && entry.imageUrl)
+    .map((entry) => ({ claim: entry.claim, evidence: entry.evidence, imageUrl: entry.imageUrl }));
+  sku.fieldSources = { ...(sku.fieldSources || {}), sellingPoints: "运营已确认，逐条来源见下方" };
+  fieldOverridesBySku[sku.id] = { ...(fieldOverridesBySku[sku.id] || {}), sellingPoints: text };
+  appliedSellingPointOverridesBySku[sku.id] = { sellingPoints: text };
+  return true;
+}
+
+function sellingPointReviewHtml(sku) {
+  const review = sellingPointReviewForSku(sku);
+  if (!review) return "";
+  const candidates = normalizeSellingPointEntries(review.candidateEntries);
+  const checked = new Set(review.checkedClaims || []);
+  const selected = normalizeSellingPointEntries(review.selectedEntries);
+  const selectedHtml = review.locked
+    ? `<p class="selling-point-review-active">已锁定：${escapeHtml(selected.map((item) => item.claim).join(" · "))}</p>`
+    : '<p class="selling-point-review-active">候选尚未确认；请勾选要使用的卖点，再锁定。</p>';
+  const candidateHtml = candidates.length
+    ? candidates.map((entry, index) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}><span><strong>${escapeHtml(entry.claim)}</strong><small>来源：${escapeHtml(entry.source)}${entry.evidence ? ` · 依据：${escapeHtml(entry.evidence)}` : ""}</small></span></label>`).join("")
+    : '<p class="parameter-source">尚无候选卖点；可以先解析资料，或手动添加。</p>';
+  const history = (review.history || []).slice().reverse().map((item) => `<div class="selling-point-history-row"><b>V${Number(item.version) || 1} · ${escapeHtml(item.kind || "候选")}</b><small>${escapeHtml(item.at || "")}</small><p>${escapeHtml((item.entries || []).map((entry) => entry.claim).join(" / ") || "未提取到卖点")}</p></div>`).join("");
+  const canRefresh = Boolean(review.visionRequest?.imageUrls?.length);
+  return `<section class="selling-point-review" aria-label="卖点候选与确认">
+    <div class="selling-point-review-head"><strong>卖点候选 · ${review.locked ? "已锁定" : "待人工确认"}</strong><span>只影响当前 SKU</span></div>
+    ${selectedHtml}
+    <div class="selling-point-candidate-list">${candidateHtml}</div>
+    <div class="selling-point-review-actions"><button type="button" id="lockSellingPointChoices"${candidates.length ? "" : " disabled"}>确认所选并锁定</button><button type="button" class="secondary" id="refreshSellingPointChoices"${canRefresh ? "" : " disabled"}>重新识图</button></div>
+    <div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增人工卖点候选" placeholder="新增人工卖点候选（英文）"><button type="button" class="secondary" id="addManualSellingPointCandidate">添加</button></div>
+    ${canRefresh ? "" : '<p class="parameter-source">重新识图需先用当前资料解析一次，以保存本子体的图片清单。</p>'}
+    <p id="sellingPointReviewStatus" class="parameter-source" role="status" aria-live="polite"></p>
+    <details class="selling-point-history"><summary>查看历史版本（${(review.history || []).length}）</summary>${history || '<p class="parameter-source">暂无历史版本</p>'}</details>
+  </section>`;
+}
+
+function bindSellingPointReviewControls(sku) {
+  const review = sellingPointReviewForSku(sku, false);
+  if (!review) return;
+  document.querySelectorAll("[data-selling-point-choice]").forEach((input) => input.addEventListener("change", () => {
+    const entries = normalizeSellingPointEntries(review.candidateEntries);
+    review.checkedClaims = entries.filter((entry, index) => {
+      const checkbox = document.querySelector(`[data-selling-point-choice="${index}"]`);
+      return checkbox?.checked;
+    }).map((entry) => entry.claim);
+    persistSellingPointReviews();
+  }));
+  byId("lockSellingPointChoices")?.addEventListener("click", () => {
+    const selected = normalizeSellingPointEntries(review.candidateEntries)
+      .filter((entry) => (review.checkedClaims || []).includes(entry.claim));
+    if (!selected.length) {
+      byId("sellingPointReviewStatus").textContent = "请至少勾选一条卖点。";
+      return;
+    }
+    review.locked = true;
+    review.selectedEntries = selected;
+    appendSellingPointReviewHistory(review, "运营确认锁定", selected);
+    persistSellingPointReviews();
+    applyLockedSellingPointReview(sku);
+    renderFields(true);
+    renderAll();
+    byId("sellingPointReviewStatus").textContent = "已锁定当前 SKU 的卖点；普通重新解析不会覆盖。";
+  });
+  byId("addManualSellingPointCandidate")?.addEventListener("click", () => {
+    const input = byId("manualSellingPointCandidate");
+    const claim = String(input?.value || "").trim();
+    if (!/^[\x20-\x7E]{5,120}$/.test(claim)) {
+      byId("sellingPointReviewStatus").textContent = "请填写 5–120 个英文字符的卖点。";
+      return;
+    }
+    const entry = { claim, source: SELLING_POINT_SOURCE_MANUAL, evidence: "", imageUrl: "" };
+    review.candidateEntries = normalizeSellingPointEntries([...(review.candidateEntries || []), entry]);
+    review.checkedClaims = [...new Set([...(review.checkedClaims || []), claim])];
+    appendSellingPointReviewHistory(review, "人工候选", [entry]);
+    persistSellingPointReviews();
+    renderFields(true);
+    renderAll();
+  });
+  byId("refreshSellingPointChoices")?.addEventListener("click", refreshSellingPointCandidates);
+}
+
+async function refreshSellingPointCandidates() {
+  const sku = selectedSku();
+  const review = sellingPointReviewForSku(sku, false);
+  const request = review?.visionRequest;
+  const status = byId("sellingPointReviewStatus");
+  if (!request?.imageUrls?.length) {
+    if (status) status.textContent = "请先解析当前资料，保存本子体的图片清单。";
+    return;
+  }
+  const button = byId("refreshSellingPointChoices");
+  if (button) button.disabled = true;
+  if (status) status.textContent = "正在对上次解析所用的图片重新识图；已锁定的卖点不会改变…";
+  try {
+    const response = await fetch("/api/product-analysis", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ ...request, forceRefresh: true }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    if (selectedSku()?.id !== sku.id) return;
+    if (result?.errors?.length && !(result?.selling_points || []).length) throw new Error(result.errors.slice(0, 1).join("；"));
+    const entries = normalizeSellingPointEntries((result?.selling_points || []).map((item) => ({
+      claim: item.claim,
+      source: SELLING_POINT_SOURCE_VISION,
+      evidence: item.evidence,
+      imageUrl: item.image_url,
+    })));
+    if (!entries.length) {
+      appendSellingPointReviewHistory(review, "重新识图·无卖点", []);
+      persistSellingPointReviews();
+      if (status) status.textContent = "本次识图没有提取出新卖点；原有锁定结果未改变。";
+      return;
+    }
+    addSellingPointCandidates(sku, entries);
+    renderFields(true);
+    renderAll();
+    byId("sellingPointReviewStatus").textContent = `本次识图得到 ${entries.length} 条候选；请与历史版本比较，勾选后再确认锁定。`;
+  } catch (error) {
+    if (status) status.textContent = `重新识图未完成：${error.message || "请求失败"}。原结果未改变。`;
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
+}
+
+function sellingPointSourcesHtml(sku, text) {
+  const entries = sellingPointEntriesForText(sku, text);
+  if (!entries.length) return "";
+  return `<div class="selling-point-sources" aria-label="逐条卖点来源">${entries.map((entry) => `
+    <div class="selling-point-source-row">
+      <span>${escapeHtml(entry.claim)}</span>
+      <small>来源：${escapeHtml(entry.source)}</small>
+    </div>`).join("")}</div>`;
+}
+
+function updateSellingPointSources() {
+  const target = byId("sellingPointSourceList");
+  if (target) target.innerHTML = sellingPointSourcesHtml(selectedSku(), byId("field-sellingPoints")?.value || "");
+}
+
+function recordSellingPointEntries(sku, text, source) {
+  if (!sku) return;
+  sku.sellingPointEntries = splitSellingPointText(text).map((claim) => ({ claim, source }));
+  sku.fieldSources = { ...(sku.fieldSources || {}), sellingPoints: source };
+  if (!sellingPointReviewForSku(sku, false)?.locked) addSellingPointCandidates(sku, sku.sellingPointEntries);
 }
 
 function cleanTokenValue(value) {
@@ -1268,7 +1526,7 @@ function renderProductParameters() {
       ? formatUseSceneDisplayValue(rawValue)
       : key === "sellingPoints" ? formatMultilineSellingPoints(rawValue) : rawValue;
     const conflict = scopedToMember ? "" : cleanFieldDisplayValue(sku.fieldConflicts?.[key] || "");
-    const source = conflict
+    const source = key === "sellingPoints" ? "" : conflict
       ? `来源冲突，等待人工确认：${conflict}`
       : value ? parameterSourceForData(parameterData, key) : "";
     return `
@@ -1276,6 +1534,7 @@ function renderProductParameters() {
         <div id="review-label-${key}" class="parameter-review-label">${escapeHtml(label)}</div>
         <div class="parameter-review-value${multilineFieldKeys.has(key) ? " is-multiline" : ""}${value ? "" : " is-empty"}" role="textbox" aria-readonly="true" aria-labelledby="review-label-${key}"${multilineFieldKeys.has(key) ? ' aria-multiline="true"' : ""}>${escapeHtml(value || (scopedToMember ? "不同款需按成员分别取证" : "未提取到"))}</div>
         ${source ? `<p class="parameter-source">来源：${escapeHtml(source)}</p>` : ""}
+        ${key === "sellingPoints" ? sellingPointSourcesHtml(sku, value) : ""}
       </div>
     `;
   }).join("");
@@ -1473,7 +1732,17 @@ function handleFieldInput(event) {
     if (skuId) {
       const sku = currentProducts().find((item) => item.id === skuId);
       if (sku) {
-        sku.fieldSources = { ...(sku.fieldSources || {}), [key]: "人工修改" };
+        if (isSellingPointField) {
+          const priorEntries = Array.isArray(sku.sellingPointEntries) ? sku.sellingPointEntries : [];
+          sku.sellingPointEntries = splitSellingPointText(event.currentTarget.value).map((claim) => {
+            const prior = priorEntries.find((entry) => entry?.claim === claim);
+            return prior ? { ...prior } : { claim, source: SELLING_POINT_SOURCE_MANUAL };
+          });
+          const sources = [...new Set(sku.sellingPointEntries.map((entry) => entry.source))];
+          sku.fieldSources = { ...(sku.fieldSources || {}), sellingPoints: sources.length === 1 ? sources[0] : "多来源，见逐条标注" };
+        } else {
+          sku.fieldSources = { ...(sku.fieldSources || {}), [key]: "人工修改" };
+        }
         if (sku.fieldConflicts?.[key]) {
           sku.fieldConflicts = Object.fromEntries(Object.entries(sku.fieldConflicts).filter(([conflictKey]) => conflictKey !== key));
         }
@@ -1494,8 +1763,24 @@ function handleFieldInput(event) {
   if (isSellingPointField) {
     sellingPointDraftDirty = false;
     updateSellingPointApplyState();
+    updateSellingPointSources();
   }
   captureFieldOverrides();
+  if (isSellingPointField && event.type === "change") {
+    const sku = selectedSku();
+    const review = sellingPointReviewForSku(sku);
+    if (review && !review.locked) {
+      const entries = sellingPointEntriesForText(sku, event.currentTarget.value);
+      addSellingPointCandidates(sku, entries);
+      review.checkedClaims = entries.map((entry) => entry.claim);
+      persistSellingPointReviews();
+      // A change event may be caused by clicking "lock" while the textarea
+      // still has focus. Defer the redraw so the click is not lost.
+      window.setTimeout(() => {
+        if (selectedSku()?.id === sku.id) renderFields(true);
+      }, 0);
+    }
+  }
   renderAll();
 }
 
@@ -1610,7 +1895,7 @@ function currentPromptData(sku) {
   const pack = fieldsData.pack || "";
   const applicableRange = validApplicableRangeValue(fieldsData.applicableRange || "");
   data.productName = productName;
-  data.productCountToken = ensureParameterToken("PRODUCT_COUNT_OR_SET", pack);
+  data.productCountToken = ensureParameterToken("PRODUCT_COUNT", pack);
   data.singleSpec = `[CURRENT_PRODUCT_OPTION: ${[productSpec, pack].filter(Boolean).join(", ")}]`;
   data.bundleComponents = bundleComponentPromptText(bundleStateForSku(sku)) || base.bundleComponents || sku.bundleComponents || "";
   // A mixed-design set cannot safely reuse one global length/width/thickness
@@ -3764,14 +4049,28 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
   const hintedSpec = cleanFieldDisplayValue(
     identityHint.outputSizeCode || identityHint.sizeCode || identityHint.shape || identityHint.model || "",
   );
-  const analysisResult = routeId === "vision" || routeId === "web"
-    ? await fetchLocalProductAnalysisProxy({
-      productName: productTitleFromSupplierHtml(html, baseText) || hintedProductName,
-      selectedSpec: hintedSpec,
-      material: extractProductDetailAttributes(attributeSource).Material || identityHint.material || "",
-      structure: extractProductDetailAttributes(attributeSource).Structure || identityHint.structure || "",
-      localEvidence: [detailAttrLines.join("\n"), attributeSource].filter(Boolean).join("\n").slice(0, 12000),
-    }, visionImageCandidates, onProgress)
+  const analysisFacts = {
+    productName: productTitleFromSupplierHtml(html, baseText) || hintedProductName,
+    selectedSpec: hintedSpec,
+    material: extractProductDetailAttributes(attributeSource).Material || identityHint.material || "",
+    structure: extractProductDetailAttributes(attributeSource).Structure || identityHint.structure || "",
+    localEvidence: [detailAttrLines.join("\n"), attributeSource].filter(Boolean).join("\n").slice(0, 12000),
+  };
+  if (boundWorkspace && (routeId === "vision" || routeId === "web")) {
+    const key = boundWorkspace.sku;
+    const review = sellingPointReviewsBySku[key] || {
+      locked: false, selectedEntries: [], candidateEntries: [], checkedClaims: [], history: [], nextVersion: 0,
+    };
+    review.visionRequest = {
+      ...analysisFacts,
+      imageUrls: uniqueByUrl(visionImageCandidates).map(imageCandidateUrl).filter(Boolean).slice(0, 12),
+    };
+    sellingPointReviewsBySku[key] = review;
+    persistSellingPointReviews();
+  }
+  const skipLockedVision = Boolean(boundWorkspace && sellingPointReviewsBySku[boundWorkspace.sku]?.locked);
+  const analysisResult = (routeId === "vision" || routeId === "web") && !skipLockedVision
+    ? await fetchLocalProductAnalysisProxy(analysisFacts, visionImageCandidates, onProgress)
     : null;
   const analysisEvidence = productAnalysisEvidenceText(analysisResult, combinedBeforeVision);
   return {
@@ -5895,20 +6194,31 @@ function amazonListingStructureText({ text = "", material = "", style = "", item
 
 function amazonTitleUnitQuantity(title) {
   const source = String(title || "");
-  const direct = source.match(/(?:^|[^a-z0-9])([1-9]\d*)\s*[-_x×]?\s*(packs?|sets?|pieces?|pcs?|counts?|units?)(?=$|[^a-z])/i);
+  // Read contents first; "10 pcs 1 pack" and "10 rolls 1 pack" both mean
+  // ONE saleable pack with 10 pieces/rolls, never 10 or 1 packs of goods.
+  const directContents = source.match(/(?:^|[^a-z0-9])([1-9]\d*)\s*[-_x×]?\s*(pieces?|pcs?|rolls?|beads?|counts?|units?)(?=$|[^a-z])/i);
+  const directPack = source.match(/(?:^|[^a-z0-9])([1-9]\d*)\s*[-_x×]?\s*(packs?|sets?)(?=$|[^a-z])/i);
+  const direct = directContents || directPack;
   const reverse = source.match(/(?:^|[^a-z0-9])(pack|set)\s+of\s+([1-9]\d*)(?=$|[^a-z0-9])/i);
   const chinese = source.match(/(?:^|[^\d])([1-9]\d*)\s*(件|颗|粒|片|只|个)\s*装?/);
   const count = Number(direct?.[1] || reverse?.[2] || chinese?.[1] || 0);
   const rawUnit = String(direct?.[2] || reverse?.[1] || (chinese ? "pieces" : "")).toLowerCase();
-  if (!Number.isInteger(count) || count < 2 || count > 999 || !rawUnit) return null;
+  if (!Number.isInteger(count) || count < 1 || count > 999 || !rawUnit) return null;
   const unit = rawUnit.replace(/s$/, "");
+  if (unit === "pack" && count === 1) return null; // "1 pack" says nothing about its contents.
   const label = unit === "pack"
-    ? `${count}-Pack`
+    // "100 Pack" in a child title is the contents of ONE saleable pack,
+    // not an order for one hundred packs.
+    ? `${count} Pieces`
     : unit === "set"
       ? `${count}-Set`
+      : unit === "roll"
+        ? `${count} Rolls`
+        : unit === "bead"
+          ? `${count} Beads`
       : unit === "count"
         ? `${count}-Count`
-        : `${count} Pieces`;
+        : `${count} ${count === 1 ? "Pc" : "Pcs"}`;
   return { count, label };
 }
 
@@ -6118,6 +6428,10 @@ function amazonRowsToProducts(rows, skuFilter = "") {
     const theme = amazonRowValue(row, columns, "Variation Theme Name", "variation_theme") || amazonRowValue(parentRow, columns, "Variation Theme Name", "variation_theme");
     const childListing = amazonSharedFacts(row, columns);
     const listing = amazonFactsWithFallback(childListing, shared);
+    // Pack contents are child-specific even when other listing fields are
+    // inherited from the parent. Never silently copy the parent's count.
+    const childPack = childListing.pack || "";
+    const childUnitQuantity = childListing.skuUnitQuantity || 0;
     const attrs = amazonVariantAttributes(row, columns, theme);
     const rowTitle = amazonRowValue(row, columns, "Item Name", "item_name");
     if (/SIZE/i.test(theme || "") && !attrs.size) {
@@ -6126,7 +6440,7 @@ function amazonRowsToProducts(rows, skuFilter = "") {
     const optionParts = [
       attrs.color,
       attrs.size && !/^(?:one size|free size)$/i.test(attrs.size) ? attrs.size : "",
-      listing.skuUnitQuantityLabel,
+      childPack,
       attrs.teamName,
     ].filter(Boolean);
     const optionLabel = optionParts.join(" / ") || sku;
@@ -6153,9 +6467,9 @@ function amazonRowsToProducts(rows, skuFilter = "") {
       variantStyle: "",
       sizeCode,
       outputSizeCode: sizeCode,
-      pack: listing.pack || "",
-      skuUnitQuantity: listing.skuUnitQuantity || 0,
-      skuUnitQuantityLabel: listing.skuUnitQuantityLabel || "",
+      pack: childPack,
+      skuUnitQuantity: childUnitQuantity,
+      skuUnitQuantityLabel: childPack,
       material: listing.material,
       structure: listing.structure,
       scene: listing.scene,
@@ -6165,7 +6479,7 @@ function amazonRowsToProducts(rows, skuFilter = "") {
       groupKey: parentSku || amazonRowValue(parentRow, columns, "SKU", "contribution_sku") || "amazon-template",
       group: {
         promptName: listingBaseName,
-        promptSpecs: [listing.readableProductType, theme, listing.pack, listing.material, listing.structure, listing.scene].filter(Boolean),
+        promptSpecs: [listing.readableProductType, theme, childPack, listing.material, listing.structure, listing.scene].filter(Boolean),
         dimensions: childListing.dimensionList ? dimensionListItems(childListing.dimensionList, productName) : [],
         evidenceNote: `Amazon 模板：按 Child SKU 提取 ${sourceRowInfos.length} 个采购款式；变体主题 ${theme || "未填写"}。${filter?.hasFilter ? `筛选：${filter.raw}。` : ""}`,
       },
@@ -6177,13 +6491,13 @@ function amazonRowsToProducts(rows, skuFilter = "") {
           : `Amazon 模板：Child SKU = 款式数量；${theme || "变体"} = 款式属性。`,
       },
       singleSpec: `[CURRENT_PRODUCT_OPTION: ${optionLabel}]`,
-      specList: `[SPEC_LIST: ${[listing.shortTitle, optionLabel, listing.pack, listing.material, listing.structure, listing.scene].filter(Boolean).join(" / ")}]`,
+      specList: `[SPEC_LIST: ${[listing.shortTitle, optionLabel, childPack, listing.material, listing.structure, listing.scene].filter(Boolean).join(" / ")}]`,
       variantList: "",
       dimensionList: childListing.dimensionList || "",
       fieldSources: {
         productName: `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行`,
         color: attrs.color || attrs.colorMap ? `Amazon Child SKU颜色 · 第 ${rowInfo.excelRowNumber} 行` : "",
-        pack: listing.skuUnitQuantityLabel ? `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行` : "",
+        pack: childPack ? `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行` : "",
         material: listing.material ? `Amazon Child SKU明确材质 · 第 ${rowInfo.excelRowNumber} 行` : "",
         structure: listing.structure ? `Amazon Child SKU明确结构 · 第 ${rowInfo.excelRowNumber} 行` : "",
         productDimensions: childListing.dimensionList ? `Amazon Child SKU标题明确尺寸 · 第 ${rowInfo.excelRowNumber} 行` : "",
@@ -6395,6 +6709,10 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     ...splitSellingPointText(supplierProduct.feature2),
   ], 6).filter((point) => !isOrdinaryMaterialSellingPoint(point) && sellingPointKey(point) !== "material");
   const sellingPoints = supplierSellingPoints.slice(0, 4).join("\n");
+  const sellingPointEntries = supplierSellingPoints.slice(0, 4).map((claim) => {
+    const entry = (supplierProduct.sellingPointEntries || []).find((item) => item?.claim === claim);
+    return { claim, source: entry?.source || SELLING_POINT_SOURCE_UNKNOWN };
+  });
   const hasSupplierPropertyEvidence = Boolean(sellingPoints);
   const fit = supplierProduct.fit || amazonProduct.fit || "";
   const titleQuantity = amazonSkuTitleQuantityFacts(amazonProduct);
@@ -6433,7 +6751,7 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
       color: amazonProduct.color ? amazonProduct.fieldSources?.color || "Amazon Child SKU颜色" : supplierProduct.fieldSources?.color || "1688当前款式颜色",
       structure: structure ? supplierProduct.fieldSources?.structure || supplierProduct.structuredAttributesSource || "1688当前商品资料" : "",
       scene: scene ? supplierProduct.fieldSources?.scene || "1688图文详情使用场景" : "",
-      sellingPoints: sellingPoints ? supplierProduct.fieldSources?.sellingPoints || "1688图文详情核心卖点" : "",
+      sellingPoints: sellingPoints ? supplierProduct.fieldSources?.sellingPoints || SELLING_POINT_SOURCE_UNKNOWN : "",
       pack: titleQuantity?.label ? "Amazon Child SKU标题" : supplierProduct.pack ? supplierProduct.fieldSources?.pack || "1688当前款式明确数量" : "",
       applicableRange: supplierProduct.applicableRangeSource || "",
       productDimensions: hasDimensionEvidence
@@ -6455,6 +6773,7 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     scene,
     installationSteps: supplierProduct.installationSteps || amazonProduct.installationSteps || "",
     sellingPoints,
+    sellingPointEntries,
     surfaceFinish,
     productWeight,
     capacity,
@@ -6525,6 +6844,45 @@ function supplierProductForAmazonVariant(supplierProducts, amazonProduct, allowS
   return allowSharedFallback ? supplierProducts[0] : null;
 }
 
+function commonSupplierProduct(supplierProducts) {
+  if (!supplierProducts.length) return null;
+  const first = supplierProducts[0];
+  // These fields come from the shared supplier page, but a value is reusable
+  // only when every extracted supplier option agrees. Never borrow an option's
+  // color, size, quantity or picture merely because the operator chose a SKU.
+  const commonFields = [
+    "material", "structure", "scene", "sellingPoints", "surfaceFinish",
+    "dimensionList", "applicableRange", "productWeight", "capacity", "installationSteps",
+  ];
+  const shared = {
+    ...first,
+    color: "", displayColor: "", colorEnglish: "", size: "", pack: "",
+    skuUnitQuantity: 0, skuUnitQuantityLabel: "", productUnitCount: "",
+    fit: "", feature1: "", feature2: "", supplierOption: null,
+    dims: {}, visionEvidence: { ...(first.visionEvidence || {}), dimensions: [] },
+    group: { ...(first.group || {}), dimensions: [], promptSpecs: [] },
+  };
+  const fieldSources = { ...(first.fieldSources || {}) };
+  commonFields.forEach((key) => {
+    if (key === "sellingPoints") {
+      const commonPoints = splitSellingPointText(first.sellingPoints).filter((point) =>
+        supplierProducts.every((product) => splitSellingPointText(product.sellingPoints).includes(point)));
+      shared.sellingPoints = commonPoints.join("\n");
+      if (!commonPoints.length) fieldSources.sellingPoints = "";
+      return;
+    }
+    const value = cleanFieldDisplayValue(first[key] || "");
+    const agrees = value && supplierProducts.every((product) => cleanFieldDisplayValue(product[key] || "") === value);
+    shared[key] = agrees ? first[key] : "";
+    if (!agrees) fieldSources[key] = "";
+  });
+  shared.fieldSources = fieldSources;
+  shared.sellingPointEntries = shared.sellingPoints
+    ? sellingPointEntriesForText(first, shared.sellingPoints)
+    : [];
+  return commonFields.some((key) => Boolean(shared[key])) ? shared : null;
+}
+
 function meaningfulIdentityWords(value) {
   const ignored = new Set(["the", "and", "for", "with", "set", "pack", "piece", "pieces", "new", "color", "black", "white", "blue", "red", "green", "yellow", "pink", "purple", "gray", "grey", "small", "medium", "large"]);
   return (String(value || "").toLowerCase().match(/[a-z]{3,}/g) || []).filter((word) => !ignored.has(word));
@@ -6565,10 +6923,10 @@ function resolveSupplierBindingScope(amazonProducts, supplierProducts) {
   };
 }
 
-function scopeSupplierFieldSources(product, scope) {
-  const prefix = scope.kind === "parent"
-    ? `1688父体共享 · ${scope.parentSku}`
-    : `1688子 SKU 专属 · ${product.id}`;
+function scopeSupplierFieldSources(product, scope, commonOnly = false) {
+  const prefix = commonOnly
+    ? scope.kind === "parent" ? `1688父体通用字段 · ${scope.parentSku}` : `1688通用字段 · 仅写入 ${product.id}`
+    : scope.kind === "parent" ? `1688父体共享 · ${scope.parentSku}` : `1688子 SKU 专属 · ${product.id}`;
   const fieldSources = { ...(product.fieldSources || {}) };
   ["material", "structure", "scene", "sellingPoints", "applicableRange", "productDimensions", "surfaceFinish", "productWeight", "capacity"].forEach((key) => {
     if (fieldSources[key] && !/^(?:人工修改|Amazon|竞品)/i.test(fieldSources[key])) fieldSources[key] = `${prefix} · ${fieldSources[key]}`;
@@ -6598,10 +6956,15 @@ function mergeAmazonProductsWithSupplierFacts(amazonProducts, supplierProducts, 
   const warnings = [...(scope.warnings || [])];
   const products = amazonProducts.map((amazonProduct) => {
     if (!targetIds.has(amazonProduct.id)) return amazonProduct;
-    const supplierProduct = supplierProductForAmazonVariant(supplierProducts, amazonProduct, scope.kind === "parent");
+    // Parent sharing distributes page-level facts, not one supplier option's
+    // color/count/size. A child binding may additionally use a unique option.
+    const matchedSupplierProduct = scope.kind === "parent"
+      ? null
+      : supplierProductForAmazonVariant(supplierProducts, amazonProduct);
+    const supplierProduct = matchedSupplierProduct || commonSupplierProduct(supplierProducts);
     if (!supplierProduct) {
       skippedIds.push(amazonProduct.id);
-      warnings.push(`${amazonProduct.id} 未找到唯一对应的1688款式，未写入供应商参数。`);
+      warnings.push(`${amazonProduct.id} 未找到唯一对应的1688款式，也没有所有款式一致的通用参数，未写入供应商参数。`);
       return amazonProduct;
     }
     if (hasStrongSupplierIdentityConflict(amazonProduct, supplierProduct)) {
@@ -6610,9 +6973,11 @@ function mergeAmazonProductsWithSupplierFacts(amazonProducts, supplierProducts, 
       return amazonProduct;
     }
     mergedIds.push(amazonProduct.id);
+    if (!matchedSupplierProduct) warnings.push(`${amazonProduct.id} 仅写入1688通用参数；颜色、数量和款式图片仍须按子体核对。`);
     return scopeSupplierFieldSources(
       mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, supplierBaseName),
       scope,
+      !matchedSupplierProduct,
     );
   });
   return { products, mergedIds, skippedIds, warnings: uniquePromptItems(warnings) };
@@ -6866,7 +7231,7 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
       color: itemColor ? "1688当前款式颜色" : "",
       structure: itemStructure ? "1688当前商品图文结构" : "",
       scene: scene ? "1688图文详情使用场景" : "",
-      sellingPoints: extractedSellingPointSet.length || sellingPoints.sellingPoints ? "1688图文详情核心卖点" : "",
+      sellingPoints: extractedSellingPointSet.length || sellingPoints.sellingPoints ? SELLING_POINT_SOURCE_VISION : "",
       pack: safePack ? "1688当前款式明确数量" : "",
       applicableRange: itemApplicableRange ? "1688图文详情明确适用范围（当前商品）" : "",
       surfaceFinish: surfaceFinish ? "1688当前商品明确表面工艺" : "",
@@ -6877,6 +7242,8 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
     scene,
     installationSteps,
     sellingPoints: extractedSellingPointSet.slice(0, 4).join("\n") || sellingPoints.sellingPoints,
+    sellingPointEntries: (extractedSellingPointSet.slice(0, 4).length ? extractedSellingPointSet.slice(0, 4) : sellingPoints.points)
+      .map((claim) => ({ claim, source: SELLING_POINT_SOURCE_VISION })),
     surfaceFinish,
     fit: item.fit || "",
     singleSpec: `[CURRENT_PRODUCT_OPTION: ${[variantProductName || outputSpec, safePack].filter(Boolean).join(", ")}]`,
@@ -6993,16 +7360,36 @@ async function extractSources() {
       extractedProducts = inferredSourceProducts;
     }
     extractedProducts = applyCompetitorDimensionFallback(extractedProducts);
+    extractedProducts.forEach((product) => {
+      const review = sellingPointReviewForSku(product, false);
+      if (review?.locked) {
+        applyLockedSellingPointReview(product);
+      } else {
+        const entries = sellingPointEntriesForText(product, product.sellingPoints || "");
+        if (entries.length) addSellingPointCandidates(product, entries);
+      }
+    });
     const targetIdSet = new Set(mergeResult.mergedIds);
     if (targetIdSet.size) {
       const evidence = Array.isArray(supplierSource.sellingPointVisualEvidence) ? supplierSource.sellingPointVisualEvidence : [];
-      const claims = uniqueSellingPoints(evidence.map((item) => item.claim), 4);
       extractedProducts = extractedProducts.map((product) => targetIdSet.has(product.id)
-        ? {
-          ...product,
-          sellingPointVisualEvidence: evidence,
-          sellingPoints: product.sellingPoints || claims.join("\n"),
-        }
+        ? (() => {
+          if (sellingPointReviewForSku(product, false)?.locked) return product;
+          const currentClaims = splitSellingPointText(product.sellingPoints || "");
+          const currentEvidence = evidence.filter((item) => currentClaims.includes(item.claim));
+          return {
+            ...product,
+            sellingPointVisualEvidence: currentEvidence,
+            sellingPoints: currentClaims.join("\n"),
+            sellingPointEntries: product.sellingPointEntries?.length
+              ? product.sellingPointEntries
+              : currentClaims.map((claim) => ({
+                claim,
+                source: currentEvidence.some((item) => item.claim === claim)
+                  ? SELLING_POINT_SOURCE_VISION : SELLING_POINT_SOURCE_UNKNOWN,
+              })),
+          };
+        })()
         : { ...product, sellingPointVisualEvidence: [] });
     }
     // A single uploaded 1688 page is the current product's explicit source.
@@ -7177,7 +7564,7 @@ function isPlaceholderName(value) {
     "PRODUCT_NAME",
     "PRODUCT_SPEC",
     "PACKAGING_COUNT",
-    "PRODUCT_COUNT_OR_SET",
+    "PRODUCT_COUNT",
     "CURRENT_PRODUCT_OPTION",
     "MATERIAL",
     "COLOR",
@@ -7206,7 +7593,10 @@ function productCountValue(data) {
     cleanTokenValue(data.pack),
     cleanTokenValue(data.productCountToken),
   ].filter(Boolean);
-  return candidates.find((value) => /(?:pcs|pieces?|片|pack|包|pairs?|双|件|只|个|set|套)/i.test(value) && !/cups?|人份/i.test(value)) || "";
+  const matched = candidates.find((value) => /(?:pcs|pieces?|rolls?|beads?|片|颗|粒|pack|包|pairs?|双|件|只|个|set|套)/i.test(value) && !/cups?|人份/i.test(value)) || "";
+  if (matched) return matched;
+  const bareCount = candidates.find((value) => /^[1-9]\d{0,2}$/.test(value));
+  return bareCount ? `${bareCount} Pcs` : "";
 }
 
 // A supplier/Amazon title can call a mixed bundle "5 Pcs" even when the
@@ -7419,7 +7809,7 @@ function normalizeNonColorSkuOption(value, colors = [], unitQuantity = 0, unitQu
   if (!withoutColor) return "";
 
   const quantity = Number(unitQuantity || 0);
-  const quantityLabel = cleanFieldDisplayValue(unitQuantityLabel || (quantity >= 2 ? `${quantity}-Pack` : ""));
+  const quantityLabel = cleanFieldDisplayValue(unitQuantityLabel || (quantity >= 2 ? `${quantity} Pcs` : ""));
   return cleanTokenValue(withoutColor)
     .split(/\s*(?:\/|\||;|\s+-\s+)\s*/)
     .map((part) => part.trim())
@@ -7651,6 +8041,7 @@ async function enrichSellingPointsOnline() {
   const skuId = sku?.id || "";
   const sellingPointsInput = byId("field-sellingPoints");
   if (!skuId || !sellingPointsInput || !hasExtractedProducts()) return;
+  if (sellingPointReviewForSku(sku, false)?.locked) return;
   const requestedRevision = sellingPointInputRevision;
   const requestedGeneration = extractionGeneration;
   const status = byId("extractStatus");
@@ -7666,7 +8057,7 @@ async function enrichSellingPointsOnline() {
       .filter(isUsableEnglishSellingPoint), 4);
     const points = webPoints.length ? webPoints : competitorSellingPointCandidates.slice(0, 4);
     const sourceName = webPoints.length
-      ? "豆包联网补充"
+      ? SELLING_POINT_SOURCE_WEB
       : points.length
         ? `竞品分析${competitorSellingPointSourceNames.length ? ` · ${competitorSellingPointSourceNames.join(" | ")}` : ""}`
         : "";
@@ -7679,13 +8070,11 @@ async function enrichSellingPointsOnline() {
     };
     appliedSellingPointOverridesBySku[skuId] = { sellingPoints: sellingPointsText };
     sku.sellingPointSource = sourceName || NO_REFERENCE_SELLING_POINT_MESSAGE;
-    sku.fieldSources = {
-      ...(sku.fieldSources || {}),
-      sellingPoints: sourceName,
-    };
+    recordSellingPointEntries(sku, sellingPointsText, sourceName || SELLING_POINT_SOURCE_UNKNOWN);
     sellingPointDraftDirty = false;
     captureFieldOverrides();
     fieldSnapshot = currentFieldSignature();
+    renderFields(true);
     renderAll();
     if (status) {
       status.textContent = webPoints.length
@@ -7706,10 +8095,11 @@ async function enrichSellingPointsOnline() {
     fieldOverridesBySku[skuId] = { ...(fieldOverridesBySku[skuId] || {}), sellingPoints: sellingPointsText };
     appliedSellingPointOverridesBySku[skuId] = { sellingPoints: sellingPointsText };
     sku.sellingPointSource = sourceName || NO_REFERENCE_SELLING_POINT_MESSAGE;
-    sku.fieldSources = { ...(sku.fieldSources || {}), sellingPoints: sourceName };
+    recordSellingPointEntries(sku, sellingPointsText, sourceName || SELLING_POINT_SOURCE_UNKNOWN);
     sellingPointDraftDirty = false;
     captureFieldOverrides();
     fieldSnapshot = currentFieldSignature();
+    renderFields(true);
     renderAll();
     if (status) status.textContent = points.length
       ? `${statusPrefix} 联网补充失败；已从竞品资料提取 ${points.length} 个候选卖点，请人工确认。`
@@ -7720,14 +8110,10 @@ async function enrichSellingPointsOnline() {
 function autoEnrichSellingPointsIfNeeded() {
   const skuId = selectedSku()?.id || "";
   if (!skuId || sellingPointResearchAttemptedBySku.has(skuId)) return;
-  const points = uniqueSellingPoints([
-    ...splitSellingPointText(byId("field-sellingPoints")?.value || ""),
-  ], 4).filter((point) => !isOrdinaryMaterialSellingPoint(point) && sellingPointKey(point) !== "material");
-  if (points.length) {
-    selectedSku().sellingPointSource = "1688图文详情核心卖点";
-    selectedSku().fieldSources = { ...(selectedSku().fieldSources || {}), sellingPoints: "1688图文详情核心卖点" };
-    return;
-  }
+  if (sellingPointReviewForSku(selectedSku(), false)?.locked) return;
+  // Presence alone never proves a point came from 1688. Keep the provenance
+  // assigned by extraction, online fallback or the operator's own edit.
+  if (splitSellingPointText(byId("field-sellingPoints")?.value || "").length) return;
   sellingPointResearchAttemptedBySku.add(skuId);
   enrichSellingPointsOnline();
 }
@@ -8057,15 +8443,15 @@ function isSkuQuantityExplanationImage(templateId, typeId) {
 function skuQuantityExplanationRule(facts, templateId, typeId) {
   const count = Number(facts?.skuUnitQuantity || 0);
   if (count < 2 || !isSkuQuantityExplanationImage(templateId, typeId)) return "";
-  const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count}-Pack`;
-  return `SUPPORTING SKU QUANTITY FACT FROM THE CURRENT AMAZON TITLE: ${label}, exactly ${count} individual complete product units in this selected SKU. Keep the product's form, material, construction, dimensions, function, and use information as the main visual hierarchy. Show the quantity only once as a compact secondary pack-contents area occupying no more than about 20-25% of the frame, with one clear English label “${label}” or “${count} Pieces”. Do not turn the image into a repeated-unit wall, dominant full-pack grid, or large quantity poster. Do not show, label, or imply any other quantity.`;
+  const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count} Pcs`;
+  return `SUPPORTING SKU QUANTITY FACT FROM THE CURRENT AMAZON TITLE: ONE saleable pack contains ${label}, exactly ${count} individual product units in this selected SKU. Keep the product's form, material, construction, dimensions, function, and use information as the main visual hierarchy. Show the contents count only once as a compact secondary area occupying no more than about 20-25% of the frame, with one clear English label “${label}”. Do not turn the image into a repeated-unit wall, dominant full-pack grid, or large quantity poster. Do not show, label, or imply any other quantity; do not depict ${count} separate packs.`;
 }
 
 function skuQuantityMainImageRule(facts, typeId) {
   const count = Number(facts?.skuUnitQuantity || 0);
   if (count < 2 || !isMainImageType(typeId)) return "";
-  const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count}-Pack`;
-  return `MULTI-PACK SUPPORTING INFORMATION RULE: this SKU is ${label}. Keep one or a few representative units large and clearly inspectable so product shape, material, construction, finish, and use remain the primary visual information. The complete included quantity may appear only as a compact secondary grouped arrangement occupying no more than about 20-25% of the frame; it must never become the largest subject, a repeated-unit wall, or a dominant full-pack grid. When the complete set is visible, keep exactly ${count} separate units without fusion, extras, or an incorrect count. For a human-use main image, the action and representative product units remain primary while the remaining included units stay compact and secondary. Because this is a main image, do not add a “${label}” badge, number, caption, or other overlay text.`;
+  const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count} Pcs`;
+  return `SINGLE-PACK CONTENTS RULE: this SKU is ONE saleable pack containing ${label}, not ${count} separate packs. Keep one or a few representative units large and clearly inspectable so product shape, material, construction, finish, and use remain the primary visual information. The complete included quantity may appear only as a compact secondary grouped arrangement occupying no more than about 20-25% of the frame; it must never become the largest subject, a repeated-unit wall, or a dominant full-pack grid. When the complete set is visible, keep exactly ${count} separate units without fusion, extras, or an incorrect count. For a human-use main image, the action and representative product units remain primary while the remaining included units stay compact and secondary. Because this is a main image, do not add a “${label}” badge, number, caption, or other overlay text.`;
 }
 
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
@@ -8098,7 +8484,7 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
       ? "Installation-step text only: title 2-3 English words; exactly one numbered 2-5 word English action caption per panel; no selling-point labels, paragraphs, badges, or extra copy."
       : shortTextRule(),
     isMainImageType(typeId) || referenceControlledSellingPoint ? "" : visualProofFirstRule(),
-    skuQuantityRule ? `Mandatory SKU quantity text: show “${facts.skuUnitQuantityLabel || `${facts.skuUnitQuantity}-Pack`}” clearly once; the visible complete-unit count must equal ${facts.skuUnitQuantity}.` : "",
+    skuQuantityRule ? `Mandatory SKU contents text: show “${facts.skuUnitQuantityLabel || `${facts.skuUnitQuantity} Pcs`}” clearly once; this is the contents of one saleable pack, and the visible unit count must equal ${facts.skuUnitQuantity}.` : "",
     humanSceneRule(facts),
     isProductInformationImage(typeId) ? imageMeasurementUnitRule() : "",
     amazonImageFileSizeRule(),
@@ -9913,8 +10299,8 @@ function summaryPosterLowerLeftProductRule(facts = {}) {
   }
   const count = Number(facts.skuUnitQuantity || 0);
   if (count >= 2) {
-    const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count}-Pack`;
-    return `LOWER-LEFT WHITE CIRCLE PRODUCT-COUNT LOCK: this selected SKU is ${label}. Inside the lower-left white circular product area, show exactly ${count} separate, complete, identical current-product units—no fewer, no extras, no fused units, and no representative single unit standing in for the pack.`;
+    const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count} Pcs`;
+    return `LOWER-LEFT WHITE CIRCLE PRODUCT-COUNT LOCK: this selected SKU is one saleable pack containing ${label}. Inside the lower-left white circular product area, show exactly ${count} separate, complete, identical current-product units—not ${count} packs, no fewer units, no extras, no fused units, and no representative single unit standing in for the pack.`;
   }
   return "LOWER-LEFT WHITE CIRCLE PRODUCT-COUNT LOCK: this selected SKU is a normal single product. Inside the lower-left white circular product area, show exactly one complete current-product unit only. Do not duplicate, mirror, stack, repeat, or add a second unit for visual balance.";
 }
@@ -10718,11 +11104,11 @@ function prioritizeSelectedReferences(state) {
   const competitorUrls = new Set(referenceMetaItemsForSku(selectedSku()?.id)
     .filter((item) => item.image_type === "amazon_competitor_reference")
     .map((item) => item.url));
-  state.availableReferences = [
-    ...state.availableReferences.filter((reference) => competitorUrls.has(reference)),
-    ...state.selectedReferences.filter((reference) => available.has(reference) && !competitorUrls.has(reference)),
+  state.availableReferences = Array.from(new Set([
+    ...state.selectedReferences.filter((reference) => available.has(reference)),
+    ...state.availableReferences.filter((reference) => !selected.has(reference) && competitorUrls.has(reference)),
     ...state.availableReferences.filter((reference) => !selected.has(reference) && !competitorUrls.has(reference)),
-  ];
+  ]));
 }
 
 function referenceCandidateBadge(item, reference) {
@@ -10783,7 +11169,6 @@ function renderReferenceImages(state) {
         <label>
           <input type="checkbox" class="reference-image-checkbox" data-reference-index="${index}" ${checked ? "checked" : ""}>
           <img src="${escapeHtml(previewUrl)}" alt="参考图 ${index + 1}" loading="lazy">
-          <span>${checked ? "已选择" : "选择"}</span>
         </label>
         <small class="reference-image-source">${escapeHtml(badge)}</small>
         <button type="button" class="preview-reference-image" data-reference-index="${index}" aria-label="放大查看参考图 ${index + 1}" title="放大查看">⌕</button>
@@ -12283,7 +12668,9 @@ async function init() {
   fillSelects();
   await restoreLocalRecoveryIfNeeded();
   persistedImageHistory = loadPersistedImageHistory();
+  sellingPointReviewsBySku = loadSellingPointReviews();
   const restoredWorkspace = restoreWorkspaceSnapshot();
+  if (restoredWorkspace) extractedProducts.forEach(applyLockedSellingPointReview);
   initProductStructureRoute();
   initExtractionRoutePreview();
   renderFields(true);
