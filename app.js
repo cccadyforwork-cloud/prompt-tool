@@ -262,6 +262,23 @@ function storeWorkflowEndpoint(path) {
     : storeParentOrigin + path;
 }
 
+// Safari does not consistently allow a downloaded File to be assigned back to
+// an <input type="file">. Keep workflow-provided files in memory as the source
+// of truth and only mirror them into the native input when the browser permits.
+const storePrefilledSourceFiles = new Map();
+
+function sourceInputFiles(inputId) {
+  const selected = Array.from(byId(inputId)?.files || []);
+  return selected.length ? selected : (storePrefilledSourceFiles.get(inputId) || []);
+}
+
+function showPrefilledSource(inputId, filename) {
+  const status = byId(inputId === "amazonTemplateFile" ? "amazonTemplatePrefill" : "supplierFilePrefill");
+  if (!status) return;
+  status.hidden = false;
+  status.textContent = `已自动接入：${filename}`;
+}
+
 async function prefillStoreSourceInputs() {
   if (!boundWorkspace || !storeParentOrigin) return;
   const sources = [
@@ -271,7 +288,7 @@ async function prefillStoreSourceInputs() {
   const loaded = [];
   for (const source of sources) {
     const input = byId(source.inputId);
-    if (!input || input.files?.length) continue;
+    if (!input || sourceInputFiles(source.inputId).length) continue;
     const url = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`)
       + `?kind=${encodeURIComponent(source.kind)}&sku=${encodeURIComponent(boundWorkspace.sku)}`;
     try {
@@ -282,17 +299,26 @@ async function prefillStoreSourceInputs() {
       if (!filename || /[\\/\u0000-\u001f]/.test(filename)) continue;
       const buffer = await response.arrayBuffer();
       if (input.files?.length) continue; // Do not replace a file the operator chose while fetching.
-      const transfer = new DataTransfer();
-      transfer.items.add(new File([buffer], filename, { type: response.headers.get("Content-Type") || "" }));
-      input.files = transfer.files;
-      if (input.files?.[0]?.name === filename) loaded.push(`${source.label}：${filename}`);
+      const file = new File([buffer], filename, { type: response.headers.get("Content-Type") || "" });
+      storePrefilledSourceFiles.set(source.inputId, [file]);
+      try {
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.files = transfer.files;
+      } catch {
+        // The in-memory source remains available to parsing in Safari.
+      }
+      showPrefilledSource(source.inputId, filename);
+      loaded.push(`${source.label}：${filename}`);
     } catch (error) {
       console.warn(`未能接入${source.label}`, error);
     }
   }
   if (loaded.length) {
     const note = document.querySelector(".source-parse-note");
-    if (note) note.textContent = `已从运营工作流接入 ${loaded.join("；")}。请先核对资料，再手动点击“解析资料并提取产品信息”。`;
+    const message = `已从运营工作流接入 ${loaded.join("；")}。请先核对资料，再手动点击“解析资料并提取产品信息”。`;
+    if (note) note.textContent = message;
+    if (byId("extractStatus")) byId("extractStatus").textContent = message;
   }
 }
 
@@ -7280,8 +7306,8 @@ async function extractSources() {
   const routeId = selectedExtractionRoute;
   const routeName = extractionRoutePreviews[routeId]?.title || extractionRoutePreviews.local.title;
   const structureRouteName = productStructureRoutePreviews[selectedProductStructureRoute]?.title || productStructureRoutePreviews.single.title;
-  const amazonTemplateFile = byId("amazonTemplateFile").files[0];
-  const supplierFiles = Array.from(byId("supplierFile").files || []);
+  const amazonTemplateFile = sourceInputFiles("amazonTemplateFile")[0];
+  const supplierFiles = sourceInputFiles("supplierFile");
   const pastedSupplierImageListText = byId("supplierImageListText")?.value.trim() || "";
   const competitorFiles = Array.from(byId("competitorFile").files || []);
   const extractButton = byId("extractSources");
@@ -12727,6 +12753,11 @@ async function init() {
   ["amazonTemplateFile", "supplierFile", "supplierImageListText", "competitorFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
+      if (input.type === "file" && input.files?.length) {
+        storePrefilledSourceFiles.delete(id);
+        const prefill = byId(id === "amazonTemplateFile" ? "amazonTemplatePrefill" : id === "supplierFile" ? "supplierFilePrefill" : "");
+        if (prefill) prefill.hidden = true;
+      }
       clearExtractedSourceState({ render: false });
       byId("extractStatus").textContent = "文件或筛选条件已更新，点击解析资料并提取产品信息。";
     };
@@ -12734,7 +12765,7 @@ async function init() {
     if (input.type === "text" || input.tagName === "TEXTAREA") input.addEventListener("input", updateStatus);
   });
   const refreshSupplierBindingOptions = async () => {
-    const file = byId("amazonTemplateFile")?.files?.[0];
+    const file = sourceInputFiles("amazonTemplateFile")[0];
     if (!file) {
       populateSupplierSkuBinding([]);
       return;
@@ -12791,7 +12822,7 @@ async function init() {
   await prefillStoreSourceInputs();
   // Assigning FileList programmatically does not fire change. Populate the
   // supplier-binding choices from the S1 template without starting extraction.
-  if (byId("amazonTemplateFile")?.files?.length) await refreshSupplierBindingOptions();
+  if (sourceInputFiles("amazonTemplateFile").length) await refreshSupplierBindingOptions();
 }
 
 init();
