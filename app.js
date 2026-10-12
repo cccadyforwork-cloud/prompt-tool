@@ -266,11 +266,12 @@ function storeWorkflowSourceEndpoint(kind) {
   const hostedPromptPath = "/api/store-operations/workflow/tools-host/prompt/";
   if (window.location.origin === new URL(storeParentOrigin).origin
       && window.location.pathname.startsWith(hostedPromptPath)) {
-    const url = new URL(hostedPromptPath + "source", window.location.origin);
-    url.searchParams.set("project_id", boundWorkspace.projectId);
-    url.searchParams.set("sku", boundWorkspace.sku);
-    url.searchParams.set("kind", kind);
-    return url.toString();
+    const query = new URLSearchParams({
+      project_id: boundWorkspace.projectId,
+      sku: boundWorkspace.sku,
+      kind,
+    });
+    return `${window.location.origin}${hostedPromptPath}source?${query.toString()}`;
   }
   const url = new URL(storeWorkflowEndpoint(
     `/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`
