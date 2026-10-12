@@ -218,9 +218,7 @@ body {
 
 .workflow-shell {
   width: 100%;
-  max-width: 1680px;
   min-height: calc(100vh - 78px);
-  margin: 0 auto;
   padding: 24px clamp(24px, 3vw, 48px) 54px;
 }
 

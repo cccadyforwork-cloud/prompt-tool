@@ -152,8 +152,20 @@ const workspaceParams = new URLSearchParams(window.location.search);
 const workspaceProjectId = workspaceParams.get("store_project_id") || "";
 const workspaceSku = workspaceParams.get("store_sku") || "";
 const storeParentOriginParam = workspaceParams.get("store_parent_origin") || "";
-const storeParentOrigin = /^http:\/\/(?:127\.0\.0\.1|localhost):8770$/.test(storeParentOriginParam)
-  ? storeParentOriginParam : "";
+const storeWorkflowBaseParam = workspaceParams.get("store_workflow_base") || storeParentOriginParam;
+let storeParentOrigin = "";
+try {
+  const workflowBase = new URL(storeWorkflowBaseParam);
+  const companyWorkflow = workflowBase.origin === window.location.origin
+    && workflowBase.pathname === "/api/store-operations/workflow";
+  const localWorkflow = /^http:\/\/(?:127\.0\.0\.1|localhost):(?:8770|8775)$/.test(workflowBase.origin)
+    && workflowBase.pathname === "/";
+  if (companyWorkflow || localWorkflow) {
+    storeParentOrigin = workflowBase.origin + (companyWorkflow ? workflowBase.pathname : "");
+  }
+} catch {
+  // The tool stays independent when no trusted workflow URL was supplied.
+}
 const boundWorkspace = /^[A-Za-z0-9_-]{1,100}$/.test(workspaceProjectId)
   && workspaceSku.length > 0 && workspaceSku.length <= 120 && !/[\u0000-\u001f]/.test(workspaceSku)
   ? { projectId: workspaceProjectId, sku: workspaceSku }
@@ -256,7 +268,7 @@ async function prefillStoreSourceInputs() {
     const url = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`
       + `?kind=${encodeURIComponent(source.kind)}&sku=${encodeURIComponent(boundWorkspace.sku)}`;
     try {
-      const response = await fetch(url, { cache: "no-store" });
+      const response = await fetch(new Request(url), { cache: "no-store" });
       if (!response.ok) continue;
       const encodedName = response.headers.get("X-Source-Filename") || "";
       const filename = decodeURIComponent(encodedName);
@@ -11845,7 +11857,7 @@ async function saveGeneratedSet() {
     try {
       const contextUrl = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
         + `/image-candidates/context?sku=${encodeURIComponent(boundWorkspace.sku)}`;
-      const response = await fetch(contextUrl, { cache: "no-store" });
+      const response = await fetch(new Request(contextUrl), { cache: "no-store" });
       context = await response.json();
       if (!response.ok || !context.ok || context.sku !== boundWorkspace.sku || !context.product_name) {
         throw new Error(context.error || "运营系统尚无当前子体的已确认中文品名，请先核对 S1 定价资料。");
@@ -11876,7 +11888,7 @@ async function saveGeneratedSet() {
         + `/image-candidates/import?sku=${encodeURIComponent(boundWorkspace.sku)}`
         + `&expected_revision=${encodeURIComponent(context.revision)}`;
       setSaveGeneratedSetUi(`正在将 ${entries.length} 张图交接到运营系统 S3 候选区；不会下载到桌面…`);
-      const response = await fetch(uploadUrl, {
+      const response = await fetch(new Request(uploadUrl), {
         method: "POST",
         headers: { "Content-Type": "application/zip", "X-Workflow-Import": "prompt-tool-selected-v1" },
         body: zip,
