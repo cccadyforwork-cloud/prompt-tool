@@ -255,6 +255,13 @@ function removeTabStorage(key) {
   }
 }
 
+function storeWorkflowEndpoint(path) {
+  if (!storeParentOrigin || !path.startsWith("/api/")) return "";
+  return storeParentOrigin.endsWith("/api/store-operations/workflow")
+    ? storeParentOrigin + path.slice(4)
+    : storeParentOrigin + path;
+}
+
 async function prefillStoreSourceInputs() {
   if (!boundWorkspace || !storeParentOrigin) return;
   const sources = [
@@ -265,7 +272,7 @@ async function prefillStoreSourceInputs() {
   for (const source of sources) {
     const input = byId(source.inputId);
     if (!input || input.files?.length) continue;
-    const url = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`
+    const url = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`)
       + `?kind=${encodeURIComponent(source.kind)}&sku=${encodeURIComponent(boundWorkspace.sku)}`;
     try {
       const response = await fetch(new Request(url), { cache: "no-store" });
@@ -11855,8 +11862,8 @@ async function saveGeneratedSet() {
   let context = null;
   if (bridge) {
     try {
-      const contextUrl = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
-        + `/image-candidates/context?sku=${encodeURIComponent(boundWorkspace.sku)}`;
+      const contextUrl = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
+        + `/image-candidates/context?sku=${encodeURIComponent(boundWorkspace.sku)}`);
       const response = await fetch(new Request(contextUrl), { cache: "no-store" });
       context = await response.json();
       if (!response.ok || !context.ok || context.sku !== boundWorkspace.sku || !context.product_name) {
@@ -11884,9 +11891,9 @@ async function saveGeneratedSet() {
     }
     if (bridge) {
       const zip = buildStoredZip(entries);
-      const uploadUrl = `${storeParentOrigin}/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
+      const uploadUrl = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
         + `/image-candidates/import?sku=${encodeURIComponent(boundWorkspace.sku)}`
-        + `&expected_revision=${encodeURIComponent(context.revision)}`;
+        + `&expected_revision=${encodeURIComponent(context.revision)}`);
       setSaveGeneratedSetUi(`正在将 ${entries.length} 张图交接到运营系统 S3 候选区；不会下载到桌面…`);
       const response = await fetch(new Request(uploadUrl), {
         method: "POST",
