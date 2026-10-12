@@ -381,6 +381,10 @@ body {
   overflow-wrap: anywhere;
 }
 
+.source-prefill-status.is-warning {
+  color: #f0a33a;
+}
+
 .workflow-column > .control-group,
 .workflow-column > .product-prompt-panel {
   margin-bottom: 16px;

@@ -262,9 +262,9 @@ function storeWorkflowEndpoint(path) {
     : storeParentOrigin + path;
 }
 
-// Safari does not consistently allow a downloaded File to be assigned back to
-// an <input type="file">. Keep workflow-provided files in memory as the source
-// of truth and only mirror them into the native input when the browser permits.
+// Browsers intentionally restrict programmatic changes to native file inputs.
+// Keep workflow-provided files in memory as the source of truth and only mirror
+// them into the native input when that browser permits it.
 const storePrefilledSourceFiles = new Map();
 
 function sourceInputFiles(inputId) {
@@ -276,7 +276,16 @@ function showPrefilledSource(inputId, filename) {
   const status = byId(inputId === "amazonTemplateFile" ? "amazonTemplatePrefill" : "supplierFilePrefill");
   if (!status) return;
   status.hidden = false;
+  status.classList.remove("is-warning");
   status.textContent = `已自动接入：${filename}`;
+}
+
+function showPrefillProblem(inputId, message) {
+  const status = byId(inputId === "amazonTemplateFile" ? "amazonTemplatePrefill" : "supplierFilePrefill");
+  if (!status) return;
+  status.hidden = false;
+  status.classList.add("is-warning");
+  status.textContent = message;
 }
 
 async function prefillStoreSourceInputs() {
@@ -292,11 +301,19 @@ async function prefillStoreSourceInputs() {
     const url = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`)
       + `?kind=${encodeURIComponent(source.kind)}&sku=${encodeURIComponent(boundWorkspace.sku)}`;
     try {
-      const response = await fetch(new Request(url), { cache: "no-store" });
-      if (!response.ok) continue;
+      const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) {
+        showPrefillProblem(source.inputId, `尚未自动接入${source.label}（${response.status}）`);
+        continue;
+      }
       const encodedName = response.headers.get("X-Source-Filename") || "";
-      const filename = decodeURIComponent(encodedName);
-      if (!filename || /[\\/\u0000-\u001f]/.test(filename)) continue;
+      let filename = source.kind === "amazon_template" ? "Amazon模板.xlsx" : "1688资料.html";
+      try {
+        const headerName = decodeURIComponent(encodedName);
+        if (headerName && !/[\\/\u0000-\u001f]/.test(headerName)) filename = headerName;
+      } catch {
+        // The safe fallback name still lets the downloaded workflow file parse.
+      }
       const buffer = await response.arrayBuffer();
       if (input.files?.length) continue; // Do not replace a file the operator chose while fetching.
       const file = new File([buffer], filename, { type: response.headers.get("Content-Type") || "" });
@@ -306,12 +323,13 @@ async function prefillStoreSourceInputs() {
         transfer.items.add(file);
         input.files = transfer.files;
       } catch {
-        // The in-memory source remains available to parsing in Safari.
+        // The in-memory source remains available to parsing in this browser.
       }
       showPrefilledSource(source.inputId, filename);
       loaded.push(`${source.label}：${filename}`);
     } catch (error) {
       console.warn(`未能接入${source.label}`, error);
+      showPrefillProblem(source.inputId, `${source.label}自动接入失败，请刷新后重试`);
     }
   }
   if (loaded.length) {
