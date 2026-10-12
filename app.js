@@ -262,6 +262,24 @@ function storeWorkflowEndpoint(path) {
     : storeParentOrigin + path;
 }
 
+function storeWorkflowSourceEndpoint(kind) {
+  const hostedPromptPath = "/api/store-operations/workflow/tools-host/prompt/";
+  if (window.location.origin === new URL(storeParentOrigin).origin
+      && window.location.pathname.startsWith(hostedPromptPath)) {
+    const url = new URL(hostedPromptPath + "source", window.location.origin);
+    url.searchParams.set("project_id", boundWorkspace.projectId);
+    url.searchParams.set("sku", boundWorkspace.sku);
+    url.searchParams.set("kind", kind);
+    return url.toString();
+  }
+  const url = new URL(storeWorkflowEndpoint(
+    `/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`
+  ));
+  url.searchParams.set("sku", boundWorkspace.sku);
+  url.searchParams.set("kind", kind);
+  return url.toString();
+}
+
 // Browsers intentionally restrict programmatic changes to native file inputs.
 // Keep workflow-provided files in memory as the source of truth and only mirror
 // them into the native input when that browser permits it.
@@ -298,8 +316,7 @@ async function prefillStoreSourceInputs() {
   for (const source of sources) {
     const input = byId(source.inputId);
     if (!input || sourceInputFiles(source.inputId).length) continue;
-    const url = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}/prompt-source`)
-      + `?kind=${encodeURIComponent(source.kind)}&sku=${encodeURIComponent(boundWorkspace.sku)}`;
+    const url = storeWorkflowSourceEndpoint(source.kind);
     try {
       const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
       if (!response.ok) {
