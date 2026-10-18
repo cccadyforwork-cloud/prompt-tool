@@ -516,22 +516,24 @@ async function confirmParameterOutputs() {
     const plans = currentVisualPlans(latestFacts);
     for (let index = 0; index < context.groups.length; index += 1) {
       const plan = plans.find((entry) => entry.groupIndex === index);
-      if (plan?.status !== "ready") {
-        throw new Error(plan?.reason || visualPlanMessages.get(sku.id) || "当前卖点图方案尚未完成，请检查方案后重试。");
+      if (!plan || !["show", "skip"].includes(plan.humanDecision)) {
+        throw new Error(`请先人工决定卖点图 ${index + 1} 是否展示，再进入图组。`);
       }
     }
     for (const type of template.imageTypes) {
       const item = promptStore.find((entry) => entry.key === promptCardKey(sku, template, type));
-      const expected = bracketPromptVariables(promptFor(template.id, type.id, sku, latestData), latestFacts, type.id);
-      if (!item || item.promptEn !== expected) throw new Error("提示词尚未同步最新参数，请再点一次确认。");
       const points = sellingPointGroupForImageTitle(template.id, type.id, latestFacts);
+      const plan = points.length ? visualPlanForPoints(points, latestFacts) : null;
+      const skipped = plan?.humanDecision === "skip";
+      const expected = skipped ? "" : bracketPromptVariables(promptFor(template.id, type.id, sku, latestData), latestFacts, type.id);
+      if (!item || item.promptEn !== expected) throw new Error("提示词尚未同步最新参数，请再点一次确认。");
       if (!points.length) continue;
-      const plan = visualPlanForPoints(points, latestFacts);
-      if (!plan || !item.promptEn.includes("Execute this specific whole-set visual plan") || !item.promptEn.includes(plan.label)) {
+      if (skipped) continue;
+      if (plan?.status === "ready" && (!item.promptEn.includes("Execute this specific whole-set visual plan") || !item.promptEn.includes(plan.label))) {
         throw new Error(`${type.name} 的卖点图方案尚未进入提示词，请检查方案后重试。`);
       }
     }
-    status.textContent = "已确认，参数与卖点图方案均已进入最新提示词。";
+    status.textContent = "已确认；人工选择展示的卖点图已进入提示词，不展示的图位已跳过。";
     showWorkflowPage("studio");
   } catch (error) {
     status.textContent = error?.message || "确认未完成，请检查参数和卖点图方案。";
@@ -2042,7 +2044,7 @@ function isCommerceOrRecommendationText(text) {
 }
 
 function productFeatureTextScore(text) {
-  const matches = String(text || "").match(/防滑|弹力|抗拉|防断|断裂|不变形|耐用|高弹|柔软|透气|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|材质|材料|面料|工艺|厚薄|cotton|spandex|polyester|silicone|tpe|stretch|fracture|tear|durable|grip|anti.?slip|non.?slip|size|material|weight|texture|compact|portable|waterproof/gi);
+  const matches = String(text || "").match(/食品接触|食品级|放心|安全|无毒|BPA.?free|加厚|通透|透明|余量|大口径|不外露|不怕漏|防漏|密封|清洁方便|易清洁|可水洗|控量|过量|定量|喷雾|雾化|细腻|均匀|扇形|广角|防滑|弹力|抗拉|防断|断裂|不变形|耐用|高弹|柔软|透气|尺码|克重|重量|尺寸|直径|收纳|折叠|展开|小巧|轻便|便携|材质|材料|面料|工艺|厚薄|food.?grade|safe|transparent|wide.?mouth|leak.?proof|easy.?clean|dose|mist|spray|atomiz|even|cotton|spandex|polyester|silicone|tpe|stretch|fracture|tear|durable|grip|anti.?slip|non.?slip|size|material|weight|texture|compact|portable|waterproof/gi);
   return matches ? matches.length : 0;
 }
 
@@ -2062,7 +2064,11 @@ function ocrCompactText(text) {
 
 function isProductSellingPointText(text) {
   const source = String(text || "");
-  return /DOUBAO_VISION_SELLING_POINT\s*:|(?:卖点|产品特点|核心功能|产品优势|Selling Point|Product Benefit)\s*[:：]/i.test(source);
+  if (/DOUBAO_VISION_SELLING_POINT\s*:|(?:卖点|产品特点|核心功能|产品优势|Selling Point|Product Benefit)\s*[:：]/i.test(source)) return true;
+  // 1688 feature posters normally use a benefit headline directly instead of
+  // prefixing it with “卖点：”. Treat multiple generic benefit signals as a
+  // selling-point image so those posters are not discarded before vision.
+  return hasReadableOcrContent(source, 10) && productFeatureTextScore(source) >= 2;
 }
 
 function urlImageSizeHint(url) {
@@ -2115,7 +2121,9 @@ function isSupportedProductImageUrl(url, meta = {}) {
 
 function isLikelyProductDetailImageCandidate(candidate) {
   const url = imageCandidateUrl(candidate);
-  const context = typeof candidate === "string" ? "" : candidate?.context || "";
+  const context = typeof candidate === "string"
+    ? ""
+    : [candidate?.context || "", candidate?.ocrText || ""].filter(Boolean).join("\n");
   if (!url || isSmallOrThumbnailImageUrl(url)) return false;
   if (isFactoryOrServiceImageText(context) && !isProductInfoImageText(context)) return false;
   if (isCommerceOrRecommendationText(context) && productDetailLabelScore(context) < 2) return false;
@@ -2385,7 +2393,8 @@ function referencePickerImageCandidates(collectedCandidates, fallbackCandidates,
   const collected = uniqueByUrl(collectedCandidates)
     .filter(isLikelyProductDetailImageCandidate)
     .sort((left, right) => (left.firstOccurrenceIndex || 0) - (right.firstOccurrenceIndex || 0));
-  const sourcePool = collected.length ? collected : uniqueByUrl(fallbackCandidates);
+  const fallback = uniqueByUrl(fallbackCandidates).filter(isLikelyProductDetailImageCandidate);
+  const sourcePool = collected.length ? collected : fallback;
   return evenlySpacedImageCandidates(sourcePool, limit);
 }
 
@@ -2419,18 +2428,28 @@ function collectedImageCandidatesForLocalOcr(collectedCandidates, ...fallbackGro
 
 function balancedVisionImageCandidates(candidates) {
   const values = uniqueByUrl(candidates);
-  const mainLate = values.filter((candidate) => candidate?.collectorSection === "main-late").slice(0, 3);
+  const featurePosters = values
+    .filter((candidate) => isProductSellingPointText(candidate?.ocrText || candidate?.context || ""))
+    .sort((left, right) => (right.ocrFeatureScore || 0) - (left.ocrFeatureScore || 0));
+  const mainLate = values.filter((candidate) => candidate?.collectorSection === "main-late").slice(0, 2);
   const mainMiddlePool = values.filter((candidate) => candidate?.collectorSection === "main-middle");
-  const mainMiddle = mainMiddlePool.slice(Math.min(1, Math.max(0, mainMiddlePool.length - 3)), 4);
-  const detailTail = values.filter((candidate) => candidate?.collectorSection === "detail-tail").slice(0, 6);
+  const mainMiddle = centeredCandidateWindow(mainMiddlePool, 0.58, 2);
+  const detailTail = evenlySpacedImageCandidates(
+    values.filter((candidate) => candidate?.collectorSection === "detail-tail"),
+    10,
+  );
   const parameterImages = values.filter(isProductParameterImageCandidate);
-  const detailImages = values.filter((candidate) => candidate?.source === "detail");
+  const detailImages = evenlySpacedImageCandidates(
+    values.filter((candidate) => candidate?.source === "detail"),
+    10,
+  );
   return uniqueByUrl([
-    ...mainLate,
-    ...mainMiddle,
+    ...featurePosters,
     ...detailTail,
     ...parameterImages,
     ...detailImages,
+    ...mainLate,
+    ...mainMiddle,
     ...values,
   ]).slice(0, 12);
 }
@@ -3713,6 +3732,11 @@ async function ocrImageUrls(imageUrls, onProgress) {
       );
       const ocrElapsed = elapsedText(ocrStartedAt);
       const text = cleanOcrText(result?.data?.text || "");
+      // Preserve OCR signals on the candidate itself. The subsequent vision
+      // sampler uses them to put feature posters ahead of generic gallery
+      // images even when OCR is imperfect and cannot supply the final claim.
+      candidate.ocrText = text;
+      candidate.ocrFeatureScore = productFeatureTextScore(text);
       if (isUsefulOcrText(text, candidate)) {
         texts.push(text);
         if (isProductSellingPointText(text)) sellingPointCount += 1;
@@ -4123,7 +4147,15 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
   const detailAttrLines = productAttributeLinesFromSource(attributeSource);
   const combinedBeforeVision = [baseText, structuredText, ...detailAttrLines, attributeSource].filter(Boolean).join("\n");
   const visionImageCandidates = balancedVisionImageCandidates(imageUrls);
-  const pickerImageCandidates = referencePickerImageCandidates(collectedImageCandidates, imageUrls, MAX_REFERENCE_CLASSIFIER_CANDIDATES);
+  const ocrSignalsByUrl = new Map(imageUrls.map((candidate) => [imageCandidateUrl(candidate), {
+    ocrText: candidate?.ocrText || "",
+    ocrFeatureScore: candidate?.ocrFeatureScore || 0,
+  }]));
+  const collectedCandidatesWithOcr = collectedImageCandidates.map((candidate) => ({
+    ...candidate,
+    ...(ocrSignalsByUrl.get(imageCandidateUrl(candidate)) || {}),
+  }));
+  const pickerImageCandidates = referencePickerImageCandidates(collectedCandidatesWithOcr, imageUrls, MAX_REFERENCE_CLASSIFIER_CANDIDATES);
   const hintedProductName = cleanFieldDisplayValue(
     identityHint.productName || identityHint.baseProductName || identityHint.label || "",
   );
@@ -7582,7 +7614,7 @@ async function extractSources() {
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
-      ? `1688 图片 OCR：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 张图片，全局筛选后优先识别 ${supplierSource.imageCount} 张疑似产品详情/参数图，实际成功 ${supplierSource.scannedCount} 张，采纳 ${supplierSource.acceptedCount || 0} 张，其中命中卖点文本 ${supplierSource.sellingPointCount || 0} 张，跳过/失败 ${supplierSource.failedCount} 张。远程图片可能因跨域、防盗链、尺寸过小或内容过滤而跳过。`
+      ? `1688 本地 OCR：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 张图片，全局筛选后优先识别 ${supplierSource.imageCount} 张疑似产品详情/参数图，实际成功 ${supplierSource.scannedCount} 张，采纳 ${supplierSource.acceptedCount || 0} 张，其中识别为卖点图候选 ${supplierSource.sellingPointCount || 0} 张，跳过/失败 ${supplierSource.failedCount} 张。此处只统计本地 OCR 候选，不代表豆包识图结果；远程图片可能因跨域、防盗链、尺寸过小或内容过滤而跳过。`
       : "未找到可识别的 1688 图片。";
     const ocrAvailability = supplierSource.imageCount && !supplierSource.ocrAvailable
       ? "OCR 引擎未加载成功，已跳过图片文字识别。"
@@ -7614,7 +7646,7 @@ async function extractSources() {
     const visionStatus = routeId === "vision" || routeId === "web"
       ? visionEvidenceCount
         ? `豆包识图：已整理 ${visionEvidenceCount} 项带图片证据的信息。`
-        : `豆包识图：未整理出可确认信息。${supplierSource.visionMessage || ""}${visionErrorText ? ` 原因：${visionErrorText}` : ""}`
+        : `豆包识图：已调用，但未整理出可确认信息。${supplierSource.visionMessage || ""}${visionErrorText ? ` 原因：${visionErrorText}` : ""}`
       : "";
     const webStatus = routeId === "web" ? "正在根据已确认的商品身份，继续联网补充仍为空的卖点和使用场景；联网关键词不会改写商品名。" : "";
     const identityStatus = mergeResult.warnings.length ? `身份校验提示：${mergeResult.warnings.join("；")} ` : "";
@@ -8540,8 +8572,12 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
   const skuQuantityMainRule = skuQuantityMainImageRule(facts, typeId);
   const differentDesignSetRule = differentDesignSetPresentationRule(facts, templateId, typeId);
   const referenceControlledSellingPoint = /(?:Selling-point reference priority|SELLING-POINT SOURCE DIRECTION)/i.test([details, style].filter(Boolean).join(" "));
+  const productOnlySellingPoint = /VISUAL ROUTE LOCK — PRODUCT PROOF/i.test([details, style].filter(Boolean).join(" "));
   const sceneAuthorityRule = templateId === "scene" && !referenceControlledSellingPoint ? useSceneAuthorityRule(facts) : "";
   const referenceMode = referenceControlledSellingPoint ? "selling-point" : "";
+  const referenceAuthority = productOnlySellingPoint
+    ? "HIGHEST PRIORITY: Follow the attached current-product reference images for product appearance and structure only. This slot is a strict product-only studio image: do not copy any referenced hand, person, use action, food, cookware, room, lifestyle background, or scene prop."
+    : "HIGHEST PRIORITY: Follow the attached current-product reference images for product appearance, structure, and demonstrated use; if any text or generic assumption conflicts, the reference images win.";
   const priorityText = compactPromptItems([
     isMainImageType(typeId) ? mainImageNoAnnotationRule() : "",
     sceneAuthorityRule,
@@ -8566,7 +8602,7 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
       : shortTextRule(),
     isMainImageType(typeId) || referenceControlledSellingPoint ? "" : visualProofFirstRule(),
     skuQuantityRule ? `Mandatory SKU contents text: show “${facts.skuUnitQuantityLabel || `${facts.skuUnitQuantity} Pcs`}” clearly once; this is the contents of one saleable pack, and the visible unit count must equal ${facts.skuUnitQuantity}.` : "",
-    humanSceneRule(facts),
+    productOnlySellingPoint ? "Product-only slot: no people, hands, body parts, or use interaction." : humanSceneRule(facts),
     isProductInformationImage(typeId) ? imageMeasurementUnitRule() : "",
     amazonImageFileSizeRule(),
     referenceRuleText(referenceMode),
@@ -8583,11 +8619,12 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
       negative || negativePrompt(facts),
       differentDesignSetAvoidRule(facts),
       referenceControlledSellingPoint ? sellingPointEvidenceAvoidRule() : "",
+      productOnlySellingPoint ? "No person, hand, body part, active use, spraying, pouring, food, cookware, kitchen counter, room, lifestyle background, environmental context, or scene-setting prop." : "",
       skuQuantityMainRule ? `No dominant full-pack lineup, repeated-unit wall, large quantity grid, or pack arrangement occupying more than about 20-25% of the frame; no wrong count, fused products, or extra units in the compact secondary pack view.` : "",
       skuQuantityRule ? `No dominant full-pack lineup, repeated-unit wall, or large quantity poster; keep the labeled pack-contents proof secondary and within about 20-25% of the frame; no wrong count, fused products, or extra units.` : "",
     ], "", 10)));
   }
-  return sections.join("\n\n");
+  return [referenceAuthority, ...sections].join("\n\n");
 }
 
 function promptSection(label, value) {
@@ -9528,7 +9565,23 @@ function sellingPointSceneDescription(points, facts = {}, fallback = "verified p
   return sellingPointReferenceSceneRule(points, facts);
 }
 
-function sellingPointProofDominanceRule(points = [], facts = {}) {
+function sellingPointProofDominanceRule(points = [], facts = {}, route = "flexible") {
+  if (route === "scene_use") {
+    return [
+      "SCENE-USE COMPOSITION LOCK: the visible ongoing use interaction must occupy about 65-75% of the frame, with the current product clearly recognizable while it is being used.",
+      "Show enough of the verified environment and interaction to read immediately as a real use scene; do not replace the action with a product-only studio shot, static still life, or decorative background.",
+      "Use matched 1688 imagery as direction for the correct product state and operation, then redesign it into an original Amazon composition.",
+      "Do not use a large product lineup, repeated-unit wall, quantity-led composition, or a tiny corner demonstration.",
+    ].join(" ");
+  }
+  if (route === "product_proof") {
+    return [
+      "PRODUCT-ONLY COMPOSITION LOCK: the current product itself must occupy about 70-85% of the frame on a clean plain neutral or white studio background.",
+      "Show the benefit only through a source-supported whole-product view, structure/material/surface close-up, or product-detail crop. No person, hand, body part, active use, spraying/pouring action, food, cookware, work surface, room, lifestyle environment, or scene-setting prop.",
+      "Reference-image people, hands, use actions, food, cookware, and backgrounds are evidence context only and must not be copied into this product-only image.",
+      "Do not use a large product lineup, repeated-unit wall, quantity-led composition, decorative still life, or a tiny corner detail.",
+    ].join(" ");
+  }
   return [
     "SELLING-POINT COMPOSITION PRIORITY: the main visual must communicate the source-derived benefit through an action, use result, comparison, material/structure close-up, or other clear product-focused demonstration. Give this area about 65-75% of the frame.",
     "Use matched 1688 imagery as visual direction when available, then redesign it into an original Amazon composition. Product-only renders, decorative cutouts, icons, and labels remain supporting elements.",
@@ -9556,7 +9609,7 @@ function sellingPointVisualRouteLabel(route) {
 
 function sellingPointVisualRouteRule(route) {
   if (route === "scene_use") return "VISUAL ROUTE LOCK — SCENE USE: prove this selected selling point through a visible, source-supported use interaction in the current verified Use Scene. Show enough of the surrounding activity to read as an actual use scene while keeping the current product and relevant contact/detail clear and prominent. A static product close-up on a scene-themed surface, a pre-completed arrangement, or a decorative lifestyle background does not satisfy this route. Do not invent a use, prop, mechanism, or performance result.";
-  if (route === "product_proof") return "VISUAL ROUTE LOCK — PRODUCT PROOF: prove this selected selling point with the current product itself as the main subject: a source-supported close-up of structure, material, surface, detail, or a verified property demonstration. Do not use a person or lifestyle scene as the main proof. Waterproof, durability, and other performance demonstrations require explicit evidence for this SKU; never invent them. Avoid a decorative product lineup.";
+  if (route === "product_proof") return "VISUAL ROUTE LOCK — PRODUCT PROOF — STRICT PRODUCT-ONLY STUDIO IMAGE: show only the current product itself as the visual subject, using a source-supported whole-product view or close-up of its structure, material, surface, or physical detail. Use a clean plain neutral or white studio background. ZERO people, ZERO hands or body parts, ZERO active use or operation, ZERO spraying or pouring, ZERO food or cookware, ZERO room or lifestyle environment, and ZERO scene-setting props. Any hand, action, kitchen, food, cookware, or background visible in an attached reference is evidence context only and must not appear in this image. Waterproof, durability, resistance, and other performance tests require explicit evidence; never invent them. Avoid a decorative product lineup.";
   return "Use the source-supported proof method that most clearly demonstrates the selected selling point while preserving the exact current product.";
 }
 
@@ -9566,7 +9619,7 @@ function visualPlanContext(facts) {
   const groups = sellingPointDisplayGroups(facts);
   const routes = groups.map((_, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length));
   const evidence = facts.sellingPointVisualEvidence || [];
-  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 5 };
+  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 6 };
 }
 
 function currentVisualPlans(facts) {
@@ -9577,6 +9630,35 @@ function currentVisualPlans(facts) {
 function visualPlanForPoints(points, facts) {
   const index = visualPlanContext(facts).groups.findIndex((group) => JSON.stringify(group) === JSON.stringify(points));
   return currentVisualPlans(facts).find((plan) => plan.groupIndex === index);
+}
+
+function sellingPointPlanIsSkipped(type, facts, template = selectedTemplate()) {
+  const points = sellingPointGroupForImageTitle(template.id, type.id, facts);
+  return points.length && visualPlanForPoints(points, facts)?.humanDecision === "skip";
+}
+
+function visualPlanDecisionLabel(plan) {
+  if (plan?.humanDecision === "show") return "人工确认展示";
+  if (plan?.humanDecision === "skip") return "人工决定不展示";
+  return "等待人工决定";
+}
+
+function manualDecisionFallbackPlans(context, reason = "自动规划未完成") {
+  return context.groups.map((points, index) => ({
+    groupIndex: index,
+    route: context.routes[index] || "flexible",
+    status: "blocked",
+    label: sellingPointDisplayText(points, "Product Feature"),
+    goal: `是否展示：${points.join(" + ")}`,
+    subject: "当前产品",
+    action: "",
+    composition: "",
+    basis: points.join(" + "),
+    difference: "",
+    reason,
+    visual_prompt: "",
+    evidenceUrls: [],
+  }));
 }
 
 function scheduleAutomaticVisualPlan() {
@@ -9632,23 +9714,38 @@ async function planSellingPointImages() {
       return;
     }
     sku.sellingPointVisualPlan = {signature, plans: result.plans};
-    visualPlanMessages.set(sku.id, result.plans.some((plan) => plan.status === "blocked") ? "部分方案需要补充依据，已阻止对应卖点图生成。" : "方案已写入对应卖点图提示词，可以逐项核对后生成。");
+    visualPlanMessages.set(sku.id, result.plans.some((plan) => plan.status === "blocked")
+      ? "部分卖点缺少充分证明；请人工决定继续展示或不展示。"
+      : "规划已完成；请逐张人工确认展示或不展示后进入图组。");
     const plannedFacts = promptFacts(sku, currentPromptData(sku));
     promptStore.forEach((item) => {
       const state = imageGenerationByCard[item.key];
       if (state?.status !== "needs_plan") return;
       const points = sellingPointGroupForImageTitle(selectedTemplate().id, item.type.id, plannedFacts);
       const plan = points.length ? visualPlanForPoints(points, plannedFacts) : null;
-      if (plan?.status === "ready") {
+      if (plan?.humanDecision === "show") {
         state.status = "idle";
-        state.message = "卖点图方案已就绪，可以生成图片。";
+        state.message = "已人工确认展示，可以生成图片。";
+      } else if (plan?.humanDecision === "skip") {
+        state.status = "idle";
+        state.message = "已人工决定不展示此卖点图。";
       } else if (plan?.reason) {
-        state.message = plan.reason;
+        state.message = `等待人工决定：${plan.reason}`;
       }
     });
     renderAll();
   } catch (error) {
-    visualPlanMessages.set(sku.id, error.name === "AbortError" ? "规划超时，请重试。" : error.message);
+    const failureMessage = error.name === "AbortError" ? "规划超时" : (error.message || "规划失败");
+    if (selectedSku()?.id === sku.id && JSON.stringify(visualPlanContext(promptFacts(sku, currentPromptData(sku)))) === signature) {
+      sku.sellingPointVisualPlan = {
+        signature,
+        plans: manualDecisionFallbackPlans(context, failureMessage),
+      };
+      visualPlanMessages.set(sku.id, `${failureMessage}；请人工决定每张卖点图继续展示或不展示。`);
+      renderAll();
+    } else {
+      visualPlanMessages.set(sku.id, `${failureMessage}；参数或当前产品已变化，请重新规划。`);
+    }
   } finally {
     clearTimeout(timeout);
     visualPlanRequests.delete(sku.id);
@@ -9669,18 +9766,23 @@ function visualPlanReviewHtml(facts) {
   const busy = visualPlanRequests.has(selectedSku().id);
   const template = selectedTemplate();
   const selection = sellingPointImageSelection(facts);
+  const undecidedCount = plans.filter((plan) => !["show", "skip"].includes(plan.humanDecision)).length;
+  const defaultStatus = plans.length
+    ? (undecidedCount ? `还有 ${undecidedCount} 张卖点图等待人工决定。` : "所有卖点图均已由人工决定，可以进入提示词与图组。")
+    : "尚无适用于当前参数的方案。";
   return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>整套卖点图方案</h3>
-    <p class="workflow-section-note">人工选择每张图的卖点；自动规划后可展开核对。</p></div>
+    <p class="workflow-section-note">人工选择卖点，并逐张决定展示或不展示；模型无法证实时只给出提示，不阻止进入下一步。</p></div>
     <button id="planSellingPointImages" type="button" class="secondary" ${busy ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划" : "立即规划"}</button></div>
     <div class="visual-plan-choice-grid">${selection.slots.map((type, index) => `<label><span>${escapeHtml(type.name)} · ${sellingPointVisualRouteLabel(context.routes[index] || "flexible")}</span><select data-selling-point-slot="${index}" ${selection.points.length ? "" : "disabled"}>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}" ${selection.indices[index] === pointIndex ? "selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>`).join("")}</div>
-    <p class="visual-plan-status" role="status">${escapeHtml(visualPlanMessages.get(selectedSku().id) || (plans.length ? "当前方案已应用到提示词。" : "尚无适用于当前参数的方案。"))}</p>
+    <p class="visual-plan-status" role="status">${escapeHtml(visualPlanMessages.get(selectedSku().id) || defaultStatus)}</p>
     ${plans.map((plan) => {
       const points = context.groups[plan.groupIndex] || [];
       const type = template.imageTypes.find((candidate) => JSON.stringify(sellingPointGroupForImageTitle(template.id, candidate.id, facts)) === JSON.stringify(points));
-      return `<details class="visual-plan-card"><summary class="visual-plan-card-summary"><span class="visual-plan-slot">${escapeHtml(type?.name || `卖点图 ${plan.groupIndex + 1}`)} · ${sellingPointVisualRouteLabel(context.routes[plan.groupIndex])}</span><strong>${escapeHtml(points.join(" + "))}</strong><span class="visual-plan-short-label">${plan.status === "ready" ? escapeHtml(plan.label) : "待确认"}</span></summary><div class="visual-plan-card-body">
-      ${plan.status === "ready" ? `<dl>${[["goal", "本图表达"], ["subject", "主体与状态"], ["action", "动作 / 细节"], ["composition", "构图重点"], ["basis", "事实依据"], ["difference", "与其他图的区别"]].map(([key, label]) => `<div><dt>${label}</dt><dd>${escapeHtml(plan[key])}</dd></div>`).join("")}</dl>` : `<p>待确认：${escapeHtml(plan.reason)}。该方案不会进入生图任务。</p>`}
-      <details class="visual-plan-editor"><summary>修订或暂停此方案</summary><div class="field-list" data-plan-editor="${plan.groupIndex}">
-      ${[["action", "具体动作"], ["composition", "构图"], ["basis", "依据"], ["difference", "图间区别"], ["visual_prompt", "画面指令（英文）"], ["reason", "暂停原因（留空则启用方案）"]].map(([key, label]) => `<div><label for="plan-${plan.groupIndex}-${key}">${label}</label><textarea id="plan-${plan.groupIndex}-${key}" data-plan-field="${key}" rows="3">${escapeHtml(plan[key])}</textarea></div>`).join("")}
+      return `<details class="visual-plan-card"><summary class="visual-plan-card-summary"><span class="visual-plan-slot">${escapeHtml(type?.name || `卖点图 ${plan.groupIndex + 1}`)} · ${sellingPointVisualRouteLabel(context.routes[plan.groupIndex])}</span><strong>${escapeHtml(points.join(" + "))}</strong><span class="visual-plan-short-label">${escapeHtml(visualPlanDecisionLabel(plan))}</span></summary><div class="visual-plan-card-body">
+      ${plan.status === "ready" ? `<dl>${[["goal", "本图表达"], ["subject", "主体与状态"], ["action", "动作 / 细节"], ["composition", "构图重点"], ["basis", "事实依据"], ["difference", "与其他图的区别"]].map(([key, label]) => `<div><dt>${label}</dt><dd>${escapeHtml(plan[key])}</dd></div>`).join("")}</dl>` : `<p>模型提示：${escapeHtml(plan.reason)}。这只是建议，请由人工决定是否继续展示。</p>`}
+      <div class="visual-plan-decision-actions"><button type="button" data-visual-plan-decision="show" data-plan-index="${plan.groupIndex}"${plan.humanDecision === "show" ? " disabled" : ""}>人工确认展示</button><button type="button" class="secondary" data-visual-plan-decision="skip" data-plan-index="${plan.groupIndex}"${plan.humanDecision === "skip" ? " disabled" : ""}>人工决定不展示</button></div>
+      <details class="visual-plan-editor"><summary>修订方案内容</summary><div class="field-list" data-plan-editor="${plan.groupIndex}">
+      ${[["action", "具体动作"], ["composition", "构图"], ["basis", "依据"], ["difference", "图间区别"], ["visual_prompt", "画面指令（英文）"], ["reason", "模型提示 / 人工备注"]].map(([key, label]) => `<div><label for="plan-${plan.groupIndex}-${key}">${label}</label><textarea id="plan-${plan.groupIndex}-${key}" data-plan-field="${key}" rows="3">${escapeHtml(plan[key])}</textarea></div>`).join("")}
       <button type="button" data-save-visual-plan="${plan.groupIndex}">保存此方案</button></div></details></div></details>`;
     }).join("")}
     </section>`;
@@ -9688,14 +9790,18 @@ function visualPlanReviewHtml(facts) {
 
 function sellingPointImageTemplateRule(points, facts = {}, imageName = "this selling-point image") {
   const plan = visualPlanForPoints(points, facts);
+  const context = visualPlanContext(facts);
+  const groupIndex = context.groups.findIndex((group) => JSON.stringify(group) === JSON.stringify(points));
+  const route = plan?.route || context.routes[groupIndex] || "flexible";
+  const routeRule = sellingPointVisualRouteRule(route);
   if (plan?.status === "ready") {
     const others = currentVisualPlans(facts).filter((item) => item.groupIndex !== plan.groupIndex && item.status === "ready");
-    const route = visualPlanContext(facts).routes[plan.groupIndex];
-    return `SELLING-POINT SOURCE DIRECTION: ${imageName}: Execute this specific whole-set visual plan as the authoritative composition: ${plan.visual_prompt}. ${sellingPointVisualRouteRule(route)} On-image text must be exactly "${plan.label}", with no subtitle or additional claim. Preserve current SKU identity and verified facts. No decorative full-pack lineup. ${others.length ? `Other images already cover these demonstrations; do not repeat their central action or product state: ${others.map((item) => item.visual_prompt).join(" / ")}.` : ""} ${sellingPointEvidenceAvoidRule()}`;
+    return `SELLING-POINT SOURCE DIRECTION: ${imageName}: ${routeRule} Execute this specific whole-set visual plan only within that route: ${plan.visual_prompt}. If the planned composition conflicts with the route lock, the route lock wins. On-image text must be exactly "${plan.label}", with no subtitle or additional claim. Preserve current SKU identity and verified facts. No decorative full-pack lineup. ${others.length ? `Other images already cover these demonstrations; do not repeat their central action or product state: ${others.map((item) => item.visual_prompt).join(" / ")}.` : ""} ${sellingPointEvidenceAvoidRule()}`;
   }
   if (!limitedSellingPoints(points, 2).length) {
     return [
       `${imageName}: accurate Amazon product-display layout using the current product only.`,
+      routeRule,
       sellingPointSceneDescription(points, facts),
       "On-image text may only be short label groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.",
       "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, repeated benefit, or unsupported feature claim.",
@@ -9704,8 +9810,9 @@ function sellingPointImageTemplateRule(points, facts = {}, imageName = "this sel
   const sceneDescription = sellingPointSceneDescription(points, facts);
   return [
     `${imageName}: ${sellingPointHeadlineRule(points)} On-image text may only be these headline groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.`,
+    routeRule,
     sceneDescription,
-    sellingPointProofDominanceRule(points, facts),
+    sellingPointProofDominanceRule(points, facts, route),
     `Title coverage lock: show one short title group for each source-derived selling point in this group (${limitedSellingPoints(points, 2).length} total). If two points share one image, use one unified demonstration only when it clearly expresses both meanings.`,
     "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, or repeated benefit.",
   ].join(" ");
@@ -10194,9 +10301,12 @@ function sceneSourceStyleRule(facts) {
 
 function sceneOverallStyleText(facts, typeId, extra = "") {
   const isReferenceControlledSellingPoint = /(?:Selling-point reference priority|SELLING-POINT SOURCE DIRECTION)/i.test(extra);
+  const isProductOnlySellingPoint = /VISUAL ROUTE LOCK — PRODUCT PROOF/i.test(extra);
   return compactPromptItems([
     isReferenceControlledSellingPoint ? "" : sceneSourceStyleRule(facts),
-    sceneQualityRule(),
+    isProductOnlySellingPoint
+      ? "Premium realistic neutral studio lighting; the product is isolated from any use scene, with crisp physical detail, accurate scale, clean edges, and natural studio shadow."
+      : sceneQualityRule(),
     extra,
   ], "", 4);
 }
@@ -11532,14 +11642,16 @@ async function generateImageForCard(cardKey) {
   const points = sellingPointGroupForImageTitle(selectedTemplate().id, item.type.id, facts);
   if (points.length) {
     const plan = visualPlanForPoints(points, facts);
-    if (plan?.status !== "ready") {
+    if (plan?.humanDecision !== "show") {
       state.status = "needs_plan";
-      state.message = plan?.reason || "请先在 02 页规划当前卖点图，再生成。";
+      state.message = plan?.humanDecision === "skip"
+        ? "已人工决定不展示此卖点图。"
+        : "请先在第 02 页人工决定是否展示此卖点图。";
       updateImageGenerator(cardKey);
       return;
     }
     // Preserve identity references while actually supplying this task's evidence images.
-    state.selectedReferences = Array.from(new Set([state.selectedReferences[0], ...plan.evidenceUrls, ...state.selectedReferences].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES);
+    state.selectedReferences = Array.from(new Set([state.selectedReferences[0], ...(plan.evidenceUrls || []), ...state.selectedReferences].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES);
     state.availableReferences = Array.from(new Set([...state.selectedReferences, ...state.availableReferences]));
   }
   state.status = "submitting";
@@ -12317,7 +12429,9 @@ function renderProductPromptGrid() {
   promptStore = template.imageTypes.map((type, index) => {
     const key = promptCardKey(sku, template, type);
     const language = promptLanguageByCard[key] || "en";
-    const promptEn = bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
+    const promptEn = sellingPointPlanIsSkipped(type, facts, template)
+      ? ""
+      : bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
     const prompt = promptTextForLanguage(promptEn, language);
     return { id: type.id, key, index, type, language, promptEn, prompt, empty: !promptEn.trim() };
   });
@@ -12418,6 +12532,34 @@ function renderParameterPromptGrid() {
     renderAll();
   }));
   byId("planSellingPointImages")?.addEventListener("click", planSellingPointImages);
+  grid.querySelectorAll("[data-visual-plan-decision]").forEach((button) => button.addEventListener("click", () => {
+    const index = Number(button.dataset.planIndex);
+    const decision = button.dataset.visualPlanDecision;
+    if (!["show", "skip"].includes(decision)) return;
+    const currentFacts = promptFacts(sku, currentPromptData(sku));
+    const plan = currentVisualPlans(currentFacts).find((item) => item.groupIndex === index);
+    if (!plan) return;
+    plan.humanDecision = decision;
+    plan.reviewed = true;
+    const plans = currentVisualPlans(currentFacts);
+    const undecided = plans.filter((item) => !["show", "skip"].includes(item.humanDecision)).length;
+    visualPlanMessages.set(sku.id, undecided
+      ? `人工决定已保存；还有 ${undecided} 张卖点图待决定。`
+      : "所有卖点图均已由人工决定，可以进入提示词与图组。");
+    const points = visualPlanContext(currentFacts).groups[index] || [];
+    const type = selectedTemplate().imageTypes.find((candidate) => (
+      JSON.stringify(sellingPointGroupForImageTitle(selectedTemplate().id, candidate.id, currentFacts)) === JSON.stringify(points)
+    ));
+    if (type) {
+      const state = imageGenerationByCard[promptCardKey(sku, selectedTemplate(), type)];
+      if (state?.status === "needs_plan") {
+        state.status = "idle";
+        state.message = decision === "show" ? "已人工确认展示，可以生成图片。" : "已人工决定不展示此卖点图。";
+      }
+    }
+    renderAll();
+    persistWorkspaceSnapshot();
+  }));
   grid.querySelectorAll("[data-save-visual-plan]").forEach((button) => button.addEventListener("click", () => {
     const index = Number(button.dataset.saveVisualPlan);
     const plan = currentVisualPlans(facts).find((item) => item.groupIndex === index);
@@ -12588,7 +12730,9 @@ function allPromptsForSku() {
   return template.imageTypes.map((type) => {
     const title = promptImageDisplayTitle(template, type, facts) || type.promptName || type.name;
     const key = promptCardKey(sku, template, type);
-    const promptEn = bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
+    const promptEn = sellingPointPlanIsSkipped(type, facts, template)
+      ? ""
+      : bracketPromptVariables(promptFor(template.id, type.id, sku, data), facts, type.id);
     const prompt = promptTextForLanguage(promptEn, promptLanguageByCard[key] || "en");
     return prompt ? `## ${title}\n\n${prompt}` : "";
   }).filter(Boolean).join("\n\n---\n\n");

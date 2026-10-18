@@ -553,6 +553,21 @@ body {
   overflow-wrap: anywhere;
 }
 
+.visual-plan-decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.visual-plan-decision-actions button {
+  width: auto;
+  min-height: 36px;
+  margin: 0;
+  padding: 7px 14px;
+  font-size: 11px;
+}
+
 .visual-plan-editor {
   margin-top: 10px;
 }

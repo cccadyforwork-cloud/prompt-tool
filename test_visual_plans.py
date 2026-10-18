@@ -12,7 +12,7 @@ class VisualPlanTests(unittest.TestCase):
                          subject="主体", action="具体动作", composition="构图", basis="依据",
                          difference="区别", reason="", visual_prompt=f"Demonstration {index}", evidenceUrls=[]), **changes)
 
-    def run_planner(self, plans, reviews=None, evidence=None):
+    def run_planner(self, plans, reviews=None, evidence=None, routes=None):
         reviews = reviews if reviews is not None else [dict(groupIndex=i, approved=True, reason="有依据") for i in range(len(plans))]
         def response(value):
             return io.BytesIO(json.dumps({"output": [{"type": "message", "content": [
@@ -20,7 +20,10 @@ class VisualPlanTests(unittest.TestCase):
         with patch.dict(server.os.environ, {"ARK_API_KEY": "ark-test"}), patch.object(
             server.urllib.request, "urlopen", side_effect=[response({"plans": plans}), response({"reviews": reviews})]
         ):
-            return server.create_visual_plans({"groups": [[f"claim {i}"] for i in range(len(plans))], "evidence": evidence or []})
+            payload = {"groups": [[f"claim {i}"] for i in range(len(plans))], "evidence": evidence or []}
+            if routes is not None:
+                payload["routes"] = routes
+            return server.create_visual_plans(payload)
 
     def test_review_blocks_unsupported_implication(self):
         result, status = self.run_planner([self.plan()], [dict(groupIndex=0, approved=False, reason="没有各款性能排序的依据")])
@@ -32,6 +35,14 @@ class VisualPlanTests(unittest.TestCase):
         result, status = self.run_planner([self.plan(evidenceUrls=["https://source.example/image", "https://invented.example/image"])], evidence=[{"imageUrl": "https://source.example/image"}])
         self.assertEqual(status, 200)
         self.assertEqual(result["plans"][0]["evidenceUrls"], ["https://source.example/image"])
+
+    def test_scene_and_product_only_routes_are_preserved(self):
+        result, status = self.run_planner(
+            [self.plan(), self.plan(1)],
+            routes=["scene_use", "product_proof"],
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual([plan["route"] for plan in result["plans"]], ["scene_use", "product_proof"])
 
     def test_review_repair_is_used(self):
         repaired = self.plan(action="确认动作占主要画面", visual_prompt="Concrete supported action fills the frame")
