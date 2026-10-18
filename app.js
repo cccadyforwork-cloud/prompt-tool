@@ -148,6 +148,9 @@ let generatedSetSaving = false;
 const IMAGE_HISTORY_STORAGE_KEY = "prompt-tool-image-history-v1";
 const WORKSPACE_STORAGE_KEY = "prompt-tool-workspace-v1";
 const SELLING_POINT_REVIEW_STORAGE_KEY = "prompt-tool-selling-point-review-v1";
+const SOURCE_FILES_STORAGE_KEY = "prompt-tool-source-files-v1";
+const SOURCE_TEXT_STORAGE_KEY = "prompt-tool-source-text-v1";
+const MANUAL_REFERENCES_STORAGE_KEY = "prompt-tool-manual-references-v1";
 const workspaceParams = new URLSearchParams(window.location.search);
 const workspaceProjectId = workspaceParams.get("store_project_id") || "";
 const workspaceSku = workspaceParams.get("store_sku") || "";
@@ -171,6 +174,74 @@ const boundWorkspace = /^[A-Za-z0-9_-]{1,100}$/.test(workspaceProjectId)
   ? { projectId: workspaceProjectId, sku: workspaceSku }
   : null;
 let legacyWorkspaceMigrationChecked = false;
+let durableDb = null;
+let durableTabId = "";
+const durableStorageCache = new Map();
+let savedManualReferencesByCard = {};
+
+function durableWorkspaceKey(key) {
+  if (boundWorkspace) return scopedStorageKey(key);
+  if (!durableTabId) {
+    try {
+      durableTabId = sessionStorage.getItem("prompt-tool-tab-id-v1") || "";
+      if (!durableTabId) {
+        durableTabId = crypto.randomUUID();
+        sessionStorage.setItem("prompt-tool-tab-id-v1", durableTabId);
+      }
+    } catch {
+      durableTabId = durableTabId || `ephemeral-${Date.now()}`;
+    }
+  }
+  return `${key}:tab=${durableTabId}`;
+}
+
+function durablePut(key, value) {
+  if (!durableDb) return;
+  try {
+    const transaction = durableDb.transaction("records", "readwrite");
+    transaction.objectStore("records").put(value, durableWorkspaceKey(key));
+    transaction.onerror = () => console.warn("当前工作记录未写入浏览器持久存储", transaction.error);
+  } catch (error) {
+    console.warn("当前工作记录未写入浏览器持久存储", error);
+  }
+}
+
+function durableDelete(key) {
+  durableStorageCache.delete(key);
+  if (!durableDb) return;
+  try {
+    durableDb.transaction("records", "readwrite").objectStore("records").delete(durableWorkspaceKey(key));
+  } catch (error) {
+    console.warn("无法清除浏览器持久工作记录", error);
+  }
+}
+
+async function initializeDurableStorage() {
+  if (!window.indexedDB) return;
+  try {
+    durableDb = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("prompt-tool-durable-v1", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("records");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const keys = [WORKSPACE_STORAGE_KEY, IMAGE_HISTORY_STORAGE_KEY,
+      SELLING_POINT_REVIEW_STORAGE_KEY, SOURCE_FILES_STORAGE_KEY,
+      SOURCE_TEXT_STORAGE_KEY, MANUAL_REFERENCES_STORAGE_KEY];
+    await Promise.all(keys.map((key) => new Promise((resolve) => {
+      const request = durableDb.transaction("records", "readonly")
+        .objectStore("records").get(durableWorkspaceKey(key));
+      request.onsuccess = () => {
+        if (request.result !== undefined) durableStorageCache.set(key, request.result);
+        resolve();
+      };
+      request.onerror = () => resolve();
+    })));
+  } catch (error) {
+    durableDb = null;
+    console.warn("浏览器持久工作记录不可用", error);
+  }
+}
 
 function productMatchesBoundSku(product, sku = boundWorkspace?.sku) {
   const id = String(product?.id || "");
@@ -181,6 +252,15 @@ function snapshotMatchesBoundSku(snapshot) {
   return Boolean(boundWorkspace && Array.isArray(snapshot?.extractedProducts)
     && snapshot.extractedProducts.some((product) => productMatchesBoundSku(product)
       && product.id === snapshot.selectedSkuId));
+}
+
+function snapshotMatchesWorkspace(snapshot) {
+  if (!boundWorkspace) return !snapshot?.workspaceBinding;
+  if (snapshot?.workspaceBinding) {
+    return snapshot.workspaceBinding.projectId === boundWorkspace.projectId
+      && snapshot.workspaceBinding.sku === boundWorkspace.sku;
+  }
+  return snapshotMatchesBoundSku(snapshot);
 }
 
 function scopedStorageKey(key) {
@@ -208,6 +288,7 @@ function migrateCurrentTabWorkspace() {
 
 function readTabStorage(key) {
   try {
+    if (durableStorageCache.has(key)) return durableStorageCache.get(key);
     if (boundWorkspace) {
       migrateCurrentTabWorkspace();
       return localStorage.getItem(scopedStorageKey(key));
@@ -230,6 +311,8 @@ function readTabStorage(key) {
 }
 
 function writeTabStorage(key, value) {
+  durableStorageCache.set(key, value);
+  durablePut(key, value);
   try {
     if (boundWorkspace) {
       localStorage.setItem(scopedStorageKey(key), value);
@@ -239,11 +322,12 @@ function writeTabStorage(key, value) {
     return true;
   } catch (error) {
     console.warn("无法保存当前标签页工作记录", error);
-    return false;
+    return Boolean(durableDb);
   }
 }
 
 function removeTabStorage(key) {
+  durableDelete(key);
   try {
     if (boundWorkspace) {
       localStorage.removeItem(scopedStorageKey(key));
@@ -285,10 +369,56 @@ function storeWorkflowSourceEndpoint(kind) {
 // Keep workflow-provided files in memory as the source of truth and only mirror
 // them into the native input when that browser permits it.
 const storePrefilledSourceFiles = new Map();
+const SOURCE_INPUT_IDS = ["amazonTemplateFile", "supplierFile", "competitorFile"];
 
 function sourceInputFiles(inputId) {
   const selected = Array.from(byId(inputId)?.files || []);
   return selected.length ? selected : (storePrefilledSourceFiles.get(inputId) || []);
+}
+
+function persistSourceInputs() {
+  const files = Object.fromEntries(SOURCE_INPUT_IDS.map((id) => [id, sourceInputFiles(id)]));
+  const value = {
+    files,
+    supplierImageListText: byId("supplierImageListText")?.value || "",
+    savedAt: new Date().toISOString(),
+  };
+  durableStorageCache.set(SOURCE_FILES_STORAGE_KEY, value);
+  durablePut(SOURCE_FILES_STORAGE_KEY, value);
+}
+
+let sourceInputsSaveTimer = null;
+
+function scheduleSourceInputsSave() {
+  clearTimeout(sourceInputsSaveTimer);
+  sourceInputsSaveTimer = setTimeout(persistSourceInputs, 200);
+}
+
+function restoreSourceInputs() {
+  const stored = durableStorageCache.get(SOURCE_FILES_STORAGE_KEY);
+  const saved = stored && typeof stored === "object" ? stored : {};
+  for (const id of SOURCE_INPUT_IDS) {
+    const input = byId(id);
+    const files = Array.isArray(saved.files?.[id])
+      ? saved.files[id].filter((file) => file instanceof File)
+      : [];
+    if (!input || !files.length) continue;
+    storePrefilledSourceFiles.set(id, files);
+    try {
+      const transfer = new DataTransfer();
+      files.forEach((file) => transfer.items.add(file));
+      input.files = transfer.files;
+    } catch {
+      // The stored File objects remain available through sourceInputFiles.
+    }
+    if (id !== "competitorFile") showPrefilledSource(id, files.map((file) => file.name).join("、"));
+  }
+  const imageList = byId("supplierImageListText");
+  if (imageList) {
+    const latestText = readTabStorage(SOURCE_TEXT_STORAGE_KEY);
+    imageList.value = typeof latestText === "string"
+      ? latestText : (typeof saved.supplierImageListText === "string" ? saved.supplierImageListText : "");
+  }
 }
 
 function showPrefilledSource(inputId, filename) {
@@ -351,6 +481,7 @@ async function prefillStoreSourceInputs() {
     }
   }
   if (loaded.length) {
+    persistSourceInputs();
     const note = document.querySelector(".source-parse-note");
     const message = `已从运营工作流接入 ${loaded.join("；")}。请先核对资料，再手动点击“解析资料并提取产品信息”。`;
     if (note) note.textContent = message;
@@ -7377,7 +7508,7 @@ async function extractSources() {
   const amazonTemplateFile = sourceInputFiles("amazonTemplateFile")[0];
   const supplierFiles = sourceInputFiles("supplierFile");
   const pastedSupplierImageListText = byId("supplierImageListText")?.value.trim() || "";
-  const competitorFiles = Array.from(byId("competitorFile").files || []);
+  const competitorFiles = sourceInputFiles("competitorFile");
   const extractButton = byId("extractSources");
   extractButton.disabled = true;
   extractButton.setAttribute("aria-busy", "true");
@@ -11070,6 +11201,11 @@ function renderFacts() {
 function imageGenerationState(cardKey) {
   if (!imageGenerationByCard[cardKey]) {
     const savedSelection = savedReferenceSelectionByCard[cardKey];
+    const savedManual = savedManualReferencesByCard[cardKey] || {};
+    const manualAvailable = Array.isArray(savedManual.available)
+      ? savedManual.available.filter((url) => /^data:image\//i.test(url)) : [];
+    const manualSelected = Array.isArray(savedManual.selected)
+      ? savedManual.selected.filter((url) => manualAvailable.includes(url)) : [];
     const history = Array.isArray(persistedImageHistory[cardKey])
       ? persistedImageHistory[cardKey].map(normalizeGenerationHistoryRecord).filter(Boolean)
       : [];
@@ -11082,11 +11218,11 @@ function imageGenerationState(cardKey) {
       images: latest?.images || [],
       history,
       selectedHistoryIds: [],
-      availableReferences: latest?.referenceSnapshot || [],
+      availableReferences: [...manualAvailable, ...(latest?.referenceSnapshot || [])],
       selectedReferences: Array.isArray(savedSelection)
-        ? savedSelection.slice(0, MAX_SELECTED_REFERENCES)
-        : (latest?.referenceSnapshot?.slice(0, MAX_SELECTED_REFERENCES) || []),
-      referenceSelectionInitialized: Array.isArray(savedSelection) || Boolean(latest),
+        ? [...manualSelected, ...savedSelection].slice(0, MAX_SELECTED_REFERENCES)
+        : [...manualSelected, ...(latest?.referenceSnapshot || [])].slice(0, MAX_SELECTED_REFERENCES),
+      referenceSelectionInitialized: Array.isArray(savedSelection) || manualSelected.length > 0 || Boolean(latest),
       referencesExpanded: false,
       generatedPromptSnapshot: latest?.promptSnapshot || "",
       generatedReferenceSnapshot: latest?.referenceSnapshot || [],
@@ -11125,6 +11261,16 @@ function loadPersistedImageHistory() {
 function persistImageHistory(cardKey, history) {
   persistedImageHistory[cardKey] = [...history];
   writeTabStorage(IMAGE_HISTORY_STORAGE_KEY, JSON.stringify(persistedImageHistory));
+}
+
+function persistManualReferences(cardKey) {
+  const state = imageGenerationByCard[cardKey];
+  if (!state) return;
+  const available = state.availableReferences.filter((url) => /^data:image\//i.test(url));
+  const selected = state.selectedReferences.filter((url) => available.includes(url));
+  savedManualReferencesByCard[cardKey] = {available, selected};
+  durableStorageCache.set(MANUAL_REFERENCES_STORAGE_KEY, savedManualReferencesByCard);
+  durablePut(MANUAL_REFERENCES_STORAGE_KEY, savedManualReferencesByCard);
 }
 
 function recordGeneratedImages(cardKey, images) {
@@ -11500,6 +11646,7 @@ async function addReferenceFiles(cardKey, fileList) {
     ? `已添加 ${added.length} 张；${errors.slice(0, 2).join("；")}`
     : `已添加并选择 ${added.length} 张本地参考图。`;
   updateImageGenerator(cardKey);
+  persistManualReferences(cardKey);
 }
 
 function normalizeGeneratedImages(payload) {
@@ -12180,6 +12327,7 @@ function bindImageGeneratorSection(section) {
     lastReferenceSelectionCardKey = cardKey;
     state.message = "已取消当前任务的全部候选图勾选。";
     updateImageGenerator(cardKey);
+    persistManualReferences(cardKey);
     persistWorkspaceSnapshot();
   });
   section.querySelector(".reference-expand-toggle")?.addEventListener("click", () => {
@@ -12213,6 +12361,7 @@ function bindImageGeneratorSection(section) {
       prioritizeSelectedReferences(state);
       updateImageGenerator(cardKey);
       savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
+      persistManualReferences(cardKey);
       persistWorkspaceSnapshot();
     });
   });
@@ -12227,6 +12376,7 @@ function bindImageGeneratorSection(section) {
       state.message = "已删除该参考图。";
       updateImageGenerator(cardKey);
       savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
+      persistManualReferences(cardKey);
       persistWorkspaceSnapshot();
     });
   });
@@ -12592,9 +12742,9 @@ function renderAll() {
 
 function persistWorkspaceSnapshot() {
   if (!hasExtractedProducts()) return;
-  if (boundWorkspace && !productMatchesBoundSku(selectedSku())) return;
   const snapshot = {
     savedAt: new Date().toISOString(),
+    workspaceBinding: boundWorkspace ? {...boundWorkspace} : null,
     extractedProducts,
     fieldOverridesBySku,
     appliedSellingPointOverridesBySku,
@@ -12630,7 +12780,7 @@ function restoreWorkspaceSnapshot() {
   try {
     const snapshot = JSON.parse(readTabStorage(WORKSPACE_STORAGE_KEY) || "null");
     if (!snapshot || !Array.isArray(snapshot.extractedProducts) || !snapshot.extractedProducts.length) return null;
-    if (boundWorkspace && !snapshotMatchesBoundSku(snapshot)) return null;
+    if (!snapshotMatchesWorkspace(snapshot)) return null;
     extractedProducts = snapshot.extractedProducts;
     fieldOverridesBySku = snapshot.fieldOverridesBySku && typeof snapshot.fieldOverridesBySku === "object" ? snapshot.fieldOverridesBySku : {};
     extractedProducts = extractedProducts.map((sku) => {
@@ -12891,6 +13041,11 @@ async function init() {
   initThemeToggle();
   initWorkflowNavigation();
   fillSelects();
+  await initializeDurableStorage();
+  restoreSourceInputs();
+  const storedManualReferences = durableStorageCache.get(MANUAL_REFERENCES_STORAGE_KEY);
+  savedManualReferencesByCard = storedManualReferences && typeof storedManualReferences === "object"
+    && !Array.isArray(storedManualReferences) ? storedManualReferences : {};
   await restoreLocalRecoveryIfNeeded();
   persistedImageHistory = loadPersistedImageHistory();
   sellingPointReviewsBySku = loadSellingPointReviews();
@@ -12933,10 +13088,16 @@ async function init() {
   ["amazonTemplateFile", "supplierFile", "supplierImageListText", "competitorFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
-      if (input.type === "file" && input.files?.length) {
+      if (input.type === "file") {
         storePrefilledSourceFiles.delete(id);
         const prefill = byId(id === "amazonTemplateFile" ? "amazonTemplatePrefill" : id === "supplierFile" ? "supplierFilePrefill" : "");
         if (prefill) prefill.hidden = true;
+      }
+      if (input.type === "file") {
+        persistSourceInputs();
+      } else {
+        writeTabStorage(SOURCE_TEXT_STORAGE_KEY, input.value);
+        scheduleSourceInputsSave();
       }
       clearExtractedSourceState({ render: false });
       byId("extractStatus").textContent = "文件或筛选条件已更新，点击解析资料并提取产品信息。";
