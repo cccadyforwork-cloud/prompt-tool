@@ -541,6 +541,7 @@ let fieldOverrides = {};
 let fieldOverridesBySku = {};
 let appliedSellingPointOverridesBySku = {};
 let sellingPointReviewsBySku = {};
+const sellingPointTranslationRequests = new Set();
 let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
 let sellingPointInputRevision = 0;
@@ -556,7 +557,7 @@ let selectedExtractionRoute = "web";
 let selectedProductStructureRoute = "single";
 let productStructureRouteManuallySelected = false;
 let supplierBindingProducts = [];
-let selectedSupplierBindingMode = "auto";
+let selectedSupplierBindingMode = "child";
 let extractionGeneration = 0;
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
@@ -661,7 +662,20 @@ async function confirmParameterOutputs() {
       if (!item || item.promptEn !== expected) throw new Error("提示词尚未同步最新参数，请再点一次确认。");
       if (!points.length) continue;
       if (skipped) continue;
-      if (plan?.status === "ready" && (!item.promptEn.includes("Execute this specific whole-set visual plan") || !item.promptEn.includes(plan.label))) {
+      const conciseScenePlan = template.id === "scene" && ["5", "6"].includes(String(type.id));
+      const readablePrompt = item.promptEn.replace(/[【】]/g, "");
+      const planIncluded = conciseScenePlan
+        ? readablePrompt.includes(plan?.route === "product_proof"
+          ? "TASK: Present only this source-verified selling point:"
+          : "TASK: Visually prove only this current selling point:")
+          && readablePrompt.includes(`"${sellingPointHeadlineForClaim(points[0], plan?.label)}"`)
+          && readablePrompt.includes(`"${sellingPointBodyCopy(points[0])}"`)
+          && (plan?.route === "scene_use"
+            ? item.promptEn.includes("OPERATION:")
+            : item.promptEn.includes("VISUAL PLAN:"))
+        : item.promptEn.includes("Execute this specific whole-set visual plan")
+          && item.promptEn.includes(plan?.label || "");
+      if (plan?.status === "ready" && !planIncluded) {
         throw new Error(`${type.name} 的卖点图方案尚未进入提示词，请检查方案后重试。`);
       }
     }
@@ -732,7 +746,7 @@ function supplierParentGroups(products = []) {
 function supplierBindingModeFromValue(value = "") {
   if (String(value).startsWith("parent:")) return "parent";
   if (String(value).startsWith("sku:")) return "child";
-  return "auto";
+  return "child";
 }
 
 function updateSupplierBindingHelp() {
@@ -744,10 +758,6 @@ function updateSupplierBindingHelp() {
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  if (selectedSupplierBindingMode === "auto") {
-    help.textContent = "仅在商品与款式存在唯一高置信度匹配时写入；无法确认时停止解析。";
-    return;
-  }
   if (!supplierBindingProducts.length) {
     help.textContent = "上传 Amazon 模板后，可在这里选择资料对应的父体或 Child SKU。";
     return;
@@ -770,10 +780,10 @@ function updateSupplierBindingHelp() {
     : "请选择这份1688资料唯一对应的 Child SKU。";
 }
 
-function renderSupplierBindingOptions(products = [], mode = "auto", preferredValue = "") {
+function renderSupplierBindingOptions(products = [], mode = "child", preferredValue = "") {
   const select = byId("supplierSkuBinding");
   if (!select) return;
-  selectedSupplierBindingMode = ["parent", "child", "auto"].includes(mode) ? mode : "auto";
+  selectedSupplierBindingMode = ["parent", "child"].includes(mode) ? mode : "child";
   const parentGroups = supplierParentGroups(products);
   const parentValues = Array.from(parentGroups.entries())
     .filter(([, children]) => children.length > 1)
@@ -785,18 +795,14 @@ function renderSupplierBindingOptions(products = [], mode = "auto", preferredVal
     value: `sku:${sku.id}`,
     label: sku.label || sku.displayLabel || sku.model || sku.id,
   }));
-  const values = selectedSupplierBindingMode === "parent"
-    ? parentValues
-    : selectedSupplierBindingMode === "child" ? childValues : [];
+  const values = selectedSupplierBindingMode === "parent" ? parentValues : childValues;
   const placeholder = selectedSupplierBindingMode === "parent" ? "请选择父体" : "请选择 Child SKU";
-  select.innerHTML = selectedSupplierBindingMode === "auto"
-    ? '<option value="">自动判断归属</option>'
-    : `<option value="">${placeholder}</option>${values.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("")}`;
+  select.innerHTML = `<option value="">${placeholder}</option>${values.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("")}`;
   const normalizedPreferred = products.some((sku) => sku.id === preferredValue) ? `sku:${preferredValue}` : preferredValue;
   const validPreferred = values.some((item) => item.value === normalizedPreferred);
-  select.value = validPreferred ? normalizedPreferred : values.length === 1 ? values[0].value : "";
-  select.hidden = selectedSupplierBindingMode === "auto";
-  select.disabled = selectedSupplierBindingMode === "auto" || !values.length;
+  select.value = validPreferred ? normalizedPreferred : "";
+  select.hidden = !products.length;
+  select.disabled = !values.length;
   updateSupplierBindingHelp();
 }
 
@@ -807,7 +813,6 @@ function populateSupplierSkuBinding(products = []) {
   supplierBindingProducts = products;
   let mode = previous ? supplierBindingModeFromValue(previous) : selectedSupplierBindingMode;
   if (!products.length) mode = selectedSupplierBindingMode;
-  if (products.length === 1 && mode === "auto") mode = "child";
   renderSupplierBindingOptions(products, mode, previous);
   syncProductStructureRouteFromBinding();
 }
@@ -820,9 +825,7 @@ function boundSupplierSku(products = []) {
 
 function supplierBindingScope(products = []) {
   const rawValue = byId("supplierSkuBinding")?.value || "";
-  if (!rawValue) return selectedSupplierBindingMode === "auto"
-    ? { kind: "auto", value: "", targets: [] }
-    : { kind: "invalid", value: "", targets: [] };
+  if (!rawValue) return { kind: "invalid", value: "", targets: [] };
   if (rawValue.startsWith("parent:")) {
     const parentSku = rawValue.slice(7);
     const targets = products.filter((sku) => cleanFieldDisplayValue(sku.parentSku || "") === parentSku);
@@ -961,6 +964,12 @@ function verifiedSupplierMeasurementValue(sku = {}, key = "") {
   return "";
 }
 
+function verifiedProductCapacityValue(sku = {}) {
+  const source = cleanFieldDisplayValue(sku.fieldSources?.capacity || "");
+  if (/Amazon Child SKU标题/i.test(source)) return validCapacityValue(sku.capacity || "");
+  return verifiedSupplierMeasurementValue(sku, "capacity");
+}
+
 function identityFactsFromData(data = {}) {
   return {
     productName: data.productName || defaultProductName(data),
@@ -999,10 +1008,10 @@ function valueMap(sku) {
     applicableRange: cleanFieldDisplayValue(applicableRangeValueForSku(sku, {})),
     productDimensions: isDifferentDesignSet ? "" : productDimensionsEditorText(dimensionList, [defaultProductName(sku), sku.structure].filter(Boolean).join(" ")),
     productWeight: isDifferentDesignSet ? "" : verifiedSupplierMeasurementValue(sku, "productWeight"),
-    capacity: isDifferentDesignSet ? "" : verifiedSupplierMeasurementValue(sku, "capacity"),
+    capacity: isDifferentDesignSet ? "" : verifiedProductCapacityValue(sku),
     fit: useContext.fit,
     scene: useContext.scene,
-    sellingPoints: uniqueSellingPoints([
+    sellingPoints: uniqueExtractedSellingPoints([
       ...splitSellingPointText(sku.sellingPoints || ""),
       ...splitSellingPointText(sku.feature1 || ""),
       ...splitSellingPointText(sku.feature2 || ""),
@@ -1182,39 +1191,30 @@ const extractionRoutePreviews = {
     title: "本地分析",
     summary: "不调用豆包。优先解析当前 1688 页面文字、结构化属性和本地 OCR 识别结果。",
     flow: "1688 HTML + 详情图 → 本地规则 / OCR → 左侧参数栏",
-    fills: "商品名、款式、页面明确材质、尺寸、工艺、数量与卖点",
+    fills: "商品名、款式，以及页面文字或本地 OCR 可确认的材质、尺寸、工艺和数量",
     boundary: "未识别到的内容保持为空；不联网、不推测、不使用包装尺寸",
     note: "适合需要快速核对本地规则结果、且明确不调用豆包的情况。",
   },
-  vision: {
-    kicker: "Route 02 · Doubao Vision",
-    title: "豆包识图整理",
-    summary: "把筛选后的 1688 参数图、功能图和材质图交给豆包，整理当前商品的可见信息。",
-    flow: "筛选详情图 + 页面属性 → 豆包视觉识别 → 证据校验 → 左侧参数栏",
-    fills: "材质、展开尺寸、工艺、结构、图片明确卖点与适用对象",
-    boundary: "只允许读取当前商品资料；没有图片证据就留空，不联网补事实参数",
-    note: "适合关键信息藏在详情图片里的商品；每项结果保留图片来源。",
-  },
   web: {
-    kicker: "Route 03 · Web Research",
-    title: "豆包联网补充",
-    summary: "先让豆包分析筛选后的 1688 图片并整理当前商品事实，再联网补充仍为空的参考信息。",
-    flow: "筛选详情图 → 豆包视觉识别 → 已确认商品事实 → 英文跨境关键词 → 联网检索补缺",
-    fills: "图片可确认的材质、展开尺寸、工艺与核心卖点，以及1688缺失时的联网卖点和使用场景",
+    kicker: "Route 02 · Doubao",
+    title: "豆包分析",
+    summary: "优先读取当前 Child SKU 标题与 1688 图文资料，由豆包识图整理商品事实；联网只补充缺失的参考信息。",
+    flow: "Amazon Child SKU 标题 + 1688 图文 → 豆包识图 → 已确认事实 → 联网补缺",
+    fills: "当前商品的材质、尺寸、工艺、结构、卖点和使用场景；缺少的场景可联网补足",
     boundary: "联网关键词只用于检索，不得覆盖 Amazon Child SKU 确定的商品名；联网阶段也不得猜测精确尺寸、重量、数量、具体材质和当前商品独有配置",
-    note: "图片识别事实与联网参考分开保存；联网内容不会覆盖1688图片已经确认的事实。",
+    note: "图片识别事实优先；联网场景只追加缺少的条目，不覆盖已有内容。",
   },
 };
 
-function renderExtractionRoutePreview(routeId = "vision") {
-  const route = extractionRoutePreviews[routeId] || extractionRoutePreviews.vision;
-  const nextRoute = extractionRoutePreviews[routeId] ? routeId : "vision";
+function renderExtractionRoutePreview(routeId = "web") {
+  const nextRoute = extractionRoutePreviews[routeId] ? routeId : "web";
+  const route = extractionRoutePreviews[nextRoute];
   if (selectedExtractionRoute !== nextRoute) extractionGeneration += 1;
   selectedExtractionRoute = nextRoute;
   const preview = byId("extractionRoutePreview");
   if (!preview) return;
   document.querySelectorAll("[data-extraction-route]").forEach((button) => {
-    const active = button.dataset.extractionRoute === routeId;
+    const active = button.dataset.extractionRoute === nextRoute;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
   });
@@ -1240,7 +1240,10 @@ function renderExtractionRoutePreview(routeId = "vision") {
 function initExtractionRoutePreview() {
   renderExtractionRoutePreview(selectedExtractionRoute);
   document.querySelectorAll("[data-extraction-route]").forEach((button) => {
-    button.addEventListener("click", () => renderExtractionRoutePreview(button.dataset.extractionRoute));
+    button.addEventListener("click", () => {
+      renderExtractionRoutePreview(button.dataset.extractionRoute);
+      renderFields(true);
+    });
   });
 }
 
@@ -1279,6 +1282,8 @@ function renderFields(reset = false) {
       ? ""
       : ["fit", "scene"].includes(key)
       ? sanitizeUseContextFields({ ...values, [key]: cleanFieldDisplayValue(value) })[key]
+      : key === "productDimensions"
+      ? cleanFieldDisplayValue(value).replace(/\bTota\s+l\b/gi, "Total")
       : cleanFieldDisplayValue(value);
     const baseDisplayValue = key === "scene"
       ? formatUseSceneDisplayValue(cleanValue)
@@ -1290,8 +1295,10 @@ function renderFields(reset = false) {
     const displayValue = baseDisplayValue;
     const fieldControl = key === "scene"
       ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="${NO_REFERENCE_SCENE_MESSAGE}">${escapeHtml(displayValue)}</textarea>
-        <button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补全 3–5 个英文场景</button>
-        <p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">通过本地服务联网查找；查不到时不使用兜底场景。</p>`
+        ${selectedExtractionRoute === "web"
+          ? '<button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补充缺少的英文场景</button><p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">保留已提取场景，只补充不足的条目；联网失败时不清空原内容。</p>'
+          : '<p class="scene-enrich-status">本地路线只使用页面文字和本地 OCR，不联网补充。</p>'}
+        ${sku.useBehavior?.imageUrl ? `<p class="parameter-source">原图使用依据：${escapeHtml(sku.useBehavior.action)}（${sku.useBehavior.mode === "active" ? "操作演示" : "自然使用"}）</p>` : '<p class="parameter-source">未从原图识别到明确操作；人物图不会编造使用动作。</p>'}`
       : key === "productDimensions"
         ? `<textarea id="field-${key}" class="product-dimensions-input" data-key="${key}" rows="7" placeholder="每行一个尺寸，例如 Length: 5.9 in">${escapeHtml(displayValue)}</textarea>
           <p class="scene-enrich-status">每行保留“部位名称: 数值 + 单位”；可直接增加或删除尺寸行。</p>`
@@ -1332,6 +1339,7 @@ function renderFields(reset = false) {
   byId("applySellingPoints")?.addEventListener("click", applySellingPointChanges);
   byId("enrichUseScenes")?.addEventListener("click", enrichUseScenesOnline);
   bindSellingPointReviewControls(sku);
+  queueSellingPointTranslations(sku);
   updateSellingPointApplyState();
 }
 
@@ -1379,6 +1387,7 @@ function sellingPointEntriesForText(sku, text) {
         source: cleanFieldDisplayValue(match.source) || SELLING_POINT_SOURCE_UNKNOWN,
         evidence: cleanFieldDisplayValue(match.evidence || visualEvidence?.evidence),
         imageUrl: /^https?:\/\//i.test(match.imageUrl || visualEvidence?.imageUrl || "") ? (match.imageUrl || visualEvidence?.imageUrl) : "",
+        meaningZh: cleanFieldDisplayValue(match.meaningZh),
       }
       : { claim, source: SELLING_POINT_SOURCE_UNKNOWN };
   });
@@ -1396,6 +1405,7 @@ function normalizeSellingPointEntries(entries) {
     source: cleanFieldDisplayValue(entry?.source) || SELLING_POINT_SOURCE_UNKNOWN,
     evidence: cleanFieldDisplayValue(entry?.evidence),
     imageUrl: /^https?:\/\//i.test(entry?.imageUrl || "") ? entry.imageUrl : "",
+    meaningZh: cleanFieldDisplayValue(entry?.meaningZh),
   })).filter((entry) => {
     const key = entry.claim.toLowerCase();
     if (!key || seen.has(key)) return false;
@@ -1442,16 +1452,44 @@ function sellingPointReviewForSku(sku, create = true) {
   return review || null;
 }
 
-function addSellingPointCandidates(sku, entries, { replace = false } = {}) {
+function currentSellingPointReviewEntries(sku) {
+  const text = fieldOverridesBySku[sku.id]?.sellingPoints ?? sku.sellingPoints ?? "";
+  return normalizeSellingPointEntries(sellingPointEntriesForText(sku, text));
+}
+
+function alignSavedSellingPointReview(sku) {
+  const review = sellingPointReviewForSku(sku, false);
+  if (!review || review.locked || review.candidateSetVersion === 2) return;
+  const current = currentSellingPointReviewEntries(sku);
+  if (!current.length) return;
+  const manual = normalizeSellingPointEntries(review.candidateEntries)
+    .filter((entry) => entry.source === SELLING_POINT_SOURCE_MANUAL);
+  const previous = normalizeSellingPointEntries(review.candidateEntries);
+  review.candidateEntries = normalizeSellingPointEntries([...current, ...manual]).map((entry) => ({
+    ...entry,
+    meaningZh: entry.meaningZh || previous.find((item) => item.claim === entry.claim)?.meaningZh || "",
+  }));
+  const visible = new Set(review.candidateEntries.map((entry) => entry.claim));
+  review.checkedClaims = (review.checkedClaims || []).filter((claim) => visible.has(claim));
+  review.candidateSetVersion = 2;
+  persistSellingPointReviews();
+}
+
+function addSellingPointCandidates(sku, entries) {
   const review = sellingPointReviewForSku(sku);
   if (!review) return;
   const incoming = normalizeSellingPointEntries(entries);
   if (!incoming.length) return;
   const previous = normalizeSellingPointEntries(review.candidateEntries);
   const changed = JSON.stringify(incoming) !== JSON.stringify(normalizeSellingPointEntries(review.latestEntries || previous));
-  review.candidateEntries = replace
-    ? incoming
-    : normalizeSellingPointEntries([...incoming, ...previous]);
+  const manual = previous.filter((entry) => entry.source === SELLING_POINT_SOURCE_MANUAL);
+  review.candidateEntries = normalizeSellingPointEntries([...incoming, ...manual]).map((entry) => ({
+    ...entry,
+    meaningZh: entry.meaningZh || previous.find((item) => item.claim === entry.claim)?.meaningZh || "",
+  }));
+  review.candidateSetVersion = 2;
+  const visible = new Set(review.candidateEntries.map((entry) => entry.claim));
+  review.checkedClaims = (review.checkedClaims || []).filter((claim) => visible.has(claim));
   if (!Array.isArray(review.checkedClaims) || !review.checkedClaims.length && !review.locked) {
     review.checkedClaims = incoming.map((item) => item.claim);
   }
@@ -1487,10 +1525,10 @@ function sellingPointReviewHtml(sku) {
     ? `<p class="selling-point-review-active">已锁定：${escapeHtml(selected.map((item) => item.claim).join(" · "))}</p>`
     : '<p class="selling-point-review-active">候选尚未确认；请勾选要使用的卖点，再锁定。</p>';
   const candidateHtml = candidates.length
-    ? candidates.map((entry, index) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}><span><strong>${escapeHtml(entry.claim)}</strong><small>来源：${escapeHtml(entry.source)}${entry.evidence ? ` · 依据：${escapeHtml(entry.evidence)}` : ""}</small></span></label>`).join("")
+    ? candidates.map((entry, index) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}><span><strong>${escapeHtml(entry.claim)}${entry.meaningZh ? `（${escapeHtml(entry.meaningZh)}）` : ""}</strong><small>来源：${escapeHtml(entry.source)}${entry.evidence ? ` · 依据：${escapeHtml(entry.evidence)}` : ""}</small></span></label>`).join("")
     : '<p class="parameter-source">尚无候选卖点；可以先解析资料，或手动添加。</p>';
   const history = (review.history || []).slice().reverse().map((item) => `<div class="selling-point-history-row"><b>V${Number(item.version) || 1} · ${escapeHtml(item.kind || "候选")}</b><small>${escapeHtml(item.at || "")}</small><p>${escapeHtml((item.entries || []).map((entry) => entry.claim).join(" / ") || "未提取到卖点")}</p></div>`).join("");
-  const canRefresh = Boolean(review.visionRequest?.imageUrls?.length);
+  const canRefresh = selectedExtractionRoute === "web" && Boolean(review.visionRequest?.imageUrls?.length);
   return `<section class="selling-point-review" aria-label="卖点候选与确认">
     <div class="selling-point-review-head"><strong>卖点候选 · ${review.locked ? "已锁定" : "待人工确认"}</strong><span>只影响当前 SKU</span></div>
     ${selectedHtml}
@@ -1546,6 +1584,35 @@ function bindSellingPointReviewControls(sku) {
     renderAll();
   });
   byId("refreshSellingPointChoices")?.addEventListener("click", refreshSellingPointCandidates);
+}
+
+function queueSellingPointTranslations(sku) {
+  if (selectedExtractionRoute !== "web") return;
+  const review = sellingPointReviewForSku(sku, false);
+  const claims = normalizeSellingPointEntries(review?.candidateEntries)
+    .filter((entry) => !entry.meaningZh).map((entry) => entry.claim);
+  if (!claims.length) return;
+  const requestKey = `${sellingPointReviewKey(sku)}:${JSON.stringify(claims)}`;
+  if (sellingPointTranslationRequests.has(requestKey)) return;
+  sellingPointTranslationRequests.add(requestKey);
+  fetch("/api/translate-selling-points", {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ claims }),
+  }).then((response) => response.ok ? response.json() : null).then((result) => {
+    const translations = new Map((result?.translations || []).map((item) => [item.claim, item.zh]));
+    if (!translations.size) return;
+    let changed = false;
+    review.candidateEntries = normalizeSellingPointEntries(review.candidateEntries).map((entry) => {
+      const meaningZh = cleanFieldDisplayValue(translations.get(entry.claim));
+      if (!meaningZh || entry.meaningZh) return entry;
+      changed = true;
+      return { ...entry, meaningZh };
+    });
+    if (!changed) return;
+    persistSellingPointReviews();
+    if (selectedSku()?.id === sku.id) renderFields(true);
+  }).catch(() => {});
 }
 
 async function refreshSellingPointCandidates() {
@@ -1743,12 +1810,22 @@ function renderProductParameters() {
     const conflict = scopedToMember ? "" : cleanFieldDisplayValue(sku.fieldConflicts?.[key] || "");
     const source = key === "sellingPoints" ? "" : conflict
       ? `来源冲突，等待人工确认：${conflict}`
-      : value ? parameterSourceForData(parameterData, key) : "";
+      : value ? parameterSourceForData(parameterData, key)
+        : ["pack", "applicableRange", "surfaceFinish", "productDimensions", "productWeight", "capacity"].includes(key)
+          ? "当前 SKU 标题与对应 1688 图文未找到可核验参数" : "";
+    const imageEvidence = value && (!/^Amazon/i.test(source) || /1688/.test(source))
+      ? (sku.sourceImageEvidence || []).filter((item) => item.field === key
+          && /^https?:\/\//i.test(item.imageUrl || "")
+          && (key !== "productDimensions" || value.includes(item.value)
+            || (item.value.match(/\d+(?:\.\d+)?\s*(?:mm|cm|in|ft|m)\b/i)?.[0]
+              && value.includes(item.value.match(/\d+(?:\.\d+)?\s*(?:mm|cm|in|ft|m)\b/i)[0]))))
+      : [];
     return `
       <div class="parameter-review-field">
         <div id="review-label-${key}" class="parameter-review-label">${escapeHtml(label)}</div>
         <div class="parameter-review-value${multilineFieldKeys.has(key) ? " is-multiline" : ""}${value ? "" : " is-empty"}" role="textbox" aria-readonly="true" aria-labelledby="review-label-${key}"${multilineFieldKeys.has(key) ? ' aria-multiline="true"' : ""}>${escapeHtml(value || (scopedToMember ? "不同款需按成员分别取证" : "未提取到"))}</div>
         ${source ? `<p class="parameter-source">来源：${escapeHtml(source)}</p>` : ""}
+        ${imageEvidence.map((item, index) => `<p class="parameter-source">原图依据：${escapeHtml(item.value)} · <a href="${escapeHtml(item.imageUrl)}" target="_blank" rel="noopener noreferrer">查看详情图 ${index + 1}</a></p>`).join("")}
         ${key === "sellingPoints" ? sellingPointSourcesHtml(sku, value) : ""}
       </div>
     `;
@@ -2428,7 +2505,7 @@ function applyCompetitorDimensionFallback(products = []) {
   return products.map((product) => {
     const needsDimensions = !dimensionListItems(product.dimensionList || "", product.productName || "").length && competitorDimensionList;
     const productWeight = verifiedSupplierMeasurementValue(product, "productWeight") || competitorProductWeight;
-    const capacity = verifiedSupplierMeasurementValue(product, "capacity") || competitorCapacity;
+    const capacity = verifiedProductCapacityValue(product) || competitorCapacity;
     if (!needsDimensions && productWeight === product.productWeight && capacity === product.capacity) return product;
     const dimensionFields = needsDimensions ? dimensionFieldsFromDimensionList(competitorDimensionList, product.productName || "") : {};
     const competitorSource = competitorDimensionSourceNames.length ? ` · ${competitorDimensionSourceNames.join(" | ")}` : "";
@@ -2446,7 +2523,7 @@ function applyCompetitorDimensionFallback(products = []) {
         ...(product.fieldSources || {}),
         productDimensions: needsDimensions ? `竞品产品参数兜底${competitorSource}` : product.fieldSources?.productDimensions || "",
         productWeight: !verifiedSupplierMeasurementValue(product, "productWeight") && competitorProductWeight ? `竞品产品净重参数兜底${competitorSource}` : product.fieldSources?.productWeight || "",
-        capacity: !verifiedSupplierMeasurementValue(product, "capacity") && competitorCapacity ? `竞品产品容量参数兜底${competitorSource}` : product.fieldSources?.capacity || "",
+        capacity: !verifiedProductCapacityValue(product) && competitorCapacity ? `竞品产品容量参数兜底${competitorSource}` : product.fieldSources?.capacity || "",
       },
     };
   });
@@ -3738,6 +3815,12 @@ function extractSupplierStructuredText(html) {
   if (skuMaterial && !attrLines.some((line) => /^PRODUCT_ATTRIBUTE:\s*Material=/i.test(line))) {
     attrLines.push(`PRODUCT_ATTRIBUTE: Material=${skuMaterial}`);
   }
+  const skuCapacityValues = uniquePromptItems(Array.from(decoded.matchAll(/"specAttrs"\s*:\s*"([^"]+)"/gi))
+    .map((match) => match[1].match(/(?:^|[>&\s])([1-9]\d*(?:\.\d+)?)\s*(ml|l|毫升|升)(?:$|[^a-z])/i))
+    .filter(Boolean)
+    .map((match) => `${match[1]} ${/^(?:ml|毫升)$/i.test(match[2]) ? "ml" : "L"}`));
+  if (skuCapacityValues.length === 1) attrLines.push(`PRODUCT_ATTRIBUTE: Capacity=${skuCapacityValues[0]}`);
+  if (/"(?:offerUnit|unit)"\s*:\s*"件"/.test(decoded)) attrLines.push("PRODUCT_ATTRIBUTE: SaleUnit=piece");
   return [...titleLines, ...attrLines, ...skuLines].join("\n");
 }
 
@@ -4243,9 +4326,47 @@ function productAnalysisSellingPointVisualEvidence(result) {
   })).filter((item) => item.claim && item.evidence && /^https?:\/\//i.test(item.imageUrl));
 }
 
+function productAnalysisFieldVisualEvidence(result) {
+  const fieldMap = {
+    material: "material", color: "color", structure: "structure", technology: "surfaceFinish",
+    fit: "fit", productcount: "pack", capacity: "capacity",
+    productweight: "productWeight", applicablerange: "applicableRange",
+  };
+  const attributes = (Array.isArray(result?.attributes) ? result.attributes : []).map((item) => ({
+    field: fieldMap[String(item?.field || "").toLowerCase()] || "",
+    value: cleanFieldDisplayValue(item?.value || ""),
+    evidence: cleanFieldDisplayValue(item?.evidence || ""),
+    imageUrl: cleanFieldDisplayValue(item?.image_url || ""),
+  }));
+  const dimensions = (Array.isArray(result?.dimension_evidence) ? result.dimension_evidence : []).map((item) => ({
+    field: "productDimensions",
+    value: cleanFieldDisplayValue(item?.dimension || ""),
+    evidence: cleanFieldDisplayValue(item?.evidence || ""),
+    imageUrl: cleanFieldDisplayValue(item?.image_url || ""),
+  }));
+  return [...attributes, ...dimensions].filter((item) => item.field && item.value && /^https?:\/\//i.test(item.imageUrl));
+}
+
+function productAnalysisUseBehavior(result) {
+  const item = result?.use_behavior;
+  if (!item || !["active", "passive"].includes(item.mode)) return null;
+  const imageUrl = cleanFieldDisplayValue(item.image_url || "");
+  const action = cleanFieldDisplayValue(item.action || "");
+  if (!/^https?:\/\//i.test(imageUrl) || !action) return null;
+  return {
+    mode: item.mode,
+    action,
+    trigger: cleanFieldDisplayValue(item.trigger || ""),
+    outputOrigin: cleanFieldDisplayValue(item.output_origin || ""),
+    outputDirection: cleanFieldDisplayValue(item.output_direction || ""),
+    evidence: cleanFieldDisplayValue(item.evidence || ""),
+    imageUrl,
+  };
+}
+
 function applyVisualEvidenceToBoundSku(products, evidenceItems, boundSkuId) {
   const evidence = Array.isArray(evidenceItems) ? evidenceItems : [];
-  const claims = uniqueSellingPoints(evidence.map((item) => item.claim), 4);
+  const claims = uniqueExtractedSellingPoints(evidence.map((item) => item.claim), 4);
   return products.map((product) => {
     if (product.id !== boundSkuId) return { ...product, sellingPointVisualEvidence: [] };
     return {
@@ -4281,11 +4402,13 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
   }
 
   const collectorStatus = collectedImageCandidates.length ? `采集清单去重后 ${collectedImageCandidates.length} 张，` : "";
-  onProgress?.(`已找到 ${allImageCandidates.length} 条 1688 图片候选，${collectorStatus}保留 ${supplierImageCandidates.length} 张交由豆包逐批识别...`);
-  const ocr = { text: "", scannedCount: 0, failedCount: 0, acceptedCount: 0, sellingPointCount: 0, available: false };
+  onProgress?.(`已找到 ${allImageCandidates.length} 条 1688 图片候选，${collectorStatus}保留 ${supplierImageCandidates.length} 张${routeId === "local" ? "供本地 OCR 读取" : "交由豆包逐批识别"}...`);
+  const ocr = routeId === "local"
+    ? await ocrImageUrls(supplierImageCandidates.slice(0, OCR_IMAGE_LIMIT), onProgress)
+    : { text: "", scannedCount: 0, failedCount: 0, acceptedCount: 0, sellingPointCount: 0, available: false };
   const attributeSource = productAttributeSourceText(structuredText);
   const detailAttrLines = productAttributeLinesFromSource(attributeSource);
-  const combinedBeforeVision = [baseText, structuredText, ...detailAttrLines, attributeSource].filter(Boolean).join("\n");
+  const combinedBeforeVision = [baseText, structuredText, ...detailAttrLines, ocr.text, attributeSource].filter(Boolean).join("\n");
   // Send every unique source image to Doubao; its selected list feeds the picker.
   const visionImageCandidates = supplierImageCandidates;
   const hintedProductName = cleanFieldDisplayValue(
@@ -4301,7 +4424,7 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
     structure: extractProductDetailAttributes(attributeSource).Structure || identityHint.structure || "",
     localEvidence: [detailAttrLines.join("\n"), attributeSource].filter(Boolean).join("\n").slice(0, 12000),
   };
-  if (boundWorkspace && (routeId === "vision" || routeId === "web")) {
+  if (boundWorkspace && routeId === "web") {
     const key = boundWorkspace.sku;
     const review = sellingPointReviewsBySku[key] || {
       locked: false, selectedEntries: [], candidateEntries: [], checkedClaims: [], history: [], nextVersion: 0,
@@ -4314,7 +4437,7 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
     persistSellingPointReviews();
   }
   const skipLockedVision = Boolean(boundWorkspace && sellingPointReviewsBySku[boundWorkspace.sku]?.locked);
-  const analysisResult = (routeId === "vision" || routeId === "web") && !skipLockedVision
+  const analysisResult = routeId === "web" && !skipLockedVision
     ? await fetchLocalProductAnalysisProxy(analysisFacts, visionImageCandidates, onProgress)
     : null;
   const analysisEvidence = productAnalysisEvidenceText(analysisResult, combinedBeforeVision);
@@ -4322,16 +4445,21 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
     ? analysisResult.selected_images.filter((item) => item && supplierImageCandidates.some((candidate) => imageCandidateUrl(candidate) === item.url))
     : null;
   const selectedImageMeta = selectedByDoubao || supplierImageCandidates.map((candidate) => ({
-    url: imageCandidateUrl(candidate), image_type: "other", review_status: "pending", reason: "豆包筛图未完成，待人工核对",
+    url: imageCandidateUrl(candidate), image_type: "other", review_status: "pending",
+    reason: routeId === "local" ? "本地路线保留去重后的原图，待人工核对" : "豆包筛图未完成，待人工核对",
   }));
-  const evidenceUrls = new Set((analysisResult?.selling_points || []).map((item) => item?.image_url).filter(Boolean));
+  const useBehavior = productAnalysisUseBehavior(analysisResult);
+  const evidenceUrls = new Set([
+    ...(analysisResult?.selling_points || []).map((item) => item?.image_url),
+    useBehavior?.imageUrl,
+  ].filter(Boolean));
   for (const url of evidenceUrls) {
     if (!selectedImageMeta.some((item) => item.url === url)) {
       selectedImageMeta.push({ url, image_type: "feature", review_status: "evidence", reason: "卖点的原图依据" });
     }
   }
   return {
-    text: [baseText, structuredText, ...detailAttrLines, analysisEvidence, attributeSource && `1688 structured supplier text: ${attributeSource}`].filter(Boolean).join("\n"),
+    text: [baseText, structuredText, ...detailAttrLines, ocr.text, analysisEvidence, attributeSource && `1688 structured supplier text: ${attributeSource}`].filter(Boolean).join("\n"),
     imageCount: supplierImageCandidates.length,
     candidateCount: allImageCandidates.length,
     collectorCandidateCount: collectedImageCandidates.length,
@@ -4347,6 +4475,8 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
     visionMessage: cleanFieldDisplayValue(analysisResult?.message || ""),
     visionErrors: Array.isArray(analysisResult?.errors) ? analysisResult.errors.map((error) => cleanFieldDisplayValue(error)).filter(Boolean) : [],
     sellingPointVisualEvidence: productAnalysisSellingPointVisualEvidence(analysisResult),
+    fieldVisualEvidence: productAnalysisFieldVisualEvidence(analysisResult),
+    useBehavior,
     // Every visual fact's evidence image remains in the shared candidate list.
     referenceImageUrls: selectedImageMeta.map((item) => item.url).filter(Boolean),
     referenceImageMeta: selectedImageMeta,
@@ -4413,6 +4543,8 @@ function combinedNamedHtmlEntries(entries) {
 
 function mergeSupplierSourceResults(results) {
   const values = results.filter(Boolean);
+  const useBehavior = values.map((item) => item.useBehavior).find((item) => item?.mode === "active")
+    || values.map((item) => item.useBehavior).find((item) => item?.mode === "passive") || null;
   return {
     text: values.map((item) => item.text).filter(Boolean).join("\n"),
     imageCount: values.reduce((sum, item) => sum + (item.imageCount || 0), 0),
@@ -4426,6 +4558,8 @@ function mergeSupplierSourceResults(results) {
     visionMessage: values.map((item) => cleanFieldDisplayValue(item.visionMessage || "")).filter(Boolean).join("；"),
     visionErrors: values.flatMap((item) => Array.isArray(item.visionErrors) ? item.visionErrors : []).filter(Boolean),
     sellingPointVisualEvidence: values.flatMap((item) => Array.isArray(item.sellingPointVisualEvidence) ? item.sellingPointVisualEvidence : []),
+    fieldVisualEvidence: values.flatMap((item) => Array.isArray(item.fieldVisualEvidence) ? item.fieldVisualEvidence : []),
+    useBehavior,
     referenceImageUrls: Array.from(new Set(values.flatMap((item) => Array.isArray(item.referenceImageUrls) ? item.referenceImageUrls : []))).slice(0, MAX_REFERENCE_CANDIDATES),
     referenceImageMeta: values.flatMap((item) => Array.isArray(item.referenceImageMeta) ? item.referenceImageMeta : []),
     selectionPendingCount: values.reduce((sum, item) => sum + (item.selectionPendingCount || 0), 0),
@@ -4479,6 +4613,7 @@ function productsFromSupplierFileSources(fileSources) {
       rawSpec: product.supplierOption?.rawSpec || rawSpecName,
       sourceFile: source.name,
       sellingPointVisualEvidence: Array.isArray(source.sellingPointVisualEvidence) ? source.sellingPointVisualEvidence : [],
+      useBehavior: source.useBehavior || null,
     };
   }).filter(Boolean);
 }
@@ -4945,7 +5080,7 @@ function extractDimensions(text) {
 
 function semanticDimensionItems(items, context = "") {
   return uniquePromptItems((items || [])
-    .map((item) => normalizeDimensionUnit(cleanTokenValue(item)))
+    .map((item) => normalizeDimensionUnit(cleanTokenValue(item)).replace(/\bTota\s+l\b/gi, "Total"))
     .filter((item) => {
       if (!item || !/:\s*[0-9]/.test(item)) return false;
       const label = item.split(":")[0];
@@ -5022,7 +5157,7 @@ function inferInstallationSteps(text) {
 }
 
 function verifiedVisionSellingPointCandidates(text) {
-  return uniqueSellingPoints(
+  return uniqueExtractedSellingPoints(
     Array.from(String(text || "").matchAll(/DOUBAO_VISION_SELLING_POINT:\s*([^\n]+)/gi))
       .map((match) => cleanFieldDisplayValue(match[1]))
       .filter(Boolean),
@@ -5031,7 +5166,7 @@ function verifiedVisionSellingPointCandidates(text) {
 }
 
 function verifiedSellingPointsFromSource(text, limit = 2) {
-  const points = uniqueSellingPoints(
+  const points = uniqueExtractedSellingPoints(
     verifiedVisionSellingPointCandidates(text),
     Math.max(limit, 8),
   ).slice(0, limit);
@@ -5110,6 +5245,9 @@ function doubaoVisionEvidenceProfile(text) {
       technology: "Technology",
       structure: "Structure",
       fit: "Fit",
+      capacity: "Capacity",
+      productweight: "ProductWeight",
+      applicablerange: "ApplicableRange",
       installationsteps: "InstallationSteps",
     }[field] || rawField;
     const value = cleanFieldDisplayValue(match[2]);
@@ -6482,6 +6620,41 @@ function amazonTitleUnitQuantity(title) {
   return { count, label };
 }
 
+function amazonStructuredUnitQuantity(row, columns) {
+  const countText = amazonRowValue(row, columns, "Number of Items", "number_of_items");
+  const packageText = amazonRowValue(row, columns, "Item Package Quantity", "item_package_quantity");
+  const count = Number(countText);
+  const packageQuantity = Number(packageText);
+  if (!/^[1-9]\d*$/.test(countText) || !Number.isInteger(count) || count > 999) return null;
+  // A package quantity describes saleable packs, not necessarily the number
+  // of physical items. Disagreeing fields must be reviewed, not guessed.
+  if (packageText && (!/^[1-9]\d*$/.test(packageText) || packageQuantity !== count)) return null;
+  return { count, label: `${count} ${count === 1 ? "Pc" : "Pcs"}` };
+}
+
+function amazonTitleCapacityValue(title) {
+  const match = String(title || "").match(/\b([1-9]\d*(?:\.\d+)?)\s*(milliliters?|ml|liters?|litres?|fluid\s+ounces?|fl\.?\s*oz)\b/i);
+  if (!match) return "";
+  const unit = /^(?:milliliters?|ml)$/i.test(match[2]) ? "ml"
+    : /^(?:liters?|litres?)$/i.test(match[2]) ? "L" : "fl oz";
+  return validCapacityValue(`${match[1]} ${unit}`);
+}
+
+function amazonTitleMaterialValue(title) {
+  const source = String(title || "");
+  if (/\b(?:polypropylene|PP\s+plastic)\b/i.test(source)) return "Polypropylene (PP)";
+  if (/\b(?:stainless\s+steel|silicone|glass|ceramic|aluminum|aluminium|cotton|polyester|bamboo|leather|ABS\s+plastic|PET\s+plastic|plastic)\b/i.test(source)) {
+    return source.match(/\b(?:stainless\s+steel|silicone|glass|ceramic|aluminum|aluminium|cotton|polyester|bamboo|leather|ABS\s+plastic|PET\s+plastic|plastic)\b/i)[0];
+  }
+  return "";
+}
+
+function amazonTitleColorValue(title) {
+  const lastClause = String(title || "").split(",").pop().trim();
+  return /^(?:black|white|green|blue|red|yellow|pink|purple|gray|grey|orange|brown|silver|gold|clear|transparent)$/i.test(lastClause)
+    ? lastClause : "";
+}
+
 // The child SKU title is the product-specific Amazon record. When it gives an
 // explicit 2D or 3D size (for example "13 by 8.66 in" or
 // "5.9 by 3.93 by 2.28 inches"), that current-SKU value wins over generic
@@ -6611,30 +6784,18 @@ function amazonSharedFacts(row, columns) {
   const itemShape = amazonRowValue(row, columns, "Item Shape", "item_shape[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
   const itemForm = amazonRowValue(row, columns, "Item Form", "item_form[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
   const designName = amazonRowValue(row, columns, "Design Name", "design_name[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]#1.value");
-  const material = uniquePromptItems([
-    ...amazonRepeatedRowValues(row, columns, "material[marketplace_id=ATVPDKIKX0DER][language_tag=en_US]", "Material"),
-    amazonRowValue(row, columns, "Material", "material")
-    || amazonRowValue(row, columns, "Sole Material", "sole_material")
-    || amazonRowValue(row, columns, "Outer Material", "outer")
-    || amazonRowValue(row, columns, "Compliance - Upper Material", "compliance_upper_material"),
-  ]).join(", ");
+  const material = amazonTitleMaterialValue(title);
   const height = amazonRowValue(row, columns, "Height Map", "height_map");
   const heelType = amazonRowValue(row, columns, "Heel Type", "heel[marketplace_id");
   const productType = amazonRowValue(row, columns, "Product Type", "product_type");
   const productText = `${title} ${description} ${bullets.join(" ")} ${keywords.join(" ")} ${occasions.join(" ")}`;
   const readableProductType = productType ? productType.toLowerCase().replace(/_/g, " ") : "";
-  const fit = amazonListingCompatibleUseText({ title, description, bullets, keywords, occasions, compatibleUses });
-  const structure = amazonListingStructureText({
-    text: productText,
-    material,
-    itemShape,
-    itemForm,
-    designName,
-    height,
-    heelType,
-  });
+  const fit = amazonListingCompatibleUseText({ title });
+  const structure = "";
   const titleUnitQuantity = amazonTitleUnitQuantity(title);
-  const pack = titleUnitQuantity?.label || "";
+  const unitQuantity = titleUnitQuantity;
+  const pack = unitQuantity?.label || "";
+  const capacity = amazonTitleCapacityValue(title);
   const dimensionList = amazonListingDimensionListText(row, columns, productText, title);
 
   return {
@@ -6649,8 +6810,9 @@ function amazonSharedFacts(row, columns) {
     scene: "",
     fit,
     pack,
-    skuUnitQuantity: titleUnitQuantity?.count || 0,
-    skuUnitQuantityLabel: titleUnitQuantity?.label || "",
+    skuUnitQuantity: unitQuantity?.count || 0,
+    skuUnitQuantityLabel: unitQuantity?.label || "",
+    capacity,
     dimensionList,
   };
 }
@@ -6692,13 +6854,15 @@ function amazonRowsToProducts(rows, skuFilter = "") {
     // inherited from the parent. Never silently copy the parent's count.
     const childPack = childListing.pack || "";
     const childUnitQuantity = childListing.skuUnitQuantity || 0;
+    const structuredUnitQuantityCandidate = amazonStructuredUnitQuantity(row, columns);
     const attrs = amazonVariantAttributes(row, columns, theme);
     const rowTitle = amazonRowValue(row, columns, "Item Name", "item_name");
+    const titleColor = amazonTitleColorValue(rowTitle);
     if (/SIZE/i.test(theme || "") && !attrs.size) {
       attrs.size = extractAmazonVariantSizeFromText(rowTitle, sku);
     }
     const optionParts = [
-      attrs.color,
+      titleColor || attrs.color,
       attrs.size && !/^(?:one size|free size)$/i.test(attrs.size) ? attrs.size : "",
       childPack,
       attrs.teamName,
@@ -6720,9 +6884,10 @@ function amazonRowsToProducts(rows, skuFilter = "") {
       parentSku,
       amazonTitle: listing.title || "",
       amazonRowNumber: rowInfo.excelRowNumber,
-      color: attrs.color || attrs.colorMap || "",
-      displayColor: attrs.color || attrs.colorMap || "",
-      colorEnglish: attrs.color || attrs.colorMap || "",
+      color: titleColor || attrs.color || attrs.colorMap || "",
+      displayColor: titleColor || attrs.color || attrs.colorMap || "",
+      colorEnglish: titleColor || attrs.color || attrs.colorMap || "",
+      titleColor,
       size: attrs.size || "",
       variantStyle: "",
       sizeCode,
@@ -6730,7 +6895,9 @@ function amazonRowsToProducts(rows, skuFilter = "") {
       pack: childPack,
       skuUnitQuantity: childUnitQuantity,
       skuUnitQuantityLabel: childPack,
-      material: listing.material,
+      structuredUnitQuantityCandidate,
+      material: childListing.material,
+      capacity: childListing.capacity || "",
       structure: listing.structure,
       scene: listing.scene,
       sellingPoints: "",
@@ -6739,7 +6906,7 @@ function amazonRowsToProducts(rows, skuFilter = "") {
       groupKey: parentSku || amazonRowValue(parentRow, columns, "SKU", "contribution_sku") || "amazon-template",
       group: {
         promptName: listingBaseName,
-        promptSpecs: [listing.readableProductType, theme, childPack, listing.material, listing.structure, listing.scene].filter(Boolean),
+        promptSpecs: [listing.readableProductType, theme, childPack, childListing.material].filter(Boolean),
         dimensions: childListing.dimensionList ? dimensionListItems(childListing.dimensionList, productName) : [],
         evidenceNote: `Amazon 模板：按 Child SKU 提取 ${sourceRowInfos.length} 个采购款式；变体主题 ${theme || "未填写"}。${filter?.hasFilter ? `筛选：${filter.raw}。` : ""}`,
       },
@@ -6751,15 +6918,17 @@ function amazonRowsToProducts(rows, skuFilter = "") {
           : `Amazon 模板：Child SKU = 款式数量；${theme || "变体"} = 款式属性。`,
       },
       singleSpec: `[CURRENT_PRODUCT_OPTION: ${optionLabel}]`,
-      specList: `[SPEC_LIST: ${[listing.shortTitle, optionLabel, childPack, listing.material, listing.structure, listing.scene].filter(Boolean).join(" / ")}]`,
+      specList: `[SPEC_LIST: ${[listing.shortTitle, optionLabel, childPack, childListing.material].filter(Boolean).join(" / ")}]`,
       variantList: "",
       dimensionList: childListing.dimensionList || "",
       fieldSources: {
         productName: `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行`,
-        color: attrs.color || attrs.colorMap ? `Amazon Child SKU颜色 · 第 ${rowInfo.excelRowNumber} 行` : "",
+        color: titleColor ? `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行`
+          : attrs.color || attrs.colorMap ? `Amazon Child SKU颜色字段待核对 · 第 ${rowInfo.excelRowNumber} 行` : "",
         pack: childPack ? `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行` : "",
-        material: listing.material ? `Amazon Child SKU明确材质 · 第 ${rowInfo.excelRowNumber} 行` : "",
+        material: childListing.material ? `Amazon Child SKU标题明确材质 · 第 ${rowInfo.excelRowNumber} 行` : "",
         structure: listing.structure ? `Amazon Child SKU明确结构 · 第 ${rowInfo.excelRowNumber} 行` : "",
+        capacity: childListing.capacity ? `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行` : "",
         productDimensions: childListing.dimensionList ? `Amazon Child SKU标题明确尺寸 · 第 ${rowInfo.excelRowNumber} 行` : "",
       },
     };
@@ -6933,10 +7102,11 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
   const visionDimensionList = visionDimensionItems.length
     ? `[VERIFIED_DIMENSIONS: ${visionDimensionItems.join("; ")}]`
     : "";
-  // A dimension read from the current SKU's supplier detail/OCR is stronger
-  // evidence than an Amazon title or generic spreadsheet cells. Do not mix
-  // conflicting source levels into one product-size chart.
-  const supplierDimensionList = visionDimensionList || supplierProduct.dimensionList || "";
+  // An explicit current child-SKU title measurement wins. If absent, use the
+  // matching supplier detail-image measurements; spreadsheet cells are excluded.
+  const amazonTitleDimensions = /Amazon Child SKU标题明确尺寸/i.test(amazonProduct.fieldSources?.productDimensions || "")
+    ? amazonProduct.dimensionList || "" : "";
+  const supplierDimensionList = amazonTitleDimensions || visionDimensionList || supplierProduct.dimensionList || "";
   const dimensionMerge = mergeVerifiedDimensionLists(
     supplierDimensionList,
     "",
@@ -6945,25 +7115,33 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
   const dimensions = dimensionMerge.dimensions.length
     ? dimensionMerge.dimensions
     : (amazonGroup.dimensions || []).length ? amazonGroup.dimensions : (supplierGroup.dimensions || []);
-  const hasDimensionEvidence = Boolean(visionDimensionList || supplierProduct.dimensionList);
+  const hasDimensionEvidence = Boolean(supplierDimensionList);
   const dimensionList = hasDimensionEvidence
     ? dimensionMerge.dimensionList
     : (dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "");
   const mergedDimensionFields = dimensionFieldsFromDimensionList(dimensionList, [productName, amazonProduct.structure].filter(Boolean).join(" "));
-  const material = supplierProduct.material || "";
-  // The selected Amazon child SKU is authoritative for variant color.
-  // Supplier/Doubao color is only a fallback when the child SKU has no color.
-  const color = amazonProduct.color || supplierProduct.color || "";
+  const amazonTitleMaterial = /Amazon Child SKU标题明确材质/i.test(amazonProduct.fieldSources?.material || "")
+    ? amazonProduct.material || "" : "";
+  const supplierMaterial = cleanFieldDisplayValue(supplierProduct.material || "");
+  const titleMaterialCodes = (amazonTitleMaterial.toUpperCase().match(/\b(?:PP|PET|PE|ABS|PVC|EVA|TPU)\b/g) || []);
+  const compatibleSupplierMaterial = amazonTitleMaterial && supplierMaterial
+    && (supplierMaterial.toLowerCase().includes(amazonTitleMaterial.toLowerCase())
+      || (titleMaterialCodes.length && titleMaterialCodes.every((code) => new RegExp(`\\b${code}\\b`, "i").test(supplierMaterial))));
+  const material = compatibleSupplierMaterial && supplierMaterial.length > amazonTitleMaterial.length
+    ? supplierMaterial : amazonTitleMaterial || supplierMaterial;
+  const color = amazonProduct.titleColor || supplierProduct.color || amazonProduct.color || "";
   const structure = supplierProduct.structure || "";
   const supplierSurfaceFinish = explicitSurfaceFinishValues(supplierProduct.surfaceFinish || "");
   const surfaceFinish = supplierSurfaceFinish;
-  // Weight and capacity never inherit from Amazon. Only explicit supplier
-  // product facts survive here; package/SKU logistics measurements are rejected
-  // by verifiedSupplierMeasurementValue.
+  // The current child title is authoritative for capacity. Other Amazon cells
+  // are excluded; supplier detail images can fill a missing title value.
   const productWeight = verifiedSupplierMeasurementValue(supplierProduct, "productWeight");
-  const capacity = verifiedSupplierMeasurementValue(supplierProduct, "capacity");
+  const amazonTitleCapacity = /Amazon Child SKU标题/i.test(amazonProduct.fieldSources?.capacity || "")
+    ? validCapacityValue(amazonProduct.capacity || "") : "";
+  const supplierCapacity = verifiedSupplierMeasurementValue(supplierProduct, "capacity");
+  const capacity = amazonTitleCapacity || supplierCapacity;
   const scene = supplierProduct.scene || "";
-  const supplierSellingPoints = uniqueSellingPoints([
+  const supplierSellingPoints = uniqueExtractedSellingPoints([
     ...splitSellingPointText(supplierProduct.sellingPoints),
     ...splitSellingPointText(supplierProduct.feature1),
     ...splitSellingPointText(supplierProduct.feature2),
@@ -6985,11 +7163,11 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     scene,
   ]).filter(Boolean);
   const evidenceNote = compactPromptItems([
-    visionVerified ? "豆包识图：已用1688图片与本地OCR交叉整理，并以带图片证据的供应商事实为准。" : amazonProduct.group?.evidenceNote || "Amazon listing：优先采用模板中的 listing 字段和 Child SKU 款式结构。",
-    visionVerified ? "豆包只覆盖其逐项确认的字段；未确认字段继续采用允许的本地解析结果，产品净重与容量不读取 Amazon。" : "1688 / 采购单：补充材质、结构、场景、卖点、尺寸、产品净重与容量等参数。",
+    visionVerified ? "豆包识图：已整理1688详情图和带原图依据的参数；当前 Amazon Child SKU 标题中的明确事实优先。" : amazonProduct.group?.evidenceNote || "当前 Amazon Child SKU 标题明确事实优先；1688补缺。",
+    visionVerified ? "Amazon 标题以外的表格参数不直接作为最终事实；1688图文补充缺失字段，产品净重须有明确单位。" : "1688图文补充结构、场景、卖点、尺寸、产品净重与容量等参数。",
     hasSupplierPropertyEvidence ? "卖点采用1688标题、属性或详情图中可核验的产品属性。" : "1688未提取到有效卖点，等待豆包联网查证；Amazon 通用 Bullet Point 不作兜底。",
     dimensionMerge.conflicts.length ? `尺寸冲突，已从提示词排除：${dimensionMerge.conflicts.join("；")}` : "尺寸已按产品语义合并，并保留产品尺寸与包装尺寸边界。",
-  ], visionVerified ? "1688图片证据优先，Amazon模板保留变体。" : "Amazon listing 优先，1688 补缺。", 4);
+  ], "当前子 SKU 标题优先，1688图文补缺。", 4);
 
   return {
     ...amazonProduct,
@@ -7007,15 +7185,21 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     fieldSources: {
       ...(amazonProduct.fieldSources || {}),
       productName: `Amazon Child SKU标题${amazonProduct.amazonRowNumber ? ` · 第 ${amazonProduct.amazonRowNumber} 行` : ""}`,
-      material: material ? supplierProduct.fieldSources?.material || supplierProduct.structuredAttributesSource || "1688当前商品资料" : "",
-      color: amazonProduct.color ? amazonProduct.fieldSources?.color || "Amazon Child SKU颜色" : supplierProduct.fieldSources?.color || "1688当前款式颜色",
+      material: material ? compatibleSupplierMaterial && material === supplierMaterial
+        ? `${amazonProduct.fieldSources?.material} + ${supplierProduct.fieldSources?.material || "1688详情图材质"}`
+        : amazonTitleMaterial ? amazonProduct.fieldSources?.material
+        : supplierProduct.fieldSources?.material || supplierProduct.structuredAttributesSource || "1688当前商品资料" : "",
+      color: amazonProduct.titleColor ? amazonProduct.fieldSources?.color || "Amazon Child SKU标题"
+        : supplierProduct.color ? supplierProduct.fieldSources?.color || "1688当前款式颜色"
+          : amazonProduct.fieldSources?.color || "",
       structure: structure ? supplierProduct.fieldSources?.structure || supplierProduct.structuredAttributesSource || "1688当前商品资料" : "",
       scene: scene ? supplierProduct.fieldSources?.scene || "1688图文详情使用场景" : "",
       sellingPoints: sellingPoints ? supplierProduct.fieldSources?.sellingPoints || SELLING_POINT_SOURCE_UNKNOWN : "",
       pack: titleQuantity?.label ? "Amazon Child SKU标题" : supplierProduct.pack ? supplierProduct.fieldSources?.pack || "1688当前款式明确数量" : "",
       applicableRange: supplierProduct.applicableRangeSource || "",
       productDimensions: hasDimensionEvidence
-        ? supplierProduct.fieldSources?.productDimensions || supplierProduct.dims?.source || "1688当前商品使用状态尺寸"
+        ? amazonTitleDimensions ? amazonProduct.fieldSources?.productDimensions
+          : supplierProduct.fieldSources?.productDimensions || supplierProduct.dims?.source || "1688当前商品使用状态尺寸"
         : dimensionList
           ? amazonProduct.fieldSources?.productDimensions || "Amazon Child SKU标题明确尺寸"
           : "",
@@ -7026,7 +7210,10 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
         ? supplierProduct.fieldSources?.productWeight || "1688当前商品明确产品净重"
         : "",
       capacity: capacity
-        ? supplierProduct.fieldSources?.capacity || "1688当前商品明确容量"
+        ? amazonTitleCapacity ? supplierCapacity === amazonTitleCapacity
+          ? `${amazonProduct.fieldSources?.capacity} + 1688当前商品规格/详情图一致`
+          : amazonProduct.fieldSources?.capacity
+          : supplierProduct.fieldSources?.capacity || "1688当前商品明确容量"
         : "",
     },
     fieldConflicts: {},
@@ -7161,26 +7348,9 @@ function hasStrongSupplierIdentityConflict(amazonProduct = {}, supplierProduct =
 
 function resolveSupplierBindingScope(amazonProducts, supplierProducts) {
   const requested = supplierBindingScope(amazonProducts);
-  if (requested.kind === "invalid") return { ...requested, errors: ["1688资料归属已失效，请重新选择。"], warnings: [] };
+  if (requested.kind === "invalid") return { ...requested, errors: ["请选择这份 1688 资料对应的父体或 Child SKU。"], warnings: [] };
   if (requested.kind === "parent" || requested.kind === "child") return { ...requested, errors: [], warnings: [], automatic: false };
-  if (amazonProducts.length === 1) {
-    return { kind: "child", value: "", targets: [amazonProducts[0]], sku: amazonProducts[0], errors: [], warnings: [], automatic: true };
-  }
-  const rankedTargets = amazonProducts.map((product) => ({
-    product,
-    score: Math.max(0, ...supplierProducts.map((supplierProduct) => supplierVariantMatchScore(supplierProduct, product))),
-  })).sort((left, right) => right.score - left.score);
-  if (rankedTargets[0]?.score >= 5 && rankedTargets[0].score > (rankedTargets[1]?.score || 0)) {
-    return { kind: "child", value: "", targets: [rankedTargets[0].product], sku: rankedTargets[0].product, errors: [], warnings: [], automatic: true };
-  }
-  return {
-    kind: "auto",
-    value: "",
-    targets: [],
-    errors: ["多个 Amazon 子 SKU 下无法高置信度判断1688资料归属，请明确选择某个子 SKU 或父体共享。"],
-    warnings: [],
-    automatic: true,
-  };
+  return { kind: "invalid", targets: [], errors: ["请选择这份 1688 资料对应的父体或 Child SKU。"], warnings: [] };
 }
 
 function scopeSupplierFieldSources(product, scope, commonOnly = false) {
@@ -7314,12 +7484,12 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
   // Local OCR and raw HTML never manufacture selling points. Only evidence-backed
   // markers returned by the product-specific vision analysis are accepted here.
   const sellingPoints = verifiedSellingPointsFromSource(supplierText, 6);
-  const extractedSellingPointSet = uniqueSellingPoints(sellingPoints.points || [], 6);
+  const extractedSellingPointSet = uniqueExtractedSellingPoints(sellingPoints.points || [], 6);
   const dimensions = semanticDimensionItems(extractDimensions(attributeText), attributeText);
-  const applicableRange = extractExplicitApplicableRange(attributeText);
-  const productWeight = cleanFieldDisplayValue(detailAttributes.Weight || "");
-  const capacity = cleanFieldDisplayValue(detailAttributes.Capacity || "");
-  const productUnitCount = skuRelevantPackValue(extractProductUnitCount(supplierText));
+  const applicableRange = validApplicableRangeValue(detailAttributes.ApplicableRange || extractExplicitApplicableRange(attributeText));
+  const productWeight = validProductWeightValue(detailAttributes.ProductWeight || detailAttributes.Weight || "");
+  const capacity = validCapacityValue(detailAttributes.Capacity || "");
+  const productUnitCount = skuRelevantPackValue(detailAttributes.ProductCount || extractProductUnitCount(supplierText));
   const cleanProductName = toCrossBorderProductName(productName, "");
   const displayName = displayProductName(cleanProductName || productName, combined) || cleanProductName;
   const outputName = crossBorderProductName(cleanProductName || productName, combined) || cleanProductName || displayName;
@@ -7493,11 +7663,11 @@ function inferProductsFromSources(purchaseText, supplierText, competitorText) {
       scene: scene ? "1688图文详情使用场景" : "",
       sellingPoints: extractedSellingPointSet.length || sellingPoints.sellingPoints ? SELLING_POINT_SOURCE_VISION : "",
       pack: safePack ? "1688当前款式明确数量" : "",
-      applicableRange: itemApplicableRange ? "1688图文详情明确适用范围（当前商品）" : "",
-      surfaceFinish: surfaceFinish ? "1688当前商品明确表面工艺" : "",
-      productDimensions: dimensionList ? "1688当前商品使用状态尺寸" : "",
-      productWeight: productWeight ? "1688当前商品明确产品净重" : "",
-      capacity: capacity ? "1688当前商品明确容量" : "",
+      applicableRange: itemApplicableRange ? (visionEvidence.attributes.includes("applicablerange") ? "豆包识别 · 1688详情图明确适用范围" : "1688图文详情明确适用范围（当前商品）") : "",
+      surfaceFinish: surfaceFinish ? (visionEvidence.attributes.includes("technology") ? "豆包识别 · 1688详情图表面工艺" : "1688当前商品明确表面工艺") : "",
+      productDimensions: dimensionList ? (visionEvidence.dimensions.length ? "豆包识别 · 1688详情图产品尺寸" : "1688当前商品使用状态尺寸") : "",
+      productWeight: productWeight ? (visionEvidence.attributes.includes("productweight") ? "豆包识别 · 1688详情图产品净重" : "1688当前商品明确产品净重") : "",
+      capacity: capacity ? (visionEvidence.attributes.includes("capacity") ? "豆包识别 · 1688详情图容量" : "1688当前商品明确容量") : "",
     },
     scene,
     installationSteps,
@@ -7620,14 +7790,32 @@ async function extractSources() {
     } else {
       extractedProducts = inferredSourceProducts;
     }
+    if (selectedProductStructureRoute === "single" && /PRODUCT_ATTRIBUTE:\s*SaleUnit=piece/i.test(supplierSource.text || "")) {
+      const boundIds = new Set(mergeResult.mergedIds);
+      extractedProducts = extractedProducts.map((product) => {
+        const candidate = product.structuredUnitQuantityCandidate;
+        if (!boundIds.has(product.id) || product.skuUnitQuantity || candidate?.count !== 1
+          || /\b(?:multi\s*pack|bundle|set\s+of|[2-9]\s*(?:pcs?|pieces?|pack))\b|套装|组合装/i.test(product.amazonTitle || "")) return product;
+        return {
+          ...product,
+          pack: "1 Pc", skuUnitQuantity: 1, skuUnitQuantityLabel: "1 Pc",
+          fieldSources: { ...(product.fieldSources || {}), pack: "1688 当前款式按件售卖；Amazon 当前 Child SKU 数量字段一致" },
+        };
+      });
+    }
+    if (supplierEntries.length <= 1 && Array.isArray(supplierSource.fieldVisualEvidence)) {
+      const boundIds = new Set(mergeResult.mergedIds);
+      extractedProducts = extractedProducts.map((product) => (
+        !amazonTemplate.products.length || boundIds.has(product.id)
+          ? { ...product, sourceImageEvidence: supplierSource.fieldVisualEvidence }
+          : product
+      ));
+    }
     extractedProducts = applyCompetitorDimensionFallback(extractedProducts);
     extractedProducts.forEach((product) => {
       const review = sellingPointReviewForSku(product, false);
       if (review?.locked) {
         applyLockedSellingPointReview(product);
-      } else {
-        const entries = sellingPointEntriesForText(product, product.sellingPoints || "");
-        if (entries.length) addSellingPointCandidates(product, entries);
       }
     });
     const targetIdSet = new Set(mergeResult.mergedIds);
@@ -7663,6 +7851,18 @@ async function extractSources() {
         sellingPointVisualEvidence: supplierSource.sellingPointVisualEvidence,
       }));
     }
+    if (supplierEntries.length <= 1 && supplierSource.useBehavior) {
+      extractedProducts = extractedProducts.map((product) => (
+        !amazonTemplate.products.length || targetIdSet.has(product.id)
+          ? { ...product, useBehavior: supplierSource.useBehavior }
+          : product
+      ));
+    }
+    extractedProducts.forEach((product) => {
+      if (sellingPointReviewForSku(product, false)?.locked) return;
+      const entries = currentSellingPointReviewEntries(product);
+      if (entries.length) addSellingPointCandidates(product, entries);
+    });
     if (!extractedProducts.length) {
       throw new Error("没有从当前资料中提取到产品 / 款式，请确认 Amazon 模板或 1688 HTML 是否已选择。");
     }
@@ -7695,13 +7895,13 @@ async function extractSources() {
     ]));
     const resolvedTargetProducts = extractedProducts.filter((product) => targetIdSet.has(product.id));
     const referenceMappingStatus = supplierSource.selectionPendingCount
-      ? `豆包筛图有 ${supplierSource.selectionPendingCount} 张未完成判断，已作为待人工核对图片保留；候选区共 ${supplierReferenceImageUrls.length} 张，所有 SKU 均可查看。`
+      ? `${routeId === "local" ? "本地分析" : "豆包筛图"}有 ${supplierSource.selectionPendingCount} 张未完成判断，已作为待人工核对图片保留；候选区共 ${supplierReferenceImageUrls.length} 张，所有 SKU 均可查看。`
       : `豆包筛出 ${supplierReferenceImageUrls.length} 张供应商候选图，排除 ${supplierSource.selectionRejectedCount || 0} 张；所有 SKU 均可查看，颜色和款式由人工确认。`;
     renderProductSelect(resolvedTargetProducts[0]?.id || extractedProducts[0]?.id);
     renderFields(true);
     renderAll();
     const ocrStatus = supplierSource.imageCount
-      ? `1688 图片：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 条候选，清理无效及重复链接后保留 ${supplierSource.imageCount} 张；图片内容交由豆包识别。`
+      ? `1688 图片：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 条候选，清理无效及重复链接后保留 ${supplierSource.imageCount} 张；${routeId === "local" ? `本地 OCR 已扫描 ${supplierSource.scannedCount || 0} 张` : "图片内容交由豆包识别"}。`
       : "未找到可识别的 1688 图片。";
     const ocrAvailability = "";
     const amazonTemplateStatus = amazonTemplateFile
@@ -7728,12 +7928,14 @@ async function extractSources() {
         : "";
     const visionEvidenceCount = supplierSource.visionEvidenceCount || 0;
     const visionErrorText = (supplierSource.visionErrors || []).slice(0, 2).join("；");
-    const visionStatus = routeId === "vision" || routeId === "web"
+    const visionStatus = routeId === "web"
       ? visionEvidenceCount
         ? `豆包识图：已整理 ${visionEvidenceCount} 项带图片证据的信息。`
         : `豆包识图：已调用，但未整理出可确认信息。${supplierSource.visionMessage || ""}${visionErrorText ? ` 原因：${visionErrorText}` : ""}`
       : "";
-    const webStatus = routeId === "web" ? "详情图卖点只依据已提供的图片；联网资料仅用于使用场景。" : "";
+    const webStatus = routeId === "web"
+      ? "已提取场景优先；联网只补充缺少的场景，不覆盖原有内容。无供应商图片且卖点为空时才尝试联网卖点候选。"
+      : "";
     const identityStatus = mergeResult.warnings.length ? `身份校验提示：${mergeResult.warnings.join("；")} ` : "";
     byId("extractStatus").textContent = `已按“${structureRouteName} / ${routeName}”提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}${identityStatus}${htmlFileStatus}${ocrStatus}${ocrAvailability}${visionStatus}${referenceMappingStatus}${webStatus}`;
     if (routeId === "web") {
@@ -7816,7 +8018,7 @@ function bundleQuantityMeaningRule(facts) {
 
 function bundleFullSetDisplayRule(facts) {
   if (!facts?.bundleComponents) return "";
-  return `HIGHEST-PRIORITY BUNDLE VISUAL REQUIREMENT: every generated image must visibly show the complete current set together as separate physical items: ${facts.bundleComponents}. The main dispenser/container is not a standalone product; never show it alone or omit the refill/component items. Keep the listed quantities visibly distinct and source-accurate; do not fuse components or substitute them.`;
+  return `HIGHEST-PRIORITY BUNDLE VISUAL REQUIREMENT: every generated image must visibly show the complete current set together as separate physical items: ${facts.bundleComponents}. The primary item alone is not the complete saleable product; do not omit any included component. Keep the listed quantities visibly distinct and source-accurate; do not fuse components or substitute them.`;
 }
 
 function differentDesignSetPresentationRule(facts, templateId, typeId) {
@@ -7913,6 +8115,8 @@ function promptFacts(sku, data) {
       }))
       .filter((item) => item.claim && item.evidence && /^https?:\/\//i.test(item.imageUrl))
     : [];
+  const useBehavior = sku.useBehavior?.imageUrl && /^https?:\/\//i.test(sku.useBehavior.imageUrl)
+    ? sku.useBehavior : null;
   const titleSpec = stripRepeatedValue(selectedSpec, pack) || productName || selectedSpec;
   const rawSkuOptionSource = sku.sizeCode && !promptItemsOverlap(productName, sku.sizeCode)
     ? sku.sizeCode
@@ -7976,6 +8180,7 @@ function promptFacts(sku, data) {
     surfaceFinish,
     installationSteps,
     sellingPointVisualEvidence,
+    useBehavior,
     applicableRange,
   };
 }
@@ -8370,17 +8575,37 @@ function suggestedUseSceneItems(facts, research = {}, limit = 5) {
   }).slice(0, Math.max(3, Math.min(limit, 5)));
 }
 
+function missingOnlineUseScenes(existingText, researchedScenes, limit = 5) {
+  const existing = splitUseSceneText(existingText);
+  const seen = new Set(existing.map(comparablePromptItem).filter(Boolean));
+  const additions = [];
+  for (const scene of researchedScenes) {
+    if (existing.length + additions.length >= limit) break;
+    const key = comparablePromptItem(scene);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    additions.push(scene);
+  }
+  return { existing, additions };
+}
+
 async function enrichUseScenesOnline() {
+  if (selectedExtractionRoute !== "web") return;
   const button = byId("enrichUseScenes");
   const status = byId("sceneEnrichStatus");
   const input = byId("field-scene");
   if (!button || !status || !input || !hasExtractedProducts()) return;
+  const existingCount = splitUseSceneText(input.value).length;
+  if (existingCount >= 3) {
+    status.textContent = `已保留 ${existingCount} 条当前资料提取的场景，无需联网补充。`;
+    return;
+  }
   const requestedSkuId = selectedSku()?.id || "";
   const requestedSceneRevision = sceneInputRevision;
   const requestedGeneration = extractionGeneration;
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
-  status.textContent = "正在联网查阅适合当前产品的使用场景…";
+  status.textContent = `已保留 ${existingCount} 条原有场景，正在联网查找缺少的场景…`;
   try {
     const facts = currentSceneResearchFacts();
     const research = await fetchOnlineUseSceneResearch(facts);
@@ -8390,8 +8615,17 @@ async function enrichUseScenesOnline() {
       return;
     }
     applyOnlineProductKeyword(requestedSkuId, research.englishProductKeyword);
-    const scenes = suggestedUseSceneItems({ ...facts, scene: input.value }, research, 5);
-    input.value = scenes.join("\n");
+    const researchedScenes = suggestedUseSceneItems({ ...facts, scene: input.value }, research, 5);
+    const { existing, additions } = missingOnlineUseScenes(
+      input.value, researchedScenes, existingCount ? 3 : 5,
+    );
+    if (!additions.length) {
+      status.textContent = existing.length
+        ? `已保留 ${existing.length} 条原有场景；联网未找到可补充的新场景。`
+        : NO_REFERENCE_SCENE_MESSAGE;
+      return;
+    }
+    input.value = [input.value.trim(), ...additions].filter(Boolean).join("\n");
     fieldOverrides.scene = input.value;
     if (requestedSkuId) {
       fieldOverridesBySku[requestedSkuId] = {
@@ -8399,24 +8633,27 @@ async function enrichUseScenesOnline() {
         scene: input.value,
       };
       const sku = currentProducts().find((item) => item.id === requestedSkuId);
-      if (sku) sku.fieldSources = { ...(sku.fieldSources || {}), scene: scenes.length ? "豆包联网补充" : "" };
+      if (sku) {
+        const previousSource = cleanFieldDisplayValue(sku.fieldSources?.scene || "");
+        sku.fieldSources = {
+          ...(sku.fieldSources || {}),
+          scene: [previousSource, `豆包联网补充 ${additions.length} 条`].filter(Boolean).join(" + "),
+        };
+      }
     }
     captureFieldOverrides();
     fieldSnapshot = currentFieldSignature();
     renderAll();
-    status.textContent = scenes.length && research.sources.length
-      ? `已用跨境关键词“${research.englishProductKeyword}”联网补全 ${scenes.length} 个英文场景，可继续手动修改。`
-      : NO_REFERENCE_SCENE_MESSAGE;
+    status.textContent = `保留原有 ${existing.length} 条场景，联网新增 ${additions.length} 条；可继续手动修改。`;
   } catch (error) {
     if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== requestedSkuId) return;
     if (sceneInputRevision !== requestedSceneRevision) {
       status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
       return;
     }
-    input.value = "";
-    captureFieldOverrides();
-    renderAll();
-    status.textContent = NO_REFERENCE_SCENE_MESSAGE;
+    status.textContent = splitUseSceneText(input.value).length
+      ? "联网补充失败；已保留原有场景。"
+      : NO_REFERENCE_SCENE_MESSAGE;
   } finally {
     button.disabled = false;
     button.removeAttribute("aria-busy");
@@ -8655,6 +8892,24 @@ function skuQuantityMainImageRule(facts, typeId) {
   return `SINGLE-PACK CONTENTS RULE: this SKU is ONE saleable pack containing ${label}, not ${count} separate packs. Keep one or a few representative units large and clearly inspectable so product shape, material, construction, finish, and use remain the primary visual information. The complete included quantity may appear only as a compact secondary grouped arrangement occupying no more than about 20-25% of the frame; it must never become the largest subject, a repeated-unit wall, or a dominant full-pack grid. When the complete set is visible, keep exactly ${count} separate units without fusion, extras, or an incorrect count. For a human-use main image, the action and representative product units remain primary while the remaining included units stay compact and secondary. Because this is a main image, do not add a “${label}” badge, number, caption, or other overlay text.`;
 }
 
+function sourceUseBehaviorRule(facts) {
+  const behavior = facts?.useBehavior;
+  if (behavior?.mode === "active" && behavior.action && behavior.imageUrl) {
+    return compactPromptItems([
+      "SOURCE-VERIFIED USE: Reproduce the operating logic shown in the attached supplier demonstration image; use the selected SKU references for exact product color and appearance.",
+      `Visible action: ${behavior.action}`,
+      behavior.trigger && `Actuation/contact point: ${behavior.trigger}`,
+      behavior.outputOrigin && `Effect must start at: ${behavior.outputOrigin}`,
+      behavior.outputDirection && `Effect direction: ${behavior.outputDirection}`,
+      "Keep any shown effect physically connected to its pictured outlet/contact point; never invent a different outlet or detached effect.",
+    ], "", 8);
+  }
+  if (behavior?.mode === "passive" && behavior.action && behavior.imageUrl) {
+    return `SOURCE-VERIFIED USE: Show only the pictured passive interaction: ${behavior.action}. Do not invent an active mechanism, output, or performance effect.`;
+  }
+  return "NO SOURCE-VERIFIED OPERATION: Do not invent an active product action, outlet, spray, pour, moving mechanism, or performance effect. If a person appears, use them only as natural scale/context without operating the product.";
+}
+
 function buildPromptSections({ facts, templateId, typeId, basic = "", details = "", style = "", negative = "", includeNegative = true }) {
   const skuQuantityRule = skuQuantityExplanationRule(facts, templateId, typeId);
   const skuQuantityMainRule = skuQuantityMainImageRule(facts, typeId);
@@ -8667,6 +8922,7 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     ? "HIGHEST PRIORITY: Follow the attached current-product reference images for product appearance and structure only. This slot is a strict product-only studio image: do not copy any referenced hand, person, use action, food, cookware, room, lifestyle background, or scene prop."
     : "HIGHEST PRIORITY: Follow the attached current-product reference images for product appearance, structure, and demonstrated use; if any text or generic assumption conflicts, the reference images win.";
   const priorityText = compactPromptItems([
+    templateId === "scene" && ["1B", "2"].includes(String(typeId)) ? sourceUseBehaviorRule(facts) : "",
     isMainImageType(typeId) ? mainImageNoAnnotationRule() : "",
     sceneAuthorityRule,
     differentDesignSetRule,
@@ -9440,6 +9696,24 @@ function uniqueSellingPoints(items, limit = 6) {
   return selected.slice(0, limit);
 }
 
+// Extraction keeps separate image-backed claims even when they share words.
+// The broader dedupe above remains for prompt planning, where compact wording
+// is useful; it must not discard distinct facts before operator review.
+function uniqueExtractedSellingPoints(items, limit = 6) {
+  const selected = [];
+  const seen = new Set();
+  for (const item of items) {
+    const claim = specificPromptValue(item, "");
+    if (!claim || isDefaultExcludedSellingPoint(claim)) continue;
+    const key = comparablePromptItem(claim);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    selected.push(claim);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
 function sellingPointCandidates(facts, limit = 6) {
   return uniqueSellingPoints(
     splitSellingPointText(facts.sellingPoints).filter((point) => !isOrdinaryMaterialSellingPoint(point)),
@@ -9664,8 +9938,8 @@ function sellingPointProofDominanceRule(points = [], facts = {}, route = "flexib
   }
   if (route === "product_proof") {
     return [
-      "PRODUCT-ONLY COMPOSITION LOCK: the current product itself must occupy about 70-85% of the frame on a clean plain neutral or white studio background.",
-      "Show the benefit only through a source-supported whole-product view, structure/material/surface close-up, or product-detail crop. No person, hand, body part, active use, spraying/pouring action, food, cookware, work surface, room, lifestyle environment, or scene-setting prop.",
+      "PRODUCT-ONLY COMPOSITION LOCK: the current product occupies about 70-85% of the frame against a premium neutral tonal gradient chosen to contrast with its actual color. Use fine background texture, controlled directional light, a subtle rim highlight and a grounded shadow; avoid flat bright white or blown highlights.",
+      "Show the verified product's real material, finish, structure and the physical detail relevant to the selected claim. Prefer a strong whole-product photograph, detail crop or source-supported effect visible directly on the product; a small diagram is optional and must never replace product texture or the actual selling-point detail. No person, hand, body part, unrelated use action, food, cookware, work surface, room, lifestyle environment, or scene-setting prop.",
       "Reference-image people, hands, use actions, food, cookware, and backgrounds are evidence context only and must not be copied into this product-only image.",
       "Do not use a large product lineup, repeated-unit wall, quantity-led composition, decorative still life, or a tiny corner detail.",
     ].join(" ");
@@ -9684,30 +9958,46 @@ const visualPlanMessages = new Map();
 const automaticVisualPlanAttempts = new Set();
 let automaticVisualPlanTimer = null;
 
-function sellingPointVisualRoute(templateId, groupIndex, groupCount) {
+function sellingPointActionDependency(points = []) {
+  const claim = points.join(" ").toLowerCase();
+  let score = 0;
+  if (/(?:spray|atomiz|mist|喷雾|雾化|喷油|喷射)/i.test(claim)) score += 4;
+  if (/(?:\b60\s*(?:degree|°)|\bangle\b|\brange\b|范围|角度)/i.test(claim)) score += 3;
+  if (/(?:\bpress\b|\bpump\b|\bpour\b|\bdispens\w*\b|\bdrip\w*\b|\bsqueez\w*\b|\bwip\w*\b|\bclean\w*\b|\bcut\w*\b|\bfold\w*\b|\bopen\w*\b|\bclos\w*\b|\brotat\w*\b|\bappl\w*\b|\binstall\w*\b|\bwear\w*\b|按压|泵|倾倒|滴漏|挂油|挤压|擦拭|清洁|切割|折叠|开合|旋转|安装|穿戴)/i.test(claim)) score += 3;
+  if (/(?:\bcontrol\b|\bdos\w*\b|\bportion\w*\b|控油|定量|剂量)/i.test(claim)) score += 1;
+  return score;
+}
+
+function sellingPointVisualRoute(templateId, groupIndex, groupCount, points = [], facts = {}, groups = []) {
   if (groupCount < 2 || !["scene", "feature"].includes(templateId)) return "flexible";
-  return groupIndex === 0 ? "scene_use" : "product_proof";
+  const selectedGroups = groups.length === groupCount ? groups : Array.from({length: groupCount}, (_, index) => index === groupIndex ? points : []);
+  const scores = selectedGroups.map(sellingPointActionDependency);
+  const highest = Math.max(...scores);
+  if (highest <= 0) return "product_proof";
+  const sceneSlot = scores.findIndex((score) => score === highest);
+  if (groupIndex !== sceneSlot) return "product_proof";
+  return facts.useBehavior?.imageUrl ? "scene_use" : "flexible";
 }
 
 function sellingPointVisualRouteLabel(route) {
   if (route === "scene_use") return "场景化使用证明";
-  if (route === "product_proof") return "产品本体证明";
+  if (route === "product_proof") return "产品本体展示";
   return "按事实选择展示方式";
 }
 
 function sellingPointVisualRouteRule(route) {
   if (route === "scene_use") return "VISUAL ROUTE LOCK — SCENE USE: prove this selected selling point through a visible, source-supported use interaction in the current verified Use Scene. Show enough of the surrounding activity to read as an actual use scene while keeping the current product and relevant contact/detail clear and prominent. A static product close-up on a scene-themed surface, a pre-completed arrangement, or a decorative lifestyle background does not satisfy this route. Do not invent a use, prop, mechanism, or performance result.";
-  if (route === "product_proof") return "VISUAL ROUTE LOCK — PRODUCT PROOF — STRICT PRODUCT-ONLY STUDIO IMAGE: show only the current product itself as the visual subject, using a source-supported whole-product view or close-up of its structure, material, surface, or physical detail. Use a clean plain neutral or white studio background. ZERO people, ZERO hands or body parts, ZERO active use or operation, ZERO spraying or pouring, ZERO food or cookware, ZERO room or lifestyle environment, and ZERO scene-setting props. Any hand, action, kitchen, food, cookware, or background visible in an attached reference is evidence context only and must not appear in this image. Waterproof, durability, resistance, and other performance tests require explicit evidence; never invent them. Avoid a decorative product lineup.";
+  if (route === "product_proof") return "VISUAL ROUTE LOCK — PRODUCT PROOF: One accurate current product dominates a premium editorial studio image. Show real material, finish and the chosen benefit through a verified angle, detail or effect on its surface. Use a low-saturation neutral gradient with fine texture and contrast against the SKU color. Soft side key light, restrained rim light, gentle shadow-side depth and a grounded contact shadow reveal shape without white glare. A source-backed diagram stays secondary only when needed. No people, lifestyle scene, unrelated props or actions. Never invent a test, rating, output, dose or hidden mechanism.";
   return "Use the source-supported proof method that most clearly demonstrates the selected selling point while preserving the exact current product.";
 }
 
 function visualPlanContext(facts) {
-  const product = Object.fromEntries(["productName", "material", "color", "structure", "surfaceFinish", "scene", "dimensions", "productWeight", "capacity", "pack", "bundleComponents", "isDifferentDesignSet"].map((key) => [key, facts[key] || ""]));
+  const product = Object.fromEntries(["productName", "material", "color", "structure", "surfaceFinish", "scene", "dimensions", "productWeight", "capacity", "pack", "bundleComponents", "isDifferentDesignSet", "useBehavior"].map((key) => [key, facts[key] || ""]));
   if (facts.applicableRange) product.applicableRange = facts.applicableRange;
   const groups = sellingPointDisplayGroups(facts);
-  const routes = groups.map((_, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length));
+  const routes = groups.map((points, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length, points, facts, groups));
   const evidence = facts.sellingPointVisualEvidence || [];
-  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 6 };
+  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 11 };
 }
 
 function currentVisualPlans(facts) {
@@ -9882,9 +10172,11 @@ function sellingPointImageTemplateRule(points, facts = {}, imageName = "this sel
   const groupIndex = context.groups.findIndex((group) => JSON.stringify(group) === JSON.stringify(points));
   const route = plan?.route || context.routes[groupIndex] || "flexible";
   const routeRule = sellingPointVisualRouteRule(route);
+  const claimVisualRule = sellingPointClaimVisualRule(points, facts, route);
+  const claimCopyRule = sellingPointClaimCopyRule(points, plan?.label);
   if (plan?.status === "ready") {
     const others = currentVisualPlans(facts).filter((item) => item.groupIndex !== plan.groupIndex && item.status === "ready");
-    return `SELLING-POINT SOURCE DIRECTION: ${imageName}: ${routeRule} Execute this specific whole-set visual plan only within that route: ${plan.visual_prompt}. If the planned composition conflicts with the route lock, the route lock wins. On-image text must be exactly "${plan.label}", with no subtitle or additional claim. Preserve current SKU identity and verified facts. No decorative full-pack lineup. ${others.length ? `Other images already cover these demonstrations; do not repeat their central action or product state: ${others.map((item) => item.visual_prompt).join(" / ")}.` : ""} ${sellingPointEvidenceAvoidRule()}`;
+    return `SELLING-POINT SOURCE DIRECTION: ${imageName}: ${routeRule} Execute this specific whole-set visual plan only within that route: ${plan.visual_prompt}. If the planned composition conflicts with the route lock or selected claim, the selected claim and route lock win. ${claimVisualRule} ${claimCopyRule} Preserve current SKU identity and verified facts. No decorative full-pack lineup. ${others.length ? `Other images already cover these demonstrations; do not repeat their central action or product state: ${others.map((item) => item.visual_prompt).join(" / ")}.` : ""} ${sellingPointEvidenceAvoidRule()}`;
   }
   if (!limitedSellingPoints(points, 2).length) {
     return [
@@ -9897,9 +10189,10 @@ function sellingPointImageTemplateRule(points, facts = {}, imageName = "this sel
   }
   const sceneDescription = sellingPointSceneDescription(points, facts);
   return [
-    `${imageName}: ${sellingPointHeadlineRule(points)} On-image text may only be these headline groups; no full sentence, no paragraph, no descriptive caption, no explanatory phrase.`,
+    `${imageName}: ${claimCopyRule}`,
     routeRule,
     sceneDescription,
+    claimVisualRule,
     sellingPointProofDominanceRule(points, facts, route),
     `Title coverage lock: show one short title group for each source-derived selling point in this group (${limitedSellingPoints(points, 2).length} total). If two points share one image, use one unified demonstration only when it clearly expresses both meanings.`,
     "Elegant hierarchy, generous padding, natural line breaks; no oversized hard-sell banner, sticker look, dense claim block, or repeated benefit.",
@@ -10521,7 +10814,11 @@ function sceneHeroBasicRequirements(facts, heroVariant = "product") {
     ], "", 8);
   }
   const variantRule = heroVariant === "human"
-    ? "person/model may demonstrate use, but the selected product remains the primary visual subject and must not become a small accessory"
+    ? facts.useBehavior?.mode === "active"
+      ? "person/model demonstrates only the source-verified action; the selected product remains the primary visual subject"
+      : facts.useBehavior?.mode === "passive"
+        ? "person/model may show only the source-verified passive interaction; the selected product remains the primary visual subject"
+        : "person/model may provide natural scale only; do not invent an active use action"
     : "product itself is the primary hero subject, with matching scene support";
   return compactPromptItems([
     "1:1 Amazon lifestyle hero image",
@@ -10543,7 +10840,11 @@ function sceneHeroProductDetails(facts, mainScene, heroVariant = "product") {
     ], 8);
   }
   const variantDetail = heroVariant === "human"
-    ? "Main template B: show the selected product being used or worn by a natural person in the matched scene; product remains the main visual subject, while human action/posture only explains scale and use."
+    ? facts.useBehavior?.mode === "active"
+      ? "Main template B: show a natural person performing only the source-verified operation; the product remains the main visual subject."
+      : facts.useBehavior?.mode === "passive"
+        ? "Main template B: show only the source-verified passive wearing, holding, or placement; the product remains the main visual subject."
+        : "Main template B: show the product with a person only as natural scale/context if suitable; no invented use action."
     : "Main template A: product itself is the dominant subject; use the matched scene as context, props, depth, and atmosphere around the product.";
   return sceneProductDetailText(facts, [variantDetail, mainScene, visibleTextureDetails(facts)], 8);
 }
@@ -10559,10 +10860,14 @@ function sceneHeroStyleText(facts, mainScene, heroVariant = "product") {
     "Show product clearly with premium lifestyle atmosphere; avoid turning it into a plain product-only close-up or isolated studio shot.",
   ].join(" ");
   const humanUseRule = [
-    `Main template B: human-use hero in ${mainScene}.`,
+    `Main template B: product-with-person hero in ${mainScene}.`,
     sceneMainProductScaleRule(),
     sceneMainImageIntegratedProductRule(),
-    "A natural person may use, wear, hold, or interact with the product, but the product remains the hero subject.",
+    facts.useBehavior?.mode === "active"
+      ? "A natural person demonstrates only the source-verified operation; the product remains the hero subject."
+      : facts.useBehavior?.mode === "passive"
+        ? "A natural person shows only the source-verified passive interaction; the product remains the hero subject."
+        : "A person may provide scale or context, but no product operation may be invented.",
     "Use close or medium-close framing so the product is clearly inspectable; human posture, scene context, props, light, and environment explain use without overpowering the product.",
   ].join(" ");
   return sceneOverallStyleText(facts, "1", heroVariant === "human" ? humanUseRule : productFirstRule);
@@ -10572,7 +10877,12 @@ function parameterIllustrationRule() {
 }
 
 function summaryPosterLowerLeftProductRule(facts = {}) {
-  if (facts.isDifferentDesignSet) return "";
+  if (facts.isDifferentDesignSet) {
+    const count = Number(facts.differentDesignSetCount || 0);
+    return count >= 2
+      ? `LOWER-LEFT WHITE CIRCLE MIXED-SET COUNT: show exactly ${count} distinct, complete current-SKU members together inside the white circle, matching the referenced designs; this is one saleable set, not ${count} packs. Do not duplicate one design or invent an extra member.`
+      : "LOWER-LEFT WHITE CIRCLE MIXED-SET VIEW: show the complete referenced current-SKU set together inside the white circle without inventing a member or quantity.";
+  }
   if (facts.bundleComponents) {
     return `LOWER-LEFT WHITE CIRCLE SET-COUNT LOCK: show exactly one complete current bundle inside the lower-left white circular product area, using the verified component quantities: ${facts.bundleComponents}. Do not duplicate the whole bundle, omit a component, or add extra items.`;
   }
@@ -10581,7 +10891,9 @@ function summaryPosterLowerLeftProductRule(facts = {}) {
     const label = cleanFieldDisplayValue(facts.skuUnitQuantityLabel) || `${count} Pcs`;
     return `LOWER-LEFT WHITE CIRCLE PRODUCT-COUNT LOCK: this selected SKU is one saleable pack containing ${label}. Inside the lower-left white circular product area, show exactly ${count} separate, complete, identical current-product units—not ${count} packs, no fewer units, no extras, no fused units, and no representative single unit standing in for the pack.`;
   }
-  return "LOWER-LEFT WHITE CIRCLE PRODUCT-COUNT LOCK: this selected SKU is a normal single product. Inside the lower-left white circular product area, show exactly one complete current-product unit only. Do not duplicate, mirror, stack, repeat, or add a second unit for visual balance.";
+  return count === 1
+    ? "LOWER-LEFT WHITE CIRCLE PRODUCT-COUNT LOCK: this selected SKU contains one product unit. Show exactly one complete current-product unit inside the lower-left white circle; do not duplicate it."
+    : "LOWER-LEFT WHITE CIRCLE PRODUCT VIEW: the pack count is unknown. Show one representative current-product unit inside the lower-left white circle without claiming an exact pack quantity.";
 }
 
 function summaryPosterStyleRule(facts = {}, { enforceLowerLeftCount = false } = {}) {
@@ -10644,86 +10956,194 @@ function summaryInsetGuide(facts, points) {
   ], "3-4 verified product detail close-ups", 4);
 }
 
-function sceneModulePrompt(typeId, facts) {
-  const physicalDetails = compactSpecificPromptItems([
-    facts.structure,
-    facts.material,
-    facts.color,
-  ], "visible product structure, material texture, and true color", 3);
-  const sceneList = userProvidedSceneList(facts);
-  const mainScene = useSceneText(facts, neutralProductSceneFallback(), 3);
-  const sellingPointSet = sellingPointCandidates(facts, 6);
-  const sellingPointGroup1 = sellingPointGroups(facts, 0);
-  const sellingPointGroup2 = sellingPointGroups(facts, 1);
-  const summaryPoints = compactSpecificPromptItems([
-    useSceneText(facts, "", 2),
-    ...sellingPointSet,
-  ], "main scene / multi-use / key selling points", 4);
-  const summaryInsetText = summaryInsetGuide(facts, sellingPointSet);
-  const summaryLowerLeftCount = summaryPosterLowerLeftProductRule(facts);
-  const modules = {
-    "1A": {
-      basic: sceneHeroBasicRequirements(facts, "product"),
-      details: sceneHeroProductDetails(facts, mainScene, "product"),
-      style: sceneHeroStyleText(facts, mainScene, "product"),
-    },
-    "1B": {
-      basic: sceneHeroBasicRequirements(facts, "human"),
-      details: sceneHeroProductDetails(facts, mainScene, "human"),
-      style: sceneHeroStyleText(facts, mainScene, "human"),
-    },
-    "2": {
-      ...sceneMultiSceneModule(facts, sceneList),
-    },
-    "3": {
-      basic: "1:1 Amazon multi-angle product image, 4K clarity, sharp realistic detail, product-only layout, no added text, labels, callouts, badges, captions, or arrows.",
-      details: sceneMultiAngleDetails(facts, physicalDetails),
-      style: sceneMultiAngleStyleText(facts),
-    },
-    "4": {
-      basic: "1:1 Amazon product explanation image, 4K clarity, sharp realistic detail, product-only layout, clean light studio background.",
-      details: sceneExplanationDetails(facts, physicalDetails),
-      style: sceneExplanationStyleText(facts),
-    },
-    "5": {
-      basic: basicImageRequirements("scene", "5"),
-      details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup1, "the primary verified benefit"), 7),
-      style: sceneOverallStyleText(facts, "5", sellingPointImageTemplateRule(sellingPointGroup1, facts, "Scene template Image 5")),
-    },
-    "6": {
-      basic: basicImageRequirements("scene", "6"),
-      details: sceneProductDetailText(facts, sceneSellingPointItems(facts, sellingPointGroup2, "the secondary verified benefit"), 6),
-      style: sceneOverallStyleText(facts, "6", `${sellingPointImageTemplateRule(sellingPointGroup2, facts, "Scene template Image 6")} Distinct from Image 5.`),
-    },
-    "7": {
-      basic: basicImageRequirements("scene", "7"),
-      details: sceneProductDetailText(facts, [
-        `Summary points: ${summaryPoints}`,
-        `Detail inset subjects: ${summaryInsetText}`,
-        summaryLowerLeftCount,
-      ], 8),
-      style: sceneOverallStyleText(facts, "7", summaryPosterStyleRule(facts, { enforceLowerLeftCount: true })),
-    },
-  };
-  const selected = modules[typeId] || modules["1A"];
+function sellingPointHeadlineForClaim(point, plannedLabel = "") {
+  const claim = String(point || "");
+  if (/(?:quantitative|定量)/i.test(claim) && /(?:oil control|控油)/i.test(claim)) return "Quantitative Oil Control";
+  if (/(?:60\s*(?:degree|°|度))/i.test(claim) && /(?:spray|atomiz|喷|雾化)/i.test(claim)) return "60 Degree Spray Range";
+  if (/(?:uniform|均匀)/i.test(claim) && /(?:spray|atomiz|喷|雾化)/i.test(claim)) return "Uniform Atomized Oil Spray";
+  if (/(?:no|无|不)/i.test(claim) && /(?:drip|residu|滴|挂油)/i.test(claim)) return "No Drips Or Residue";
+  const labelWords = String(plannedLabel || "").match(/[A-Za-z0-9&'-]+/g) || [];
+  if (labelWords.length >= 3 && labelWords.length <= 4) return labelWords.join(" ");
+  const sourceWords = sellingPointWords(claim);
+  const words = [...labelWords];
+  for (const word of sourceWords) {
+    if (words.length >= 4) break;
+    if (!words.some((existing) => existing.toLowerCase() === word.toLowerCase())) words.push(word);
+  }
+  while (words.length < 3) words.push(["Product", "Feature", "Detail"][words.length] || "Detail");
+  return words.slice(0, 4).join(" ");
+}
 
-  return buildPromptSections({
-    facts,
-    templateId: "scene",
-    typeId,
-    basic: selected.basic,
-    details: selected.details,
-    style: selected.style,
-    negative: compactPromptItems([
-      negativePrompt(facts),
-      typeId === "7" && "In the lower-left white circular product area: no wrong quantity, no extra duplicate, no missing pack unit, no fused units, and no decorative product repetition.",
-    ], "", 4),
-  });
+function sellingPointBodyCopy(point) {
+  const claim = String(point || "").trim().replace(/[.!?]+$/, "");
+  if (/(?:quantitative|定量)/i.test(claim) && /(?:oil control|控油)/i.test(claim)) {
+    return "Control oil portions to support low-fat cooking.";
+  }
+  if (/(?:60\s*(?:degree|°|度))/i.test(claim) && /(?:spray|atomiz|喷|雾化)/i.test(claim)) {
+    return "The sprayer offers a wide 60-degree atomization range.";
+  }
+  return claim ? `${claim.charAt(0).toUpperCase()}${claim.slice(1)}.` : "A source-verified product feature.";
+}
+
+function sellingPointClaimCopyRule(points, plannedLabel = "") {
+  const claims = limitedSellingPoints(points, 2);
+  if (!claims.length) return "No unsupported benefit text.";
+  return `ON-IMAGE COPY: ${claims.map((claim, index) => `Claim ${index + 1}: large English headline "${sellingPointHeadlineForClaim(claim, index === 0 ? plannedLabel : "")}" (3-4 words), followed by one smaller sentence "${sellingPointBodyCopy(claim)}"`).join("; ")}. Use only these selected claims; no extra title, slogan, parameter or duplicate benefit.`;
+}
+
+function sellingPointProofInsetRule(points, facts = {}) {
+  const claims = limitedSellingPoints(points, 2);
+  const evidence = matchedSellingPointVisualEvidence(claims, facts);
+  const behavior = facts.useBehavior;
+  const sourceOperation = behavior?.mode === "active" && behavior.imageUrl && sellingPointActionDependency(claims) > 0;
+  if (!claims.length || (!evidence.length && !sourceOperation)) {
+    return "PROOF INSET: Omit any diagram when the selected claim lacks a matching visual fact; the product photograph and copy carry the claim.";
+  }
+  const claim = claims.join(" + ");
+  const quantityClaim = /(?:\bquantit\w*\b|\bdos\w*\b|\bportion\w*\b|\bcontrolled?\b|\bmeasured?\b|定量|控量|控油|剂量)/i.test(claim);
+  const operationDetail = sourceOperation
+    ? `If any operation cue is shown, keep ${behavior.trigger || "the verified trigger"} and ${behavior.outputOrigin || "the verified outlet"} on the SAME main product${behavior.outputDirection ? `, with output going ${behavior.outputDirection}` : ""}.`
+    : "Show only a matching visible detail from source evidence.";
+  const proofDetail = quantityClaim && sourceOperation && behavior.outputOrigin
+    ? "Show the whole source-accurate product at an angle that reveals its real outlet/contact point and control parts. The supporting sentence explains controlled portioning; a static photograph need not simulate the output. Do not draw a detached part, duplicate product, unsupported output, generic action arrow, exact amount or repeatability test."
+    : "Show the claim's specific observable feature or effect, not a generic arrow or decorative icon.";
+  const insetChoice = quantityClaim && sourceOperation && behavior.outputOrigin
+    ? "Keep premium product texture and its verified control structure dominant. A small crop of the real outlet is optional only when it remains physically accurate; omit the inset if it would resemble a separate part or a second product."
+    : "First show the benefit through the real product or a verified effect on its surface. Use at most one line diagram under 15% only if that photo cannot explain the claim alone; otherwise omit it.";
+  return `PROOF DETAIL: For ${claim}, ${insetChoice} ${proofDetail} ${operationDetail} No extra photo, person, invented parts, numbers, test or words.`;
+}
+
+function sellingPointClaimVisualRule(points, facts = {}, route = "flexible") {
+  const claim = limitedSellingPoints(points, 2).join(" + ");
+  if (!claim) return "Use only verified product details.";
+  if (route === "product_proof") {
+    return `CLAIM-SPECIFIC VISUAL: ${claim}. Make authentic material, finish and claim-relevant detail the visual priority; a verified effect may appear directly on the product. Keep glossy or translucent edges crisp with controlled highlights. ${sellingPointProofInsetRule(points, facts)} Use an editorial title and small supporting sentence with ample negative space, aligned to the product rather than boxed or stickered.`;
+  }
+  return `CLAIM-SPECIFIC VISUAL: The selected benefit is ${claim}. Make the main demonstration, any supporting detail and the caption all communicate that same benefit. Use source-verified operation and physical effects only; do not insert a generic action cue that fails to explain the selected point. Keep the current product recognizable and its real material, surface and color convincingly rendered.`;
+}
+
+function conciseSceneModulePrompt(typeId, facts) {
+  const sceneItems = splitUseSceneText(facts.scene || "").slice(0, 4);
+  const scene = sceneItems[0] || "";
+  const passiveScene = sceneItems.find((item) => /(?:storage|counter|shelf|display|tabletop|收纳|台面|陈列)/i.test(item)) || scene;
+  const isMain = ["1A", "1B"].includes(typeId);
+  const isSellingPoint = ["5", "6"].includes(typeId);
+  const pointGroup = typeId === "5" ? sellingPointGroups(facts, 0)
+    : typeId === "6" ? sellingPointGroups(facts, 1) : [];
+  const plan = isSellingPoint ? visualPlanForPoints(pointGroup, facts) : null;
+  const route = plan?.route || visualPlanContext(facts).routes[typeId === "5" ? 0 : 1] || "flexible";
+  const option = compactSkuOptionText(facts.skuOption || shortOptionText(facts), facts);
+  const productFacts = [
+    facts.productName && `product ${facts.productName}`,
+    option && `option ${option}`,
+    facts.color && `color ${facts.color}`,
+    facts.material && `material ${facts.material}`,
+    facts.structure && `structure ${facts.structure}`,
+  ].filter(Boolean).join("; ");
+  const count = Number(facts.skuUnitQuantity || 0);
+  const quantity = facts.bundleComponents
+    ? `This SKU includes ${facts.bundleComponents}; show all components as separate source-accurate items whenever the complete set is pictured.`
+    : facts.isDifferentDesignSet
+      ? "This is one fixed mixed-design set; preserve every distinct member shown in its complete-set reference."
+      : count > 1
+        ? `One saleable pack contains ${facts.skuUnitQuantityLabel || `${count} units`}; never depict ${count} separate packs.`
+        : "";
+  const identity = [
+    "Use the attached current-product images as the authority for actual shape, color, structure and, where relevant, operation.",
+    productFacts && `Match the selected SKU: ${productFacts}. These facts are visual constraints, not text to print on the image.`,
+    quantity,
+    "Do not substitute or redesign the product, copy source branding, or copy a reference image's text or graphic layout.",
+  ].filter(Boolean).join(" ");
+  const approvedScenes = sceneItems.length
+    ? `Use only these approved scene contexts: ${sceneItems.join("; ")}. Reference-image backgrounds do not add new scenes.`
+    : "No verified use scene is available; use a plain neutral studio background and invent no lifestyle context.";
+  const exactDimensions = dimensionListItems(facts.dimensions, promptContextText(facts))
+    .map((item) => convertLengthUnitsToInches(item)).filter(Boolean);
+  const blocks = [
+    "Create one sharp, realistic 1:1 Amazon product image.",
+    `PRODUCT: ${identity}`,
+    facts.bundleComponents ? bundleFullSetDisplayRule(facts) : "",
+    facts.isDifferentDesignSet ? differentDesignSetPresentationRule(facts, "scene", typeId) : "",
+    isMain && count > 1 ? skuQuantityMainImageRule(facts, typeId) : "",
+    ["4", "7"].includes(typeId) && count > 1 ? skuQuantityExplanationRule(facts, "scene", typeId) : "",
+  ].filter(Boolean);
+  if (typeId === "1A") {
+    blocks.push(`TASK: Product-first hero${passiveScene ? ` in ${passiveScene}` : " on a neutral studio background"}. ${facts.isDifferentDesignSet ? "Show the complete referenced set as the dominant subject, with all different members separately visible." : "Show one complete current product naturally standing or resting, large enough to inspect its true silhouette, material and color."} No person, hand, active use, emitted effect, detached part or extra product. A supplier operation image is identity evidence only for this slot; do not copy its action. Create an original composition; do not copy the reference background or props. ${approvedScenes}`);
+  } else if (typeId === "1B") {
+    blocks.push(`TASK: Human-use hero${scene ? ` in ${scene}` : " on a neutral studio background"}; a person demonstrates ${facts.isDifferentDesignSet ? "one actual referenced set member while the other members remain visible together in a secondary set view" : "the product"} while the product remains prominent and occupies at least 30% of the frame. ${approvedScenes}`);
+    blocks.push(`OPERATION: ${sourceUseBehaviorRule(facts)}`);
+  } else if (typeId === "2") {
+    const activeSceneItems = sceneItems.filter((item) => !/(?:storage|counter|shelf|display|tabletop|收纳|台面|陈列)/i.test(item));
+    const operationPanels = facts.useBehavior?.mode === "active"
+      ? activeSceneItems.length >= 2
+        ? "at least TWO panels must visibly show the product being operated on different subjects, with different environments and hand positions."
+        : "Make the documented ongoing interaction the lead scene; use additional distinct contexts only when they fit the current product."
+      : facts.useBehavior?.mode === "passive"
+        ? "Show distinct natural interactions or placements; do not invent an active mechanism."
+        : "Show distinct contexts without inventing an active mechanism or output.";
+    blocks.push(sceneItems.length
+      ? `TASK: Four equal 2x2 panels showing different real uses of the same current product. Show the distinct active uses first${activeSceneItems.length ? `: ${activeSceneItems.join("; ")}` : ""}; ${facts.isDifferentDesignSet ? "distribute panels across different actual referenced set members before repeating one member; " : ""}${operationPanels} Any remaining panel must show a different supplier-pictured function or compatible contents. If the supplier references show a wide open filling mouth, depict liquid being poured into that OPEN product; if they show different compatible liquids, a contents display may be used. If neither is pictured, use another active use scene. A sealed product simply standing in storage is NOT a use scene and must never fill a panel. Keep the product large and recognizable in every panel, with no repeated near-identical scene. ${approvedScenes} In EVERY active panel: ${sourceUseBehaviorRule(facts)}`
+      : "TASK: Four equal 2x2 product-only views on a neutral studio background; no people, use actions or invented scenes.");
+  } else if (typeId === "3") {
+    blocks.push(facts.isDifferentDesignSet
+      ? "TASK: Product-only complete-set studio study. Give every different referenced set member a separate, complete, equally readable view at consistent scale. Do not fill the layout with repeat angles of one member, merge members, or add an unlisted design. Light neutral background, no operation, added text or emitted effect."
+      : "TASK: Product-only four-view studio study: one large full-product front view, one visibly rotated three-quarter full-product view, one top view of the intact product, and one source-supported close detail of its real upper or lower construction. Every view shows the same current SKU. Distinguish views through camera angle and scale; never repeat the front view, disassemble parts, add a second variant or invent a hidden mechanism. Light neutral background, no operation or emitted effect.");
+  } else if (typeId === "4") {
+    blocks.push(`TASK: Clean product information chart with the product centered and the title "Product Information". ${exactDimensions.length
+      ? `Show every current editable dimension row with its exact label and converted value exactly ONCE beside its arrow: ${exactDimensions.join("; ")}. Attach each arrow only to its matching physical part: whole-product height spans true top to true bottom, diameter spans the measured circular body, and named-part height spans only that part. If an axis is unconfirmed, put the value in a small parameter label instead of inventing an arrow. Do not repeat any dimension in a side card, table, icon or second label. Use no extra dimension arrows.`
+      : "No verified dimensions: do not add measurement arrows or numbers."}`);
+    if (facts.productWeight || facts.capacity) blocks.push(`OTHER VERIFIED FACTS: ${[facts.productWeight && `Product Weight: ${facts.productWeight}`, facts.capacity && `Capacity: ${facts.capacity}`].filter(Boolean).join("; ")}. Show these as separate concise labels, never as ruler arrows.`);
+    blocks.push(`${facts.isDifferentDesignSet ? "Show every different referenced set member clearly; place shared facts outside the member views and attach a member-specific measurement only to its matching member. " : ""}Only verified capacity or weight and one verified material or visible-structure label may occupy the side column. All dimensions belong beside their arrows or in a small parameter label when no axis is confirmed, and appear once. Do not add a benefit, use, output, performance icon or feature callout to this parameter chart. Keep each part-specific measurement arrow visually proportional to that small part, not nearly as long as the whole-product dimension. Current editable fields override stale measurements in reference images; add no unsupported specs. Do not invent, alter or emphasize tiny printed numbers on the product body; if source markings cannot be copied faithfully, keep them visually unobtrusive and put all required values in external chart labels.`);
+  } else if (isSellingPoint) {
+    const claims = limitedSellingPoints(pointGroup, 2);
+    const headline = sellingPointHeadlineForClaim(claims[0], plan?.label);
+    const bodyCopy = sellingPointBodyCopy(claims[0]);
+    blocks.push(route === "product_proof"
+      ? `TASK: Present only this source-verified selling point: ${claims.join(" + ") || "a source-supported physical product detail"}. Keep the product itself as the sole visual subject; use the headline and small explanation for an action-dependent benefit.`
+      : `TASK: Visually prove only this current selling point: ${claims.join(" + ") || "a source-supported physical product detail"}.`);
+    if (route === "product_proof") {
+      blocks.push(`ROUTE: ${sellingPointVisualRouteRule(route)}`);
+      blocks.push(sellingPointClaimVisualRule(claims, facts, route));
+    } else if (route === "scene_use") {
+      blocks.push(`ROUTE: Show the product in an approved scene and make the claim visually clear. ${approvedScenes}`);
+      blocks.push(sellingPointClaimVisualRule(claims, facts, route));
+      blocks.push("PROOF FOCUS: Show the source-supported use interaction and its claim-relevant effect clearly, distinct from the other selling-point image's product-only presentation; keep the actual outlet or contact point and its effect together in frame.");
+      if (plan?.status === "ready" && plan.visual_prompt) {
+        const framing = String(plan.visual_prompt).split(/[,.;]/)
+          .map((part) => part.trim())
+          .filter((part) => part && !/\b(?:press\w*|push\w*|squeez\w*|spray\w*|pour\w*|pump\w*|trigg\w*|flow\w*|output|outlet|jet|mist|stream|drip\w*|nozzle|button)\b/i.test(part))
+          .slice(0, 2);
+        if (framing.length) blocks.push(`PLAN FRAMING: ${framing.join("; ")}.`);
+      }
+      blocks.push(`OPERATION: ${sourceUseBehaviorRule(facts)}`);
+    } else {
+      blocks.push("ROUTE: Choose only a source-supported product state or detail that visibly proves the claim; invent no test or performance effect.");
+      blocks.push(sellingPointClaimVisualRule(claims, facts, route));
+    }
+    blocks.push(route === "product_proof"
+      ? `TEXT/LAYOUT: Set "${headline}" as a refined 3–4-word English headline, one or two lines in a product-appropriate editorial typeface; keep it smaller than the product's visual mass. Set "${bodyCopy}" below in a clear lighter-weight size. Align both to the product geometry with generous open space and a subtle color echo. No centered block, banner, box, sticker, extra label or other words.`
+      : `TEXT: Large English headline "${headline}" (3–4 words). Beneath it, one smaller supporting sentence: "${bodyCopy}". No other added text.`);
+  } else if (typeId === "7") {
+    const points = sellingPointCandidates(facts, 4);
+    const summaryActionScenes = sceneItems.filter((item) => !/(?:storage|counter|shelf|display|tabletop|收纳|台面|陈列)/i.test(item));
+    const hasOperationEvidence = facts.useBehavior?.mode === "active" && facts.useBehavior?.imageUrl;
+    const lowerLeftCountRule = summaryPosterLowerLeftProductRule(facts);
+    const heroUseRule = hasOperationEvidence
+      ? `The LEFT LARGE HERO must capture the product actually operating in a source-supported use scene. ${facts.useBehavior.outputOrigin ? "Show the real output/effect visibly reaching its subject, with the outlet and target together at readable scale." : "Show the real action clearly; do not invent an output/effect whose origin is unknown."} ${sourceUseBehaviorRule(facts)} Any pictured effect must start at the verified outlet/contact point, never at a button, hand or invented opening.`
+      : "The left large hero shows the selected product in an approved lifestyle scene; invent no operation or effect without source evidence.";
+    blocks.push(`TASK: Premium Amazon feature-summary poster, combining approved selling points with real use scenes. Keep the established composition: one large lifestyle hero photograph on the LEFT (about 60–65% width), and exactly THREE photographic proof windows stacked on the RIGHT (about 35–40% width). ${heroUseRule} ${summaryActionScenes.length ? `Use distinct approved contexts: ${summaryActionScenes.join("; ")}.` : ""} Add one COMPACT WHITE CIRCULAR product inset at the LOWER LEFT of the hero photograph, separate from the three right windows. ${lowerLeftCountRule} Arrange the hero action so this circle does not cover the operating product, its outlet/contact point, effect path, or target; the circle is a secondary quantity/product reminder, never the main picture. The first right window shows a distinct approved use context or a relevant product moment; do not repeat the hero composition. Use the other two right windows for product details, compatible contents, preparation, or another distinct approved context as appropriate for this product. Do not require or forbid an active effect in a right window; whenever one is shown, preserve the same pictured product mechanism, outlet/contact point and effect direction as the operation evidence. A plain product standing in storage does not demonstrate a selling point and must not occupy a proof window. Every window must show the current product or a recognizable close-up of a real detail. Do not turn the right column into text-only rows. ${approvedScenes}`);
+    blocks.push(`SELLING POINTS: ${points.length ? points.join("; ") : "No verified selling points; omit feature labels."} Use one short English headline and concise 1–3-word labels for the approved benefits. Place any output or spray claim beside the large left action, and place other labels by their relevant real scene or detail. Keep the main image, three windows and labels airy and editorial, with controlled light and source-accurate product texture and color. Do not invent claims, components, extra SKU variants or unverified actions.`);
+  }
+  blocks.push(isMain || ["2", "3"].includes(typeId)
+    ? "TEXT/LAYOUT: No added text, labels, arrows, specifications, badges or inset product cutouts. " + (typeId === "2" || typeId === "3" ? "Only the specified equal panels or product views are allowed." : "Use one continuous photographic scene; no collage or separate framed view.")
+    : typeId === "4" ? "TEXT/LAYOUT: English labels only; keep the verified measurements legible and uncluttered."
+      : "ACCURACY: Use only verified claims and physical features; no invented parts, performance numbers, certifications or misleading effects.");
+  return blocks.join("\n\n");
 }
 
 function sceneTemplatePrompt(typeId, sku, data) {
   const facts = promptFacts(sku, data);
-  return sceneModulePrompt(typeId, facts);
+  return conciseSceneModulePrompt(typeId, facts);
 }
 
 function featureModulePrompt(typeId, facts) {
@@ -11259,21 +11679,30 @@ function generationInputsChanged(cardKey, promptEn) {
 }
 
 function imageSizeOptions(model, selectedSize) {
-  const sizes = model === "gpt-image-2-vip"
-    ? ["1024x1024", "2048x2048", "2880x2880"]
-    : ["1024x1024"];
+  const sizes = model === "nano-banana-pro"
+    ? ["1K", "2K", "4K"]
+    : model === "gpt-image-2-vip"
+      ? ["1024x1024", "2048x2048", "2880x2880"]
+      : ["1024x1024"];
   return sizes.map((size) => `<option value="${size}" ${size === selectedSize ? "selected" : ""}>${size}</option>`).join("");
 }
 
 function referencePurposeForPromptType(typeId = "") {
   const id = String(typeId || "");
-  if (id === "1A" || id === "1") return ["main_product", "multi_angle", "product_explanation"];
+  const sceneTemplate = selectedTemplate().id === "scene";
+  if (id === "1A" || id === "1") return sceneTemplate
+    ? ["main_product", "multi_angle"] : ["main_product", "multi_angle", "product_explanation"];
   if (id === "1B") return ["human_use", "multi_scene", "main_product"];
-  if (id === "2") return ["multi_scene", "human_use", "selling_point"];
-  if (id === "3") return ["multi_angle", "main_product", "product_explanation"];
-  if (id === "4") return ["product_explanation", "summary", "multi_angle", "main_product"];
+  if (id === "2") return sceneTemplate
+    ? ["multi_scene", "human_use", "main_product"] : ["multi_scene", "human_use", "selling_point"];
+  if (id === "3") return sceneTemplate
+    ? ["multi_angle", "main_product"] : ["multi_angle", "main_product", "product_explanation"];
+  if (id === "4") return sceneTemplate
+    ? ["product_explanation", "main_product"] : ["product_explanation", "summary", "multi_angle", "main_product"];
   if (id === "5" || id === "6") return ["selling_point", "product_explanation", "summary", "detail"];
-  if (id === "7" || id === "8") return ["summary", "product_explanation", "selling_point", "main_product"];
+  if (id === "7" || id === "8") return sceneTemplate
+    ? ["human_use", "multi_scene", "selling_point", "product_explanation", "main_product", "summary"]
+    : ["summary", "product_explanation", "selling_point", "main_product"];
   return ["main_product", "product_explanation", "selling_point"];
 }
 
@@ -11319,15 +11748,41 @@ function taskMatchedReferenceUrls(type, skuId) {
     return bestFor.some((value) => desired.has(String(value || "").toLowerCase()));
   };
   const preferred = meta.filter(exactOrUseful).map((item) => item.url);
-  const exactSku = meta
-    .filter((item) => /exact|high/i.test([item.sku_match, item.confidence, item.reference_value].filter(Boolean).join(" ")))
-    .map((item) => item.url);
-  return Array.from(new Set([...preferred, ...exactSku])).filter((url) => /^https?:\/\//i.test(url));
+  const id = String(type?.id || "");
+  const adjustedSceneSlot = selectedTemplate().id === "scene" && ["1A", "2", "3", "4", "7"].includes(id);
+  if (!adjustedSceneSlot) {
+    const exactSku = meta
+      .filter((item) => /exact|high/i.test([item.sku_match, item.confidence, item.reference_value].filter(Boolean).join(" ")))
+      .map((item) => item.url);
+    return Array.from(new Set([...preferred, ...exactSku])).filter((url) => /^https?:\/\//i.test(url));
+  }
+  const limit = id === "1A" ? 2 : 3;
+  return Array.from(new Set(preferred)).filter((url) => /^https?:\/\//i.test(url)).slice(0, limit);
+}
+
+function operationEvidenceUrlForCard(templateId, type, facts) {
+  if (templateId !== "scene" || !["active", "passive"].includes(facts?.useBehavior?.mode)) return "";
+  const id = String(type?.id || "");
+  if (["1B", "2", "7"].includes(id)) return facts.useBehavior.imageUrl || "";
+  if (!["5", "6"].includes(id)) return "";
+  const points = sellingPointGroupForImageTitle(templateId, type.id, facts);
+  const slotIndex = id === "5" ? 0 : 1;
+  const route = visualPlanForPoints(points, facts)?.route || visualPlanContext(facts).routes[slotIndex] || "flexible";
+  return route === "scene_use" ? facts.useBehavior.imageUrl || "" : "";
+}
+
+function prioritizeSelectedOperationEvidence(state, templateId, type, facts, sku) {
+  const url = operationEvidenceUrlForCard(templateId, type, facts);
+  state.operationEvidenceUrl = url && referenceImageCandidatesForCard(type, facts, sku).all.includes(url) ? url : "";
+  if (!state.operationEvidenceUrl) return;
+  state.availableReferences = uniqueReferenceImageUrls([state.operationEvidenceUrl, ...state.availableReferences]);
+  state.selectedReferences = uniqueReferenceImageUrls([state.operationEvidenceUrl, ...state.selectedReferences]).slice(0, MAX_SELECTED_REFERENCES);
 }
 
 function referenceImageCandidatesForCard(type, facts, sku) {
   const points = sellingPointGroupForImageTitle(selectedTemplate().id, type.id, facts);
   const evidenceUrls = new Set((facts.sellingPointVisualEvidence || []).map((item) => item.imageUrl).filter(Boolean));
+  const useBehaviorUrl = operationEvidenceUrlForCard(selectedTemplate().id, type, facts);
   const meta = referenceMetaItemsForSku(sku?.id);
   const competitorUrls = new Set(meta
     .filter((item) => item.image_type === "amazon_competitor_reference")
@@ -11346,8 +11801,18 @@ function referenceImageCandidatesForCard(type, facts, sku) {
       && /^(?:high|medium)$/i.test(String(item.confidence || "")))
     .map((item) => item.url));
   const matched = matchedSellingPointVisualEvidence(points, facts).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
+  const operationEvidence = useBehaviorUrl && mappedSet.has(useBehaviorUrl) ? [useBehaviorUrl] : [];
   const evidence = (facts.sellingPointVisualEvidence || []).map((item) => item.imageUrl).filter((url) => mappedSet.has(url));
-  const taskMatched = taskMatchedReferenceUrls(type, sku?.id);
+  const taskMatched = taskMatchedReferenceUrls(type, sku?.id).filter((url) => {
+    const id = String(type?.id || "");
+    if (selectedTemplate().id === "scene" && ["1A", "1", "3", "4", "7"].includes(id)) {
+      if (url === facts.useBehavior?.imageUrl) return false;
+    }
+    const item = meta.find((candidate) => candidate.url === url);
+    if (selectedTemplate().id === "scene" && id === "3"
+      && /(?:exploded|disassembl|structure.breakdown)/i.test(`${item?.image_type || ""} ${item?.reason || ""}`)) return false;
+    return true;
+  });
   const assortmentIdentity = facts.isDifferentDesignSet
     ? meta.filter((item) => {
       const description = [item.image_type, ...(Array.isArray(item.best_for) ? item.best_for : [])].join(" ");
@@ -11361,11 +11826,16 @@ function referenceImageCandidatesForCard(type, facts, sku) {
     ? Array.from(new Set(assortmentIdentity.filter(Boolean)))
     : [];
   return {
-    matched: Array.from(new Set([...identityFirst, ...matched, ...taskMatched]
-      .filter((url) => url && verifiedExactUrls.has(url) && mappedSet.has(url)))).slice(0, MAX_SELECTED_REFERENCES),
+    matched: Array.from(new Set([
+      ...operationEvidence,
+      ...identityFirst.filter((url) => verifiedExactUrls.has(url) && mappedSet.has(url)),
+      ...matched.filter((url) => verifiedExactUrls.has(url) && mappedSet.has(url)),
+      ...taskMatched.filter((url) => verifiedExactUrls.has(url) && mappedSet.has(url)),
+    ])).slice(0, MAX_SELECTED_REFERENCES),
     all: uniqueReferenceImageUrls([
       ...mapped.filter((url) => competitorUrls.has(url)),
       ...identityFirst,
+      ...operationEvidence,
       ...taskMatched,
       ...matched,
       ...evidence,
@@ -11407,6 +11877,7 @@ function prioritizeSelectedReferences(state) {
 
 function referenceCandidateBadge(item, reference) {
   if (/^data:image\//i.test(reference)) return "手动上传";
+  if (reference === selectedSku()?.useBehavior?.imageUrl) return "操作原图";
   if (!item) return "待人工核对";
   if (item.image_type === "amazon_competitor_reference") return "竞品图·构图参考";
   const match = String(item.sku_match || "").toLowerCase();
@@ -11438,6 +11909,9 @@ function renderReferenceImages(state) {
   const reviewNotice = hasVerifiedSkuImage
     ? ""
     : '<p class="reference-empty">当前 SKU 没有已确认的同款参考图。请人工核对候选图的颜色和款式后再选择。</p>';
+  const operationNotice = state.operationEvidenceUrl
+    ? '<p class="reference-empty">使用类图片会自动带上操作原图作为操作依据；其余参考图由你选择，用于款式和场景。</p>'
+    : "";
   return `
     <div class="reference-picker-summary">
       <div class="reference-picker-primary">
@@ -11449,22 +11923,24 @@ function renderReferenceImages(state) {
       </div>
     </div>
     ${reviewNotice}
+    ${operationNotice}
     ${hasSimilarColorImage ? '<p class="reference-empty">相近色仅作为候选图，需人工确认后勾选；不会自动选入参考图。</p>' : ""}
     <div class="reference-image-grid ${state.referencesExpanded ? "is-expanded" : ""}">${state.availableReferences.map((reference, index) => {
     const checked = state.selectedReferences.includes(reference);
     const previewUrl = /^data:image\//i.test(reference) ? reference : sourceProxyUrl(reference);
     const item = metaByUrl.get(reference);
     const badge = referenceCandidateBadge(item, reference);
+    const isOperationEvidence = reference === state.operationEvidenceUrl;
     const reason = cleanFieldDisplayValue(item?.reason || "请人工核对图片与商品的关系。");
     return `
       <div class="reference-image-option ${checked ? "is-selected" : ""}" title="${escapeHtml(reason)}">
         <label>
-          <input type="checkbox" class="reference-image-checkbox" data-reference-index="${index}" ${checked ? "checked" : ""}>
+          <input type="checkbox" class="reference-image-checkbox" data-reference-index="${index}" ${checked ? "checked" : ""} ${isOperationEvidence ? "disabled" : ""}>
           <img src="${escapeHtml(previewUrl)}" alt="参考图 ${index + 1}" loading="lazy">
         </label>
-        <small class="reference-image-source" title="${escapeHtml(reason)}">${escapeHtml(badge)}</small>
+        <small class="reference-image-source" title="${escapeHtml(reason)}">${escapeHtml(isOperationEvidence ? "操作原图·自动带入" : badge)}</small>
         <button type="button" class="preview-reference-image" data-reference-index="${index}" aria-label="放大查看参考图 ${index + 1}" title="放大查看">⌕</button>
-        <button type="button" class="delete-reference-image" data-reference-index="${index}" aria-label="删除参考图 ${index + 1}" title="删除参考图">×</button>
+        <button type="button" class="delete-reference-image" data-reference-index="${index}" aria-label="删除参考图 ${index + 1}" title="删除参考图" ${isOperationEvidence ? "disabled" : ""}>×</button>
       </div>
     `;
   }).join("")}</div>`;
@@ -11535,6 +12011,7 @@ function renderImageGenerator(cardKey) {
         <select class="image-model-select" aria-label="生图模型" ${isBusy ? "disabled" : ""}>
           <option value="gpt-image-2" ${state.model === "gpt-image-2" ? "selected" : ""}>GPT Image 2</option>
           <option value="gpt-image-2-vip" ${state.model === "gpt-image-2-vip" ? "selected" : ""}>GPT Image 2 VIP</option>
+          <option value="nano-banana-pro" ${state.model === "nano-banana-pro" ? "selected" : ""}>Nano Banana Pro</option>
         </select>
         <select class="image-size-select" aria-label="图片尺寸" ${isBusy ? "disabled" : ""}>${imageSizeOptions(state.model, state.size)}</select>
         <button type="button" class="generate-image" ${isBusy ? "disabled" : ""}>${isBusy ? "生成中…" : "生成图片"}</button>
@@ -11752,10 +12229,15 @@ async function generateImageForCard(cardKey) {
       updateImageGenerator(cardKey);
       return;
     }
-    // Preserve identity references while actually supplying this task's evidence images.
-    state.selectedReferences = Array.from(new Set([state.selectedReferences[0], ...(plan.evidenceUrls || []), ...state.selectedReferences].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES);
+    // Product-feature images should not inherit an operation scene merely because
+    // that image was evidence during analysis. Explicit manual choices remain intact.
+    const route = plan.route || visualPlanContext(facts).routes[plan.groupIndex] || "flexible";
+    const planReferences = (plan.evidenceUrls || []).filter((url) =>
+      route !== "product_proof" || url !== facts.useBehavior?.imageUrl);
+    state.selectedReferences = Array.from(new Set([state.selectedReferences[0], ...planReferences, ...state.selectedReferences].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES);
     state.availableReferences = Array.from(new Set([...state.selectedReferences, ...state.availableReferences]));
   }
+  prioritizeSelectedOperationEvidence(state, selectedTemplate().id, item.type, facts, sku);
   state.status = "submitting";
   state.message = "正在提交生图任务…";
   updateImageGenerator(cardKey);
@@ -12279,10 +12761,10 @@ function bindImageGeneratorSection(section) {
     persistWorkspaceSnapshot();
   });
   section.querySelector(".clear-reference-selection")?.addEventListener("click", () => {
-    state.selectedReferences = [];
-    savedReferenceSelectionByCard[cardKey] = [];
+    state.selectedReferences = state.operationEvidenceUrl ? [state.operationEvidenceUrl] : [];
+    savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
     lastReferenceSelectionCardKey = cardKey;
-    state.message = "已取消当前任务的全部候选图勾选。";
+    state.message = state.operationEvidenceUrl ? "已清除其他参考图，操作原图已保留。" : "已取消当前任务的全部候选图勾选。";
     updateImageGenerator(cardKey);
     persistManualReferences(cardKey);
     persistWorkspaceSnapshot();
@@ -12293,7 +12775,7 @@ function bindImageGeneratorSection(section) {
   });
   section.querySelector(".image-model-select")?.addEventListener("change", (event) => {
     state.model = event.target.value;
-    state.size = "1024x1024";
+    state.size = state.model === "nano-banana-pro" ? "1K" : "1024x1024";
     updateImageGenerator(cardKey);
   });
   section.querySelector(".image-size-select")?.addEventListener("change", (event) => {
@@ -12557,6 +13039,7 @@ function renderProductPromptGrid() {
       state.selectedReferences = referenceCandidates.matched.slice(0, MAX_SELECTED_REFERENCES);
       state.referenceSelectionInitialized = true;
     }
+    prioritizeSelectedOperationEvidence(state, template.id, type, facts, sku);
   });
 
   const visibleItems = promptStore.filter((item) => !item.empty);
@@ -12792,7 +13275,7 @@ function restoreWorkspaceSnapshot() {
     competitorDimensionSourceNames = Array.isArray(snapshot.competitorDimensionSourceNames) ? snapshot.competitorDimensionSourceNames : [];
     competitorProductWeight = String(snapshot.competitorProductWeight || "");
     competitorCapacity = String(snapshot.competitorCapacity || "");
-    selectedExtractionRoute = extractionRoutePreviews[snapshot.selectedExtractionRoute] ? snapshot.selectedExtractionRoute : "web";
+    selectedExtractionRoute = snapshot.selectedExtractionRoute === "local" ? "local" : "web";
     selectedProductStructureRoute = productStructureRoutePreviews[snapshot.selectedProductStructureRoute] ? snapshot.selectedProductStructureRoute : "single";
     productStructureRouteManuallySelected = Boolean(productStructureRoutePreviews[snapshot.selectedProductStructureRoute]);
     hasUserSourceAttempt = true;
@@ -12810,7 +13293,7 @@ function restoreWorkspaceSnapshot() {
     const legacyBinding = extractedProducts.some((sku) => sku.id === snapshot.supplierSkuBinding)
       ? `sku:${snapshot.supplierSkuBinding}`
       : snapshot.supplierSkuBinding || "";
-    selectedSupplierBindingMode = ["parent", "child", "auto"].includes(snapshot.supplierBindingMode)
+    selectedSupplierBindingMode = ["parent", "child"].includes(snapshot.supplierBindingMode)
       ? snapshot.supplierBindingMode
       : supplierBindingModeFromValue(legacyBinding);
     supplierBindingProducts = extractedProducts;
@@ -13009,7 +13492,10 @@ async function init() {
   persistedImageHistory = loadPersistedImageHistory();
   sellingPointReviewsBySku = loadSellingPointReviews();
   const restoredWorkspace = restoreWorkspaceSnapshot();
-  if (restoredWorkspace) extractedProducts.forEach(applyLockedSellingPointReview);
+  if (restoredWorkspace) extractedProducts.forEach((sku) => {
+    applyLockedSellingPointReview(sku);
+    alignSavedSellingPointReview(sku);
+  });
   initProductStructureRoute();
   initExtractionRoutePreview();
   renderFields(true);
@@ -13094,7 +13580,7 @@ async function init() {
   });
   document.querySelectorAll("[data-supplier-binding-mode]").forEach((button) => {
     button.addEventListener("click", () => {
-      const mode = button.dataset.supplierBindingMode || "auto";
+      const mode = button.dataset.supplierBindingMode || "child";
       renderSupplierBindingOptions(supplierBindingProducts, mode);
       handleSupplierBindingChange();
     });

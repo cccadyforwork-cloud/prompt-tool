@@ -31,6 +31,74 @@ def _ark_response(value):
 class ProductAnalysisTests(unittest.TestCase):
     @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
     @mock.patch.object(server.urllib.request, "urlopen")
+    def test_use_behavior_requires_supplier_image_and_keeps_it(self, urlopen, _vision):
+        urls = [f"https://cbu01.alicdn.com/img/ibank/{index}.jpg" for index in range(2)]
+        urlopen.return_value = _Response(_ark_response({
+            "image_selection": [
+                {"image_ref": "Image 1", "keep": True, "image_type": "hero", "reason": "Product"},
+                {"image_ref": "Image 2", "keep": False, "image_type": "lifestyle", "reason": "Unclear"},
+            ],
+            "use_behavior": {
+                "mode": "active", "action": "Press the top button to spray oil",
+                "trigger": "top button", "output_origin": "bottom nozzle",
+                "output_direction": "downward toward the pan",
+                "operation_clarity": 3,
+                "evidence": "Visible hand and bottom spray cone", "image_ref": "Image 2",
+            },
+        }))
+        result = server.fetch_ark_product_analysis("Oil Sprayer", "", urls, "ark-test", "doubao-test")
+        self.assertEqual(urls[1], result["use_behavior"]["image_url"])
+        self.assertEqual("bottom nozzle", result["use_behavior"]["output_origin"])
+        self.assertEqual(3, result["use_behavior"]["operation_clarity"])
+        self.assertEqual(urls, [item["url"] for item in result["selected_images"]])
+
+    @mock.patch.object(server, "fetch_ark_product_analysis")
+    def test_clearest_operation_image_wins_across_batches(self, analyze):
+        urls = [f"https://cbu01.alicdn.com/img/ibank/{index}.jpg" for index in range(13)]
+        def result(_identity, _evidence, batch, _key, _model):
+            clarity = 2 if batch[0] == urls[0] else 3
+            return {
+                "product_name": {}, "attributes": [], "dimensions": [], "selling_points": [],
+                "use_scenes": [], "evidence_urls": [], "errors": [],
+                "use_behavior": {"mode": "active", "action": "Press to spray", "image_url": batch[0],
+                                 "trigger": "top button", "output_origin": "bottom nozzle",
+                                 "operation_clarity": clarity},
+            }
+        analyze.side_effect = result
+        merged = server.fetch_ark_product_analysis_batches("oil sprayer", "", urls, "ark-test", "doubao-test")
+        self.assertEqual(urls[12], merged["use_behavior"]["image_url"])
+
+    @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
+    @mock.patch.object(server.urllib.request, "urlopen")
+    def test_unreferenced_use_behavior_is_ignored(self, urlopen, _vision):
+        urlopen.return_value = _Response(_ark_response({
+            "use_behavior": {"mode": "active", "action": "Spray oil", "evidence": "Visible", "image_ref": "Image 9"},
+        }))
+        result = server.fetch_ark_product_analysis(
+            "Oil Sprayer", "", ["https://cbu01.alicdn.com/img/ibank/1.jpg"], "ark-test", "doubao-test",
+        )
+        self.assertEqual({}, result["use_behavior"])
+
+    @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
+    @mock.patch.object(server.urllib.request, "urlopen")
+    def test_detail_image_measurements_are_returned_with_evidence(self, urlopen, _vision):
+        url = "https://cbu01.alicdn.com/img/ibank/size.jpg"
+        urlopen.return_value = _Response(_ark_response({
+            "attributes": [
+                {"field": "Capacity", "value": "100 ml", "evidence": "容量100ml", "image_ref": "Image 1"},
+                {"field": "ProductWeight", "value": "90", "evidence": "重量90", "image_ref": "Image 1"},
+            ],
+            "dimensions": [{"label": "Height", "value": "18 cm", "evidence": "高度18cm", "image_ref": "Image 1"}],
+            "selling_points": [{"claim": "Even oil mist", "evidence": "均匀雾化", "image_ref": "Image 1"}],
+        }))
+        result = server.fetch_ark_product_analysis("Oil Sprayer", "", [url], "ark-test", "doubao-test")
+        self.assertEqual(["Capacity"], [item["field"] for item in result["attributes"]])
+        self.assertEqual(["Height: 18 cm"], result["dimensions"])
+        self.assertEqual(url, result["dimension_evidence"][0]["image_url"])
+        self.assertIn(url, result["evidence_urls"])
+
+    @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
+    @mock.patch.object(server.urllib.request, "urlopen")
     def test_doubao_selects_one_shared_image_list_and_evidence_is_kept(self, urlopen, _vision):
         urls = [f"https://cbu01.alicdn.com/img/ibank/{index}.jpg" for index in range(3)]
         urlopen.return_value = _Response(_ark_response({
@@ -61,6 +129,26 @@ class ProductAnalysisTests(unittest.TestCase):
         self.assertEqual([12, 12, 1], [len(call.args[2]) for call in analyze.call_args_list])
         self.assertEqual(urls, [url for call in analyze.call_args_list for url in call.args[2]])
         self.assertEqual(urls[-1], merged["selling_points"][0]["image_url"])
+
+    @mock.patch.object(server, "fetch_ark_product_analysis")
+    def test_later_batch_explicit_range_survives_four_point_limit(self, analyze):
+        urls = [f"https://cbu01.alicdn.com/img/ibank/{index}.jpg" for index in range(13)]
+        first_claims = [
+            "Precise oil portion control", "Uniform atomized oil spray",
+            "No dripping or residual oil", "Easy oil refilling",
+        ]
+        def result(_identity, _evidence, batch, _key, _model):
+            claims = first_claims if batch[0] == urls[0] else ["Wide 60 degree spray range"]
+            return {
+                "product_name": {}, "attributes": [], "dimensions": [], "use_scenes": [],
+                "selling_points": [{"claim": claim, "evidence": claim, "image_url": batch[0]} for claim in claims],
+                "evidence_urls": [batch[0]], "errors": [],
+            }
+        analyze.side_effect = result
+        merged = server.fetch_ark_product_analysis_batches("oil sprayer", "", urls, "ark-test", "doubao-test")
+        self.assertEqual(4, len(merged["selling_points"]))
+        self.assertEqual("Wide 60 degree spray range", merged["selling_points"][-1]["claim"])
+        self.assertIn(urls[-1], [item["url"] for item in merged["selected_images"]])
 
     @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
     @mock.patch.object(server.urllib.request, "urlopen")
@@ -107,18 +195,23 @@ class ProductAnalysisTests(unittest.TestCase):
 
     @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
     @mock.patch.object(server.urllib.request, "urlopen")
-    def test_existing_image_selling_points_do_not_trigger_focused_pass(self, urlopen, _vision):
-        urlopen.return_value = _Response(_ark_response({
+    def test_focused_pass_keeps_independent_feature_claims_over_broad_summary(self, urlopen, _vision):
+        urlopen.side_effect = [_Response(_ark_response({
             "product_name": {},
             "attributes": [],
             "dimensions": [],
             "selling_points": [{
-                "claim": "Precise 0.3 ml spray",
-                "evidence": "一次喷雾约0.3ml",
+                "claim": "Precise control with even mist and no dripping",
+                "evidence": "定量控油 均匀雾化 不滴油",
                 "image_ref": "Image 1",
             }],
             "use_scenes": [],
-        }))
+        })), _Response(_ark_response({"selling_points": [
+            {"claim": "Precise oil portion control", "evidence": "定量控油", "image_ref": "Image 1"},
+            {"claim": "Uniform atomized oil spray", "evidence": "均匀雾化", "image_ref": "Image 1"},
+            {"claim": "No dripping or residual oil", "evidence": "不滴油不挂油", "image_ref": "Image 1"},
+            {"claim": "Wide 60 degree spray range", "evidence": "60度雾化范围", "image_ref": "Image 1"},
+        ]}))]
 
         result = server.fetch_ark_product_analysis(
             "Product name: Oil Sprayer",
@@ -128,8 +221,12 @@ class ProductAnalysisTests(unittest.TestCase):
             "doubao-test",
         )
 
-        self.assertEqual(["Precise 0.3 ml spray"], [item["claim"] for item in result["selling_points"]])
-        self.assertEqual(1, urlopen.call_count)
+        self.assertEqual([
+            "Precise oil portion control", "Uniform atomized oil spray",
+            "No dripping or residual oil", "Wide 60 degree spray range",
+        ], [item["claim"] for item in result["selling_points"]])
+        self.assertEqual(2, urlopen.call_count)
+        self.assertIn(result["selling_points"][3]["image_url"], result["evidence_urls"])
 
 
 if __name__ == "__main__":

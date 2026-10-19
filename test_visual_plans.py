@@ -8,7 +8,7 @@ import server
 
 class VisualPlanTests(unittest.TestCase):
     def plan(self, index=0, **changes):
-        return dict(dict(groupIndex=index, status="ready", label="Useful Detail", goal="目标",
+        return dict(dict(groupIndex=index, status="ready", label="Useful Product Detail", goal="目标",
                          subject="主体", action="具体动作", composition="构图", basis="依据",
                          difference="区别", reason="", visual_prompt=f"Demonstration {index}", evidenceUrls=[]), **changes)
 

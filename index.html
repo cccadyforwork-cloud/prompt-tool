@@ -13,7 +13,7 @@
         document.documentElement.dataset.theme = "dark";
       }
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20261012-workflow-source-2">
+    <link rel="stylesheet" href="./styles.css?v=20261020-two-extraction-routes-27">
   </head>
   <body>
     <header class="workflow-app-header">
@@ -73,11 +73,8 @@
             <button id="route-local" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="local">
               <span>01</span> 本地分析
             </button>
-            <button id="route-vision" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="vision">
-              <span>02</span> 豆包识图
-            </button>
             <button id="route-web" class="route-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="extractionRoutePreview" data-extraction-route="web">
-              <span>03</span> 联网补充
+              <span>02</span> 豆包分析
             </button>
           </div>
           <article id="extractionRoutePreview" class="extraction-route-preview" role="tabpanel" aria-live="polite"></article>
@@ -98,17 +95,16 @@
           <p id="supplierFilePrefill" class="source-prefill-status" hidden></p>
 
           <div class="source-field-group source-sku-binding-group">
-            <div class="source-binding-heading"><strong>1688资料匹配方式</strong><span>新增选项</span></div>
+            <div class="source-binding-heading"><strong>1688资料匹配方式</strong></div>
             <div class="supplier-binding-mode-tabs" role="group" aria-label="1688资料匹配方式">
               <button type="button" class="supplier-binding-mode" data-supplier-binding-mode="parent" aria-pressed="false"><strong>父体共享</strong><small>同父体 Child 共享通用参数</small></button>
               <button type="button" class="supplier-binding-mode" data-supplier-binding-mode="child" aria-pressed="false"><strong>指定 Child SKU</strong><small>只写入选中的一个子 SKU</small></button>
-              <button type="button" class="supplier-binding-mode is-active" data-supplier-binding-mode="auto" aria-pressed="true"><strong>自动匹配</strong><small>不唯一时要求人工选择</small></button>
             </div>
             <label class="visually-hidden" for="supplierSkuBinding">1688资料具体归属</label>
             <select id="supplierSkuBinding" aria-label="1688资料具体归属" hidden disabled>
-              <option value="">自动判断归属</option>
+              <option value="">请选择资料归属</option>
             </select>
-            <p id="supplierBindingHelp" class="input-help">仅在商品与款式存在唯一高置信度匹配时写入；无法确认时停止解析。</p>
+            <p id="supplierBindingHelp" class="input-help">请选择父体共享或指定 Child SKU，确认这份 1688 资料的归属。</p>
           </div>
 
           <label for="supplierImageListText" class="source-link-label">1688 采集助手图片链接 <span>仅粘贴链接</span></label>
@@ -148,6 +144,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20261012-workflow-source-2"></script>
+    <script src="./app.js?v=20261020-selling-points-30"></script>
   </body>
 </html>
