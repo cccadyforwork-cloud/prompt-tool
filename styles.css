@@ -889,17 +889,72 @@ body {
   font-size: 11px;
 }
 
+.selected-set-download {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.selected-set-download:disabled {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: default;
+}
+
 .selected-set-preview-list {
   display: grid;
   gap: 10px;
 }
 
 .selected-set-preview-item {
+  position: relative;
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
+}
+
+.selected-set-preview-remove {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .7);
+  border-radius: 999px;
+  background: rgba(18, 24, 43, .82);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s ease, background .15s ease;
+}
+
+.selected-set-preview-item:hover .selected-set-preview-remove,
+.selected-set-preview-remove:focus-visible {
+  opacity: 1;
+}
+
+.selected-set-preview-remove:hover {
+  background: #ad3758;
+}
+
+@media (hover: none) {
+  .selected-set-preview-remove { opacity: 1; }
 }
 
 .selected-set-preview-item img {

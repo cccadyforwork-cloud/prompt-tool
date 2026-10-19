@@ -12463,6 +12463,9 @@ function selectedSetPreviewItems() {
       .flatMap((record) => record.images.map((url) => ({
         id: item.id,
         name: item.type.name.replace(/^\s*[0-9]+[A-Z]?\.\s*/, ""),
+        cardKey: item.key,
+        historyId: record.id,
+        roundImageCount: record.images.length,
         url,
       })));
   });
@@ -12473,9 +12476,11 @@ function selectedSetPreviewHtml() {
   return `
     <section class="selected-set-preview" aria-label="已选图组预览">
       <div class="selected-set-preview-head"><strong>已选图组预览</strong><span>${items.length} 张</span></div>
+      <button type="button" class="selected-set-download" ${items.length ? "" : "disabled"}>${items.length ? `下载已选 ${items.length} 张图片` : "选择图片后下载"}</button>
       ${items.length ? `<div class="selected-set-preview-list">${items.map((item) => `
         <figure class="selected-set-preview-item">
           <img src="${escapeHtml(item.url)}" alt="${escapeHtml(`${item.id} ${item.name}`)}" loading="lazy">
+          <button type="button" class="selected-set-preview-remove" data-card-key="${escapeHtml(item.cardKey)}" data-history-id="${escapeHtml(item.historyId)}" aria-label="取消选择${escapeHtml(`${item.id} ${item.name}`)}${item.roundImageCount > 1 ? `所在轮次的 ${item.roundImageCount} 张图片` : ""}" title="${item.roundImageCount > 1 ? `取消本轮 ${item.roundImageCount} 张图片的选择` : "取消选择"}">×</button>
           <figcaption><b>${escapeHtml(item.id)}</b><span>${escapeHtml(item.name)}</span></figcaption>
         </figure>
       `).join("")}</div>` : `<p class="selected-set-preview-empty">勾选右侧生成图片后，将按图组顺序显示在这里。</p>`}
@@ -12489,6 +12494,26 @@ function updateSelectedSetPreview() {
   const wrapper = document.createElement("div");
   wrapper.innerHTML = selectedSetPreviewHtml().trim();
   current.replaceWith(wrapper.firstElementChild);
+}
+
+function bindSelectedSetPreview(grid) {
+  if (grid.dataset.selectedSetPreviewBound === "1") return;
+  grid.dataset.selectedSetPreviewBound = "1";
+  grid.addEventListener("click", (event) => {
+    const download = event.target.closest(".selected-set-download");
+    if (download && grid.contains(download)) {
+      saveGeneratedSet();
+      return;
+    }
+    const button = event.target.closest(".selected-set-preview-remove");
+    if (!button || !grid.contains(button)) return;
+    const cardKey = button.dataset.cardKey;
+    const historyId = button.dataset.historyId;
+    const state = imageGenerationState(cardKey);
+    if (!state.history.some((record) => record.id === historyId)) return;
+    state.selectedHistoryIds = (state.selectedHistoryIds || []).filter((id) => id !== historyId);
+    updateImageGenerator(cardKey);
+  });
 }
 
 function crc32(bytes) {
@@ -13064,6 +13089,7 @@ function renderProductPromptGrid() {
   `;
   bindPromptTaskSelection(grid);
   bindImageGeneratorEvents();
+  bindSelectedSetPreview(grid);
   setBulkGenerationUi(byId("bulkGenerationStatus")?.textContent || "");
   setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
 }
