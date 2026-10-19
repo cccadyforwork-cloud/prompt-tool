@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import getpass
 import ipaddress
 import json
@@ -29,6 +30,7 @@ MAX_IMAGE_PROMPT_CHARS = 30_000
 MAX_IMAGE_REFERENCES = 6
 MAX_PROXY_BYTES = 12 * 1024 * 1024
 MAX_DIMENSION_IMAGE_URLS = 12
+MAX_PRODUCT_ANALYSIS_IMAGE_URLS = 200
 MAX_REFERENCE_MAP_IMAGE_URLS = 40
 MAX_VISION_IMAGE_BYTES = 2 * 1024 * 1024
 SCENE_CACHE_TTL_SECONDS = 60 * 60
@@ -227,7 +229,7 @@ def vision_content_for_images(image_urls: list[str], limit: int = MAX_DIMENSION_
 
 def evidence_image_url(value: object, image_urls: list[str]) -> str:
     image_url = clean_text(value, 500)
-    if allowed_proxy_url(image_url):
+    if image_url in image_urls:
         return image_url
     source = image_url.casefold()
     for index, url in enumerate(image_urls, 1):
@@ -711,9 +713,10 @@ Locally extracted supplier text:
 {local_evidence}
 
 Return JSON only in this exact shape:
-{{"product_name":{{"value":"Exact product name","evidence":"Visible product name","image_ref":"Image 1"}},"attributes":[{{"field":"Material","value":"Verified material","evidence":"Visible material text","image_ref":"Image 1"}}],"dimensions":[{{"label":"Length","value":"100 mm","evidence":"Visible 100 mm label","image_ref":"Image 1"}}],"selling_points":[{{"claim":"Verified concise benefit","evidence":"Visible supporting phrase","image_ref":"Image 2"}}],"use_scenes":[{{"scene":"Verified use environment","evidence":"Visible use phrase","image_ref":"Image 3"}}]}}
+{{"image_selection":[{{"image_ref":"Image 1","keep":true,"image_type":"feature","reason":"Current product feature poster"}}],"product_name":{{"value":"Exact product name","evidence":"Visible product name","image_ref":"Image 1"}},"attributes":[{{"field":"Material","value":"Verified material","evidence":"Visible material text","image_ref":"Image 1"}}],"dimensions":[{{"label":"Length","value":"100 mm","evidence":"Visible 100 mm label","image_ref":"Image 1"}}],"selling_points":[{{"claim":"Verified concise benefit","evidence":"Visible supporting phrase","image_ref":"Image 2"}}],"use_scenes":[{{"scene":"Verified use environment","evidence":"Visible use phrase","image_ref":"Image 3"}}]}}
 
 Rules:
+- Return one image_selection decision for EVERY attached image. Keep current-product photos, structure/details, parameter charts, feature posters and genuine usage images. Reject only clearly unrelated products, shop services, factory/company introductions, pricing or promotion-only images. A feature poster remains useful even if its Chinese text is difficult to read. Use image_type hero/detail/parameter/feature/lifestyle/other and a short specific reason. Do not use SKU color matching to reject a current-product image. The kept images are ONE shared list for fact extraction and the generation candidate area.
 - Use only facts visibly stated or unmistakably shown in the attached images for this exact product.
 - Use the locally extracted text to recover words that are hard to read, but accept them only when consistent with an attached image.
 - Translate extracted values and selling points into concise marketplace English, while copying a short original image phrase into evidence.
@@ -889,6 +892,29 @@ Rules:
                 break
 
     has_evidence = bool(product_name or attributes or dimensions or selling_points or use_scenes)
+    decisions: dict[str, dict[str, object]] = {}
+    raw_selection = parsed.get("image_selection", [])
+    if isinstance(raw_selection, list):
+        for item in raw_selection:
+            if not isinstance(item, dict) or not isinstance(item.get("keep"), bool):
+                continue
+            url = evidence_image_url(item.get("image_ref") or item.get("image_url"), image_urls)
+            if url:
+                decisions[url] = {
+                    "url": url, "keep": item["keep"], "review_status": "confirmed",
+                    "image_type": clean_text(item.get("image_type"), 40) or "other",
+                    "reason": clean_text(item.get("reason"), 180) or "Doubao image review",
+                }
+    selected_images: list[dict[str, object]] = []
+    rejected_images: list[dict[str, object]] = []
+    for url in image_urls:
+        decision = decisions.get(url) or {
+            "url": url, "keep": True, "image_type": "other", "review_status": "pending",
+            "reason": "豆包未完成此图筛选，保留待人工核对",
+        }
+        if url in evidence_urls:
+            decision = {**decision, "keep": True, "review_status": "evidence", "reason": "商品事实或卖点的原图依据"}
+        (selected_images if decision["keep"] else rejected_images).append(decision)
     errors = image_fetch_errors
     if not has_evidence:
         errors = [*errors, "No directly evidenced product information found in the supplied images"]
@@ -899,8 +925,57 @@ Rules:
         "selling_points": selling_points,
         "use_scenes": use_scenes,
         "evidence_urls": list(dict.fromkeys(evidence_urls)),
+        "selected_images": selected_images,
+        "rejected_images": rejected_images,
         "errors": errors,
     }
+
+
+def fetch_ark_product_analysis_batches(
+    identity: str, local_evidence: str, image_urls: list[str], api_key: str, model: str,
+) -> dict[str, object]:
+    batches = [image_urls[index:index + MAX_DIMENSION_IMAGE_URLS]
+               for index in range(0, len(image_urls), MAX_DIMENSION_IMAGE_URLS)]
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="prompt-analysis") as pool:
+        results = list(pool.map(
+            lambda urls: fetch_ark_product_analysis(identity, local_evidence, urls, api_key, model), batches,
+        ))
+    combined: dict[str, object] = {
+        "product_name": {}, "attributes": [], "dimensions": [], "selling_points": [],
+        "use_scenes": [], "evidence_urls": [], "selected_images": [], "rejected_images": [], "errors": [],
+    }
+    seen: dict[str, set[str]] = {key: set() for key in ("attributes", "dimensions", "selling_points", "use_scenes", "evidence_urls")}
+    limits = {"attributes": 7, "dimensions": 8, "selling_points": 4, "use_scenes": 5, "evidence_urls": MAX_PRODUCT_ANALYSIS_IMAGE_URLS}
+    image_decisions: dict[str, dict[str, object]] = {}
+    for batch_number, (batch, result) in enumerate(zip(batches, results), 1):
+        if not combined["product_name"] and result.get("product_name"):
+            combined["product_name"] = result["product_name"]
+        for field in limits:
+            values = result.get(field, [])
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                marker = str(item.get("claim") if field == "selling_points" and isinstance(item, dict) else item).casefold()
+                if marker in seen[field] or len(combined[field]) >= limits[field]:
+                    continue
+                seen[field].add(marker)
+                combined[field].append(item)
+        combined["errors"].extend(f"Batch {batch_number}: {error}" for error in result.get("errors", []))
+        for field, keep in (("selected_images", True), ("rejected_images", False)):
+            for item in result.get(field, []):
+                if isinstance(item, dict) and item.get("url") in batch:
+                    image_decisions[item["url"]] = {**item, "keep": keep}
+    evidence = set(combined["evidence_urls"])
+    for url in image_urls:
+        decision = image_decisions.get(url) or {
+            "url": url, "keep": True, "image_type": "other", "review_status": "pending",
+            "reason": "豆包未完成此图筛选，保留待人工核对",
+        }
+        if url in evidence:
+            decision = {**decision, "keep": True, "review_status": "evidence", "reason": "商品事实或卖点的原图依据"}
+        field = "selected_images" if decision["keep"] else "rejected_images"
+        combined[field].append(decision)
+    return combined
 
 
 def fetch_ark_image_selling_points(
@@ -1375,7 +1450,10 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         image_urls = [
             url for url in dict.fromkeys(image_urls)
             if allowed_proxy_url(url)
-        ][:MAX_DIMENSION_IMAGE_URLS]
+        ]
+        if len(image_urls) > MAX_PRODUCT_ANALYSIS_IMAGE_URLS:
+            self._send_json({"errors": [f"Too many supplier images ({len(image_urls)}); maximum {MAX_PRODUCT_ANALYSIS_IMAGE_URLS}"], "selected_images": []}, 413)
+            return
         product_facts = (
             ("Product name", clean_text(payload.get("productName"))),
             ("Selected specification", clean_text(payload.get("selectedSpec"))),
@@ -1391,7 +1469,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
             return
         model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
         force_refresh = payload.get("forceRefresh") is True
-        cache_key = json.dumps({"schemaVersion": "detail-selling-points-v3", "model": model, "identity": identity, "localEvidence": local_evidence, "imageUrls": image_urls}, ensure_ascii=False).casefold()
+        cache_key = json.dumps({"schemaVersion": "shared-image-selection-v5", "model": model, "identity": identity, "localEvidence": local_evidence, "imageUrls": image_urls}, ensure_ascii=False).casefold()
         cached = PRODUCT_ANALYSIS_CACHE.get(cache_key)
         if not force_refresh and cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
             self._send_json(cached[1])
@@ -1409,7 +1487,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
                 "errors": ["ARK_API_KEY unavailable or invalid"],
             })
             return
-        result = fetch_ark_product_analysis(identity, local_evidence, image_urls, api_key, model)
+        result = fetch_ark_product_analysis_batches(identity, local_evidence, image_urls, api_key, model)
         has_evidence = bool(
             result.get("product_name")
             or result.get("attributes")

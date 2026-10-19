@@ -114,6 +114,7 @@ async function main() {
       sellingPointVisualPlan: {plans: [{groupIndex: 0, humanDecision: 'show', status: 'ready'}]}}],
     fieldOverridesBySku: {}, appliedSellingPointOverridesBySku: {},
     referenceImagesBySku: {}, referenceImageMetaBySku: {}, availableReferenceImageUrls: [],
+    supplierImageSourcePresent: true, latestReferenceMappingStatus: '',
     savedReferenceSelectionByCard: {}, imageGenerationByCard: {}, bundleStateBySku: {},
     supplierSourceFileNames: [], amazonTemplateSourceFileName: '', competitorSellingPointCandidates: [],
     competitorSellingPointSourceNames: [], competitorDimensionList: '', competitorDimensionSourceNames: [], competitorProductWeight: '',
@@ -141,6 +142,7 @@ async function main() {
   assert.equal(snapshot.extractedProducts[0].id, 'EXTRACTED-PRODUCT-1');
   assert.equal(snapshot.extractedProducts[0].sellingPointVisualPlan.plans[0].humanDecision, 'show');
   assert.equal(snapshot.workspaceBinding.sku, 'SKU-A');
+  assert.equal(snapshot.supplierImageSourcePresent, true);
   assert.equal(vm.runInContext('snapshotMatchesWorkspace(JSON.parse(readTabStorage(WORKSPACE_STORAGE_KEY)))', refreshed.sandbox), true);
   assert.equal(refreshed.inputs.supplierFile.files[0].name, '1688.html');
   assert.equal(refreshed.inputs.supplierImageListText.value, 'https://example.invalid/product.jpg');
