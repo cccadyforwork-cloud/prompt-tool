@@ -133,13 +133,18 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       {url: urls[3], image_type: 'parameter', sku_match: 'exact'},
     ];
     candidates.sellingPointActionDependency = (claims) => /spray/i.test(claims.join(' ')) ? 4 : 0;
-    candidates.sellingPointGroupForImageTitle = () => ['Precise control'];
-    candidates.visualPlanForPoints = () => ({route: 'product_proof'});
+    candidates.sellingPointGroupForImageTitle = (_template, id) => [id === '5' ? 'Spray range' : 'Precise control'];
+    candidates.visualPlanForPoints = (points) => ({route: points[0] === 'Spray range' ? 'scene_use' : 'product_proof'});
     const proofRefs = vm.runInContext(
-      `generationReferencesForCard({id:'5'}, {sellingPointVisualEvidence:[{claim:'Spray range',imageUrl:'${urls[2]}'}],useBehavior:{mode:'active',imageUrl:'${urls[1]}'}}, {id:'green'}, ['${urls[1]}','${urls[2]}','${urls[0]}','${urls[3]}'])`,
+      `generationReferencesForCard({id:'6'}, {sellingPointVisualEvidence:[{claim:'Spray range',imageUrl:'${urls[2]}'}],useBehavior:{mode:'active',imageUrl:'${urls[1]}'}}, {id:'green'}, ['${urls[1]}','${urls[2]}','${urls[0]}','${urls[3]}'])`,
       candidates,
     );
     assert.deepEqual([...proofRefs], [urls[0]], 'product-only feature excludes use posters and unrelated feature scenes');
+    const sceneRefs = vm.runInContext(
+      `generationReferencesForCard({id:'5'}, {sellingPointVisualEvidence:[{claim:'Spray range',imageUrl:'${urls[2]}'}],useBehavior:{mode:'active',imageUrl:'${urls[1]}'}}, {id:'green'}, ['${urls[1]}','${urls[2]}','${urls[0]}','${urls[3]}'])`,
+      candidates,
+    );
+    assert.deepEqual([...sceneRefs], [urls[1], urls[0]], 'scene-use feature places the verified operation original before SKU identity');
     const ruleStart = source.indexOf('function sourceUseBehaviorRule(');
     const ruleEnd = source.indexOf('function buildPromptSections(', ruleStart);
     assert.ok(ruleStart >= 0 && ruleEnd > ruleStart);
@@ -157,12 +162,30 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     const routes = vm.createContext({});
     vm.runInContext(source.slice(routeStart, routeEnd), routes);
     const oilClaims = '[["Quantitative oil control supports low-fat healthy cooking"],["Wide 60 degree atomization spray range"]]';
-    assert.equal(vm.runInContext(`sellingPointVisualRoute("scene", 0, 2, ${oilClaims}[0], {useBehavior:{imageUrl:"https://example.com/use.jpg"}}, ${oilClaims})`, routes), 'product_proof');
-    assert.equal(vm.runInContext(`sellingPointVisualRoute("scene", 1, 2, ${oilClaims}[1], {useBehavior:{imageUrl:"https://example.com/use.jpg"}}, ${oilClaims})`, routes), 'scene_use');
-    assert.equal(vm.runInContext('sellingPointVisualRoute("scene", 0, 2, ["BPA-free PP material"], {useBehavior:{imageUrl:"https://example.com/use.jpg"}}, [["BPA-free PP material"],["Produces uniform atomized oil spray"]])', routes), 'product_proof');
-    assert.equal(vm.runInContext('sellingPointVisualRoute("scene", 1, 2, ["Produces uniform atomized oil spray"], {}, [["BPA-free PP material"],["Produces uniform atomized oil spray"]])', routes), 'flexible');
+    assert.equal(vm.runInContext(`sellingPointVisualRoute("scene", 0, 2, ${oilClaims}[1], {useBehavior:{imageUrl:"https://example.com/use.jpg"}}, ${oilClaims})`, routes), 'scene_use');
+    assert.equal(vm.runInContext(`sellingPointVisualRoute("scene", 1, 2, ${oilClaims}[0], {useBehavior:{imageUrl:"https://example.com/use.jpg"}}, ${oilClaims})`, routes), 'product_proof');
+    assert.equal(vm.runInContext('sellingPointVisualRoute("scene", 0, 2, ["Produces uniform atomized oil spray"], {}, [["Produces uniform atomized oil spray"],["BPA-free PP material"]])', routes), 'flexible');
+    assert.equal(vm.runInContext('sellingPointVisualRoute("scene", 1, 2, ["BPA-free PP material"], {}, [["Produces uniform atomized oil spray"],["BPA-free PP material"]])', routes), 'product_proof');
     assert.equal(vm.runInContext('sellingPointVisualRoute("feature", 0, 2, ["Soft PP material"], {useBehavior:{imageUrl:"https://example.com/use.jpg"}}, [["Soft PP material"],["Easy folding for storage"]])', routes), 'product_proof');
     assert.equal(vm.runInContext('sellingPointVisualRoute("feature", 1, 2, ["Easy folding for storage"], {useBehavior:{imageUrl:"https://example.com/use.jpg"}}, [["Soft PP material"],["Easy folding for storage"]])', routes), 'scene_use');
+    const selectionStart = source.indexOf('const sellingPointSlotIdsByTemplate =');
+    const selectionEnd = source.indexOf('function clampSellingPointTitle(', selectionStart);
+    assert.ok(selectionStart >= 0 && selectionEnd > selectionStart);
+    const selectedClaims = ['Quantitative oil control', 'Wide 60 degree atomization spray range'];
+    const selectedSku = {sellingPointImageChoices: {scene: selectedClaims.map((claim) => claim.toLowerCase())}};
+    const selection = vm.createContext({
+      selectedSku: () => selectedSku,
+      selectedTemplate: () => ({id: 'scene', imageTypes: [{id: '5'}, {id: '6'}]}),
+      sellingPointCandidates: () => selectedClaims,
+      comparablePromptItem: (claim) => claim.toLowerCase(),
+      sellingPointActionDependency: (claims) => /spray|atomization/i.test(claims.join(' ')) ? 4 : 1,
+    });
+    vm.runInContext(source.slice(selectionStart, selectionEnd), selection);
+    assert.deepEqual([...vm.runInContext('sellingPointImageSelection().indices', selection)], [1, 0],
+      'existing product-first selection moves the action claim to scene image 5');
+    selectedSku.sceneSellingPointOrderV2 = true;
+    assert.deepEqual([...vm.runInContext('sellingPointImageSelection().indices', selection)], [0, 1],
+      'an explicit new-order selection remains in the chosen slots');
     const visualRuleStart = source.indexOf('function sellingPointClaimCopyRule(');
     const visualRuleEnd = source.indexOf('function conciseSceneModulePrompt(', visualRuleStart);
     assert.ok(visualRuleStart >= 0 && visualRuleEnd > visualRuleStart);
@@ -256,7 +279,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       splitUseSceneText: (value) => String(value).split(';').filter(Boolean),
       sellingPointGroups: (_facts, index) => [index === 0 ? 'Claim A' : 'Claim B'],
       visualPlanForPoints: () => null,
-      visualPlanContext: () => ({routes: ['product_proof', 'scene_use']}),
+      visualPlanContext: () => ({routes: ['scene_use', 'product_proof']}),
       sellingPointHeadlineForClaim: (claim) => claim,
       sellingPointBodyCopy: (claim) => `${claim} explained.`,
       sellingPointVisualRouteRule: (route) => route,
@@ -292,8 +315,10 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     assert.match(scenePrompts['3'], /four-view studio study/);
     assert.match(scenePrompts['4'], /Height 4 in/);
     assert.match(scenePrompts['4'], /SECONDARY COUNT LABEL/);
-    assert.match(scenePrompts['5'], /PRODUCT PROOF|product_proof/);
+    assert.match(scenePrompts['5'], /Claim A/);
+    assert.match(scenePrompts['5'], /OPERATION: Follow source operation and outlet/);
     assert.match(scenePrompts['6'], /Claim B/);
+    assert.match(scenePrompts['6'], /PRODUCT PROOF|product_proof/);
     assert.doesNotMatch(scenePrompts['6'], /Show the source-supported spray interaction/);
     assert.match(scenePrompts['7'], /COMPACT WHITE CIRCULAR product inset/);
     summary.assortmentFacts = {...summary.regularFacts,skuUnitQuantity:0,isDifferentDesignSet:true,differentDesignSetCount:3};

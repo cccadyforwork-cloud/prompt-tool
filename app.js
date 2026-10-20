@@ -58,8 +58,8 @@ const templates = [
       { id: "2", name: "2. 多场景 / 多用途图", promptName: "2. Multi-Scene Usage Image" },
       { id: "3", name: "3. 多角度图", promptName: "3. Multi-Angle Product Image" },
       { id: "4", name: "4. 产品说明图", promptName: "4. Product Explanation Image" },
-      { id: "5", name: "5. 卖点图 5", promptName: "5. Selling Point Image 5" },
-      { id: "6", name: "6. 卖点图 6", promptName: "6. Selling Point Image 6" },
+      { id: "5", name: "5. 场景使用卖点图", promptName: "5. Scene-Use Selling Point Image" },
+      { id: "6", name: "6. 产品本体卖点图", promptName: "6. Product-Only Selling Point Image" },
       { id: "7", name: "7. 卖点总览图", promptName: "7. Feature Summary Image" },
     ],
   },
@@ -9803,6 +9803,14 @@ function sellingPointImageSelection(facts = {}, sku = selectedSku(), template = 
     }
     indices.push(pointIndex);
   });
+  // Older scene workspaces chose the product-only point for 5 and the use
+  // point for 6. Move the more action-dependent claim into the new use slot
+  // until the operator explicitly edits the two choices in this order.
+  if (template.id === "scene" && !sku?.sceneSellingPointOrderV2 && indices.length === 2
+      && indices[0] >= 0 && indices[1] >= 0
+      && sellingPointActionDependency([points[indices[1]]]) > sellingPointActionDependency([points[indices[0]]])) {
+    indices.reverse();
+  }
   return { points, slots, indices };
 }
 
@@ -9970,6 +9978,10 @@ function sellingPointActionDependency(points = []) {
 }
 
 function sellingPointVisualRoute(templateId, groupIndex, groupCount, points = [], facts = {}, groups = []) {
+  if (templateId === "scene") {
+    if (groupIndex === 1) return "product_proof";
+    return facts.useBehavior?.imageUrl ? "scene_use" : "flexible";
+  }
   if (groupCount < 2 || !["scene", "feature"].includes(templateId)) return "flexible";
   const selectedGroups = groups.length === groupCount ? groups : Array.from({length: groupCount}, (_, index) => index === groupIndex ? points : []);
   const scores = selectedGroups.map(sellingPointActionDependency);
@@ -9998,7 +10010,7 @@ function visualPlanContext(facts) {
   const groups = sellingPointDisplayGroups(facts);
   const routes = groups.map((points, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length, points, facts, groups));
   const evidence = facts.sellingPointVisualEvidence || [];
-  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 11 };
+  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 12 };
 }
 
 function currentVisualPlans(facts) {
@@ -11883,6 +11895,8 @@ function generationReferencesForCard(type, facts, sku, selected, templateId = se
     || images[0];
   const operationCandidates = images.filter((url) => isOperation(url))
     .sort((a, b) => {
+      if (a === facts.useBehavior?.imageUrl) return -1;
+      if (b === facts.useBehavior?.imageUrl) return 1;
       const score = (url) => actionScore(url)
         + (/(?:feature|proof|demonstration)/.test(imageType(url)) ? 2 : 0)
         + (id === "1B" && /(?:lifestyle|use|scene)/.test(imageType(url)) ? 4 : 0)
@@ -13230,6 +13244,7 @@ function renderParameterPromptGrid() {
       ...(sku.sellingPointImageChoices || {}),
       [selectedTemplate().id]: indices.map((index) => index >= 0 ? comparablePromptItem(selection.points[index]) : ""),
     };
+    if (selectedTemplate().id === "scene") sku.sceneSellingPointOrderV2 = true;
     visualPlanMessages.delete(sku.id);
     renderAll();
   }));
