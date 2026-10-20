@@ -136,6 +136,7 @@ const NO_REFERENCE_SELLING_POINT_MESSAGE = "没有参考卖点信息";
 let promptStore = [];
 let imageGenerationByCard = {};
 let savedReferenceSelectionByCard = {};
+let savedImageSettingsByCard = {};
 const referenceVisualFingerprintCache = new Map();
 const referenceVisualDedupeSignatureBySku = new Map();
 let lastReferenceSelectionCardKey = "";
@@ -8896,12 +8897,12 @@ function sourceUseBehaviorRule(facts) {
   const behavior = facts?.useBehavior;
   if (behavior?.mode === "active" && behavior.action && behavior.imageUrl) {
     return compactPromptItems([
-      "SOURCE-VERIFIED USE: Reproduce the operating logic shown in the attached supplier demonstration image; use the selected SKU references for exact product color and appearance.",
+      "SOURCE-VERIFIED USE: Treat the attached supplier demonstration as the geometry template for the hand, product tilt, outlet and effect path. Preserve that physical relationship; change only the scene, target and selected SKU appearance.",
       `Visible action: ${behavior.action}`,
       behavior.trigger && `Actuation/contact point: ${behavior.trigger}`,
       behavior.outputOrigin && `Effect must start at: ${behavior.outputOrigin}`,
       behavior.outputDirection && `Effect direction: ${behavior.outputDirection}`,
-      "Keep any shown effect physically connected to its pictured outlet/contact point; never invent a different outlet or detached effect.",
+      "Start the visible effect flush at that outlet, with no gap. Never emit it from a button, hand, side wall or another opening.",
     ], "", 8);
   }
   if (behavior?.mode === "passive" && behavior.action && behavior.imageUrl) {
@@ -11000,9 +11001,9 @@ function sellingPointProofInsetRule(points, facts = {}) {
     return "PROOF INSET: Omit any diagram when the selected claim lacks a matching visual fact; the product photograph and copy carry the claim.";
   }
   const claim = claims.join(" + ");
-  const quantityClaim = /(?:\bquantit\w*\b|\bdos\w*\b|\bportion\w*\b|\bcontrolled?\b|\bmeasured?\b|定量|控量|控油|剂量)/i.test(claim);
+  const quantityClaim = /(?:\bquantit\w*\b|\bdos\w*\b|\bportion\w*\b|\bcontrol\w*\b|\bprecis\w*\b|\bmeasured?\b|定量|控量|控油|剂量)/i.test(claim);
   const operationDetail = sourceOperation
-    ? `If any operation cue is shown, keep ${behavior.trigger || "the verified trigger"} and ${behavior.outputOrigin || "the verified outlet"} on the SAME main product${behavior.outputDirection ? `, with output going ${behavior.outputDirection}` : ""}.`
+    ? "This is a static product portrait: do not depict a hand, use action, emitted output or performance test."
     : "Show only a matching visible detail from source evidence.";
   const proofDetail = quantityClaim && sourceOperation && behavior.outputOrigin
     ? "Show the whole source-accurate product at an angle that reveals its real outlet/contact point and control parts. The supporting sentence explains controlled portioning; a static photograph need not simulate the output. Do not draw a detached part, duplicate product, unsupported output, generic action arrow, exact amount or repeatability test."
@@ -11017,7 +11018,7 @@ function sellingPointClaimVisualRule(points, facts = {}, route = "flexible") {
   const claim = limitedSellingPoints(points, 2).join(" + ");
   if (!claim) return "Use only verified product details.";
   if (route === "product_proof") {
-    return `CLAIM-SPECIFIC VISUAL: ${claim}. Make authentic material, finish and claim-relevant detail the visual priority; a verified effect may appear directly on the product. Keep glossy or translucent edges crisp with controlled highlights. ${sellingPointProofInsetRule(points, facts)} Use an editorial title and small supporting sentence with ample negative space, aligned to the product rather than boxed or stickered.`;
+    return `CLAIM-SPECIFIC VISUAL: ${claim}. Make authentic material, finish and claim-relevant detail the visual priority; only a source-backed passive surface effect may appear directly on the product. Keep glossy or translucent edges crisp with controlled highlights. ${sellingPointProofInsetRule(points, facts)} Use an editorial title and small supporting sentence with ample negative space, aligned to the product rather than boxed or stickered.`;
   }
   return `CLAIM-SPECIFIC VISUAL: The selected benefit is ${claim}. Make the main demonstration, any supporting detail and the caption all communicate that same benefit. Use source-verified operation and physical effects only; do not insert a generic action cue that fails to explain the selected point. Keep the current product recognizable and its real material, surface and color convincingly rendered.`;
 }
@@ -11076,13 +11077,13 @@ function conciseSceneModulePrompt(typeId, facts) {
     const activeSceneItems = sceneItems.filter((item) => !/(?:storage|counter|shelf|display|tabletop|收纳|台面|陈列)/i.test(item));
     const operationPanels = facts.useBehavior?.mode === "active"
       ? activeSceneItems.length >= 2
-        ? "at least TWO panels must visibly show the product being operated on different subjects, with different environments and hand positions."
+        ? "TWO panels visibly show the product being operated on different subjects, with different environments and hand positions."
         : "Make the documented ongoing interaction the lead scene; use additional distinct contexts only when they fit the current product."
       : facts.useBehavior?.mode === "passive"
         ? "Show distinct natural interactions or placements; do not invent an active mechanism."
         : "Show distinct contexts without inventing an active mechanism or output.";
     blocks.push(sceneItems.length
-      ? `TASK: Four equal 2x2 panels showing different real uses of the same current product. Show the distinct active uses first${activeSceneItems.length ? `: ${activeSceneItems.join("; ")}` : ""}; ${facts.isDifferentDesignSet ? "distribute panels across different actual referenced set members before repeating one member; " : ""}${operationPanels} Any remaining panel must show a different supplier-pictured function or compatible contents. If the supplier references show a wide open filling mouth, depict liquid being poured into that OPEN product; if they show different compatible liquids, a contents display may be used. If neither is pictured, use another active use scene. A sealed product simply standing in storage is NOT a use scene and must never fill a panel. Keep the product large and recognizable in every panel, with no repeated near-identical scene. ${approvedScenes} In EVERY active panel: ${sourceUseBehaviorRule(facts)}`
+      ? `TASK: Four equal 2x2 panels showing different real uses of the same current product. Prioritize distinct active uses${activeSceneItems.length ? ` from: ${activeSceneItems.join("; ")}` : ""}; ${facts.isDifferentDesignSet ? "distribute panels across different actual referenced set members before repeating one member; " : ""}${operationPanels} Use the remaining two panels for different supplier-pictured preparation or compatible contents when documented. If the references show a wide filling mouth, pour liquid into the OPEN current product; if they show compatible liquids, display those contents with the current product. When such evidence is absent, use another active use scene. A sealed product simply standing in storage is NOT a use scene and must never fill a panel. Keep the product large and recognizable in every panel, with no repeated near-identical scene. ${approvedScenes} In EVERY active panel: ${sourceUseBehaviorRule(facts)}`
       : "TASK: Four equal 2x2 product-only views on a neutral studio background; no people, use actions or invented scenes.");
   } else if (typeId === "3") {
     blocks.push(facts.isDifferentDesignSet
@@ -11131,7 +11132,7 @@ function conciseSceneModulePrompt(typeId, facts) {
     const heroUseRule = hasOperationEvidence
       ? `The LEFT LARGE HERO must capture the product actually operating in a source-supported use scene. ${facts.useBehavior.outputOrigin ? "Show the real output/effect visibly reaching its subject, with the outlet and target together at readable scale." : "Show the real action clearly; do not invent an output/effect whose origin is unknown."} ${sourceUseBehaviorRule(facts)} Any pictured effect must start at the verified outlet/contact point, never at a button, hand or invented opening.`
       : "The left large hero shows the selected product in an approved lifestyle scene; invent no operation or effect without source evidence.";
-    blocks.push(`TASK: Premium Amazon feature-summary poster, combining approved selling points with real use scenes. Keep the established composition: one large lifestyle hero photograph on the LEFT (about 60–65% width), and exactly THREE photographic proof windows stacked on the RIGHT (about 35–40% width). ${heroUseRule} ${summaryActionScenes.length ? `Use distinct approved contexts: ${summaryActionScenes.join("; ")}.` : ""} Add one COMPACT WHITE CIRCULAR product inset at the LOWER LEFT of the hero photograph, separate from the three right windows. ${lowerLeftCountRule} Arrange the hero action so this circle does not cover the operating product, its outlet/contact point, effect path, or target; the circle is a secondary quantity/product reminder, never the main picture. The first right window shows a distinct approved use context or a relevant product moment; do not repeat the hero composition. Use the other two right windows for product details, compatible contents, preparation, or another distinct approved context as appropriate for this product. Do not require or forbid an active effect in a right window; whenever one is shown, preserve the same pictured product mechanism, outlet/contact point and effect direction as the operation evidence. A plain product standing in storage does not demonstrate a selling point and must not occupy a proof window. Every window must show the current product or a recognizable close-up of a real detail. Do not turn the right column into text-only rows. ${approvedScenes}`);
+    blocks.push(`TASK: Premium Amazon feature-summary poster, combining approved selling points with real use scenes. Keep the established composition: one large lifestyle hero photograph on the LEFT (about 60–65% width), and exactly THREE photographic proof windows stacked on the RIGHT (about 35–40% width). ${heroUseRule} ${summaryActionScenes.length ? `Use distinct approved contexts: ${summaryActionScenes.join("; ")}.` : ""} Add one COMPACT WHITE CIRCULAR product inset at the LOWER LEFT of the hero photograph, separate from the three right windows. ${lowerLeftCountRule} Arrange the hero action so this circle does not cover the operating product, its outlet/contact point, effect path, or target; the circle is a secondary quantity/product reminder, never the main picture. The first right window shows a distinct approved use context or a relevant product moment; do not repeat the hero composition. Use the other two right windows for product details, compatible contents, preparation, or another distinct approved context as appropriate for this product. Reserve emitted effects for the large left hero; the right windows show source-backed preparation, compatible contents, product details or an approved scene without an emitted effect. A plain product standing in storage does not demonstrate a selling point and must not occupy a proof window. Every window must show the current product or a recognizable close-up of a real detail. Do not turn the right column into text-only rows. ${approvedScenes}`);
     blocks.push(`SELLING POINTS: ${points.length ? points.join("; ") : "No verified selling points; omit feature labels."} Use one short English headline and concise 1–3-word labels for the approved benefits. Place any output or spray claim beside the large left action, and place other labels by their relevant real scene or detail. Keep the main image, three windows and labels airy and editorial, with controlled light and source-accurate product texture and color. Do not invent claims, components, extra SKU variants or unverified actions.`);
   }
   blocks.push(isMain || ["2", "3"].includes(typeId)
@@ -11587,9 +11588,11 @@ function imageGenerationState(cardKey) {
       ? persistedImageHistory[cardKey].map(normalizeGenerationHistoryRecord).filter(Boolean)
       : [];
     const latest = history[history.length - 1] || null;
+    const savedSettings = savedImageSettingsByCard[cardKey] || {};
     imageGenerationByCard[cardKey] = {
-      model: latest?.model || "gpt-image-2",
-      size: latest?.size || "1024x1024",
+      model: ["gpt-image-2", "gpt-image-2-vip", "nano-banana-pro"].includes(savedSettings.model)
+        ? savedSettings.model : (latest?.model || "gpt-image-2"),
+      size: savedSettings.size || latest?.size || "1024x1024",
       status: "idle",
       message: "",
       images: latest?.images || [],
@@ -11650,18 +11653,18 @@ function persistManualReferences(cardKey) {
   durablePut(MANUAL_REFERENCES_STORAGE_KEY, savedManualReferencesByCard);
 }
 
-function recordGeneratedImages(cardKey, images) {
+function recordGeneratedImages(cardKey, images, submitted = null) {
   const state = imageGenerationState(cardKey);
   const item = promptStore.find((entry) => entry.key === cardKey);
   const record = normalizeGenerationHistoryRecord({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
     images,
-    model: state.model,
-    size: state.size,
-    promptSnapshot: item?.promptEn || "",
-    referenceSnapshot: [...state.selectedReferences],
-    referenceCount: state.selectedReferences.length,
+    model: submitted?.model || state.model,
+    size: submitted?.size || state.size,
+    promptSnapshot: submitted?.prompt || item?.promptEn || "",
+    referenceSnapshot: submitted?.references || [...state.selectedReferences],
+    referenceCount: submitted?.references?.length ?? state.selectedReferences.length,
   });
   if (!record) return;
   state.history = [...(state.history || []), record];
@@ -11842,6 +11845,79 @@ function referenceImageCandidatesForCard(type, facts, sku) {
       ...mapped.filter((url) => !competitorUrls.has(url)),
     ]),
   };
+}
+
+// Give each reference one job.  A use photograph is useful evidence for an
+// action, but it should not turn a product-only card into another use scene.
+// Conversely, an action card needs the clearest action evidence before the
+// clean SKU photograph.  This rule applies to every product and template.
+function generationReferencesForCard(type, facts, sku, selected, templateId = selectedTemplate().id) {
+  const images = uniqueReferenceImageUrls(selected || []).slice(0, MAX_SELECTED_REFERENCES);
+  if (templateId !== "scene" || !images.length) return images;
+  const id = String(type?.id || "");
+  const metaByUrl = new Map(referenceMetaItemsForSku(sku?.id).map((item) => [item.url, item]));
+  const pointEvidence = facts.sellingPointVisualEvidence || [];
+  const actionScore = (url) => Math.max(0, ...pointEvidence
+    .filter((item) => item.imageUrl === url)
+    .map((item) => sellingPointActionDependency([item.claim])));
+  const imageType = (url) => String(metaByUrl.get(url)?.image_type || "").toLowerCase();
+  const isOperation = (url) => url === facts.useBehavior?.imageUrl
+    || /(?:lifestyle|use|scene|demonstration)/.test(imageType(url))
+    || actionScore(url) >= 3;
+  // An explicitly uploaded image can be a human-approved visual exemplar.
+  // Keep supplier evidence first, then let the exemplar guide complex layouts.
+  const manual = images.filter((url) => /^data:image\//i.test(url));
+  const clean = images.filter((url) => !isOperation(url) && !manual.includes(url));
+  const identityRank = (url) => {
+    const item = metaByUrl.get(url) || {};
+    const typeText = `${item.image_type || ""} ${(item.best_for || []).join(" ")}`.toLowerCase();
+    const match = String(item.sku_match || "").toLowerCase();
+    const exact = match === "exact" ? 20 : 0;
+    if (/(?:hero|main_product|overview|product_photo)/.test(typeText)) return exact + 12;
+    if (/(?:detail|close|multi_angle)/.test(typeText)) return exact + 9;
+    if (/(?:parameter|dimension|structure)/.test(typeText)) return exact + 4;
+    return exact;
+  };
+  const identity = [...clean].sort((a, b) => identityRank(b) - identityRank(a))[0]
+    || images.find((url) => url !== facts.useBehavior?.imageUrl)
+    || images[0];
+  const operationCandidates = images.filter((url) => isOperation(url))
+    .sort((a, b) => {
+      const score = (url) => actionScore(url)
+        + (/(?:feature|proof|demonstration)/.test(imageType(url)) ? 2 : 0)
+        + (id === "1B" && /(?:lifestyle|use|scene)/.test(imageType(url)) ? 4 : 0)
+        + (url === facts.useBehavior?.imageUrl ? 1 : 0);
+      return score(b) - score(a);
+    });
+  const operation = operationCandidates[0] || facts.useBehavior?.imageUrl || "";
+  const supportingOperation = operationCandidates.find((url) => url !== operation) || "";
+  const compact = (...urls) => uniqueReferenceImageUrls(urls.filter(Boolean)).slice(0, MAX_SELECTED_REFERENCES);
+  const nonIdentityClean = clean.filter((url) => url !== identity);
+  const parameter = nonIdentityClean.filter((url) => /(?:parameter|dimension|measurement|spec)/.test(imageType(url)));
+  const otherProof = nonIdentityClean.filter((url) => !parameter.includes(url));
+  const staticDetails = otherProof.filter((url) => /(?:detail|close|structure|material|texture|hero|main)/.test(imageType(url)));
+  const measuredEvidence = new Set((sku?.sourceImageEvidence || [])
+    .filter((item) => /(?:dimension|capacity|weight|material)/i.test(String(item.field || "")))
+    .map((item) => item.imageUrl));
+  const isProductProof = ["5", "6"].includes(id) && (() => {
+    const points = sellingPointGroupForImageTitle(templateId, id, facts);
+    const slot = id === "5" ? 0 : 1;
+    return (visualPlanForPoints(points, facts)?.route
+      || visualPlanContext(facts).routes[slot]) === "product_proof";
+  })();
+  if (id === "1A") return facts.isDifferentDesignSet
+    ? compact(identity, ...nonIdentityClean)
+    : compact(identity);
+  if (id === "3") return compact(identity, ...parameter, ...staticDetails).slice(0, 2);
+  if (id === "4") return compact(identity,
+    ...parameter.filter((url) => measuredEvidence.has(url)),
+    ...parameter).slice(0, 2);
+  if (isProductProof) return compact(identity, ...staticDetails).slice(0, 2);
+  if (id === "1B") return compact(operation, supportingOperation, identity);
+  if (["5", "6"].includes(id)) return compact(operation, identity);
+  if (id === "2") return compact(operation, ...manual, ...(manual.length ? [] : [identity]), ...otherProof).slice(0, 4);
+  if (id === "7") return compact(operation, ...manual, ...(manual.length ? [] : [supportingOperation]), identity, ...otherProof).slice(0, 4);
+  return images;
 }
 
 function scheduleReferenceVisualDeduplication(skuId, urls) {
@@ -12188,7 +12264,7 @@ function openReferenceLightbox(reference, label = "参考图") {
   overlay.querySelector(".reference-lightbox-close")?.focus();
 }
 
-async function pollImageGeneration(cardKey, taskId) {
+async function pollImageGeneration(cardKey, taskId, submitted) {
   const state = imageGenerationState(cardKey);
   for (let attempt = 0; attempt < 120; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 2500));
@@ -12198,7 +12274,7 @@ async function pollImageGeneration(cardKey, taskId) {
     if (images.length) {
       state.status = "success";
       state.message = `生成完成，共 ${images.length} 张。`;
-      recordGeneratedImages(cardKey, images);
+      recordGeneratedImages(cardKey, images, submitted);
       updateImageGenerator(cardKey);
       return;
     }
@@ -12238,6 +12314,13 @@ async function generateImageForCard(cardKey) {
     state.availableReferences = Array.from(new Set([...state.selectedReferences, ...state.availableReferences]));
   }
   prioritizeSelectedOperationEvidence(state, selectedTemplate().id, item.type, facts, sku);
+  state.selectedReferences = generationReferencesForCard(item.type, facts, sku, state.selectedReferences);
+  const submitted = {
+    model: state.model,
+    size: state.size,
+    prompt: item.promptEn,
+    references: [...state.selectedReferences],
+  };
   state.status = "submitting";
   state.message = "正在提交生图任务…";
   updateImageGenerator(cardKey);
@@ -12245,13 +12328,13 @@ async function generateImageForCard(cardKey) {
     const payload = await imageApiJson("/api/generate-image", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: state.model, prompt: item.promptEn, aspectRatio: state.size, images: state.selectedReferences }),
+      body: JSON.stringify({ model: submitted.model, prompt: submitted.prompt, aspectRatio: submitted.size, images: submitted.references }),
     });
     const images = normalizeGeneratedImages(payload);
     if (images.length) {
       state.status = "success";
       state.message = `生成完成，共 ${images.length} 张。`;
-      recordGeneratedImages(cardKey, images);
+      recordGeneratedImages(cardKey, images, submitted);
       updateImageGenerator(cardKey);
       return;
     }
@@ -12260,7 +12343,7 @@ async function generateImageForCard(cardKey) {
     state.status = "processing";
     state.message = "任务已提交，正在等待图片…";
     updateImageGenerator(cardKey);
-    await pollImageGeneration(cardKey, taskId);
+    await pollImageGeneration(cardKey, taskId, submitted);
   } catch (error) {
     state.status = "failed";
     state.message = error?.message || "图片生成失败";
@@ -12310,7 +12393,7 @@ function automaticReferencesForPromptItem(item) {
   const data = currentPromptData(sku);
   const facts = promptFacts(sku, data);
   const candidates = referenceImageCandidatesForCard(item.type, facts, sku);
-  return Array.from(new Set(candidates.matched)).slice(0, MAX_SELECTED_REFERENCES);
+  return generationReferencesForCard(item.type, facts, sku, candidates.matched);
 }
 
 function imageTaskStatusLabel(state) {
@@ -12801,10 +12884,14 @@ function bindImageGeneratorSection(section) {
   section.querySelector(".image-model-select")?.addEventListener("change", (event) => {
     state.model = event.target.value;
     state.size = state.model === "nano-banana-pro" ? "1K" : "1024x1024";
+    savedImageSettingsByCard[cardKey] = { model: state.model, size: state.size };
+    persistWorkspaceSnapshot();
     updateImageGenerator(cardKey);
   });
   section.querySelector(".image-size-select")?.addEventListener("change", (event) => {
     state.size = event.target.value;
+    savedImageSettingsByCard[cardKey] = { model: state.model, size: state.size };
+    persistWorkspaceSnapshot();
   });
   section.querySelectorAll(".reference-image-checkbox").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
@@ -13222,6 +13309,11 @@ function persistWorkspaceSnapshot() {
       ...Object.fromEntries(Object.entries(imageGenerationByCard).map(([key, state]) => [key,
         state.selectedReferences.filter((url) => /^https?:\/\//i.test(url)).slice(0, MAX_SELECTED_REFERENCES)])),
     },
+    imageSettingsByCard: {
+      ...savedImageSettingsByCard,
+      ...Object.fromEntries(Object.entries(imageGenerationByCard).map(([key, state]) => [key,
+        { model: state.model, size: state.size }])),
+    },
     bundleStateBySku,
     supplierSourceFileNames,
     amazonTemplateSourceFileName,
@@ -13292,6 +13384,8 @@ function restoreWorkspaceSnapshot() {
     supplierImageSourcePresent = snapshot.supplierImageSourcePresent === true;
     savedReferenceSelectionByCard = snapshot.referenceSelectionsByCard && typeof snapshot.referenceSelectionsByCard === "object"
       ? snapshot.referenceSelectionsByCard : {};
+    savedImageSettingsByCard = snapshot.imageSettingsByCard && typeof snapshot.imageSettingsByCard === "object"
+      ? snapshot.imageSettingsByCard : {};
     bundleStateBySku = snapshot.bundleStateBySku && typeof snapshot.bundleStateBySku === "object" ? snapshot.bundleStateBySku : {};
     supplierSourceFileNames = Array.isArray(snapshot.supplierSourceFileNames) ? snapshot.supplierSourceFileNames : [];
     amazonTemplateSourceFileName = String(snapshot.amazonTemplateSourceFileName || "");
@@ -13373,6 +13467,7 @@ function clearExtractedSourceState({ render = true } = {}) {
   promptStore = [];
   imageGenerationByCard = {};
   savedReferenceSelectionByCard = {};
+  savedImageSettingsByCard = {};
   lastReferenceSelectionCardKey = "";
   bulkImageGenerationRunning = false;
   availableReferenceImageUrls = [];
@@ -13595,6 +13690,7 @@ async function init() {
     referenceImageMetaBySku = {};
     imageGenerationByCard = {};
     savedReferenceSelectionByCard = {};
+    savedImageSettingsByCard = {};
     productStructureRouteManuallySelected = false;
     syncProductStructureRouteFromBinding(true);
     renderAll();

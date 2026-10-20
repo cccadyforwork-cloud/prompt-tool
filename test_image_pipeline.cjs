@@ -69,6 +69,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       referenceImagesBySku: {green: urls, blue: urls}, availableReferenceImageUrls: urls,
       uniqueReferenceImageUrls: (items) => [...new Set(items)],
       matchedSellingPointVisualEvidence: () => [], taskMatchedReferenceUrls: () => [],
+      sellingPointActionDependency: () => 0,
       MAX_SELECTED_REFERENCES: 6,
     });
     vm.runInContext(source.slice(candidateStart, candidateEnd), candidates);
@@ -123,8 +124,22 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     });
     vm.runInContext(source.slice(generateStart, generateEnd), candidates);
     await vm.runInContext('generateImageForCard("manual-use-card")', candidates);
-    assert.deepEqual([...requestBodies[0].images], [urls[1], urls[0], urls[2]],
-      'manual generation sends the verified operation image first without discarding other selected references');
+    assert.deepEqual([...requestBodies[0].images], [urls[1], urls[0]],
+      'manual generation sends operation evidence and one SKU identity image without unrelated references');
+    candidates.referenceMetaItemsForSku = () => [
+      {url: urls[0], image_type: 'detail', sku_match: 'exact'},
+      {url: urls[1], image_type: 'lifestyle', sku_match: 'exact'},
+      {url: urls[2], image_type: 'feature', sku_match: 'exact'},
+      {url: urls[3], image_type: 'parameter', sku_match: 'exact'},
+    ];
+    candidates.sellingPointActionDependency = (claims) => /spray/i.test(claims.join(' ')) ? 4 : 0;
+    candidates.sellingPointGroupForImageTitle = () => ['Precise control'];
+    candidates.visualPlanForPoints = () => ({route: 'product_proof'});
+    const proofRefs = vm.runInContext(
+      `generationReferencesForCard({id:'5'}, {sellingPointVisualEvidence:[{claim:'Spray range',imageUrl:'${urls[2]}'}],useBehavior:{mode:'active',imageUrl:'${urls[1]}'}}, {id:'green'}, ['${urls[1]}','${urls[2]}','${urls[0]}','${urls[3]}'])`,
+      candidates,
+    );
+    assert.deepEqual([...proofRefs], [urls[0]], 'product-only feature excludes use posters and unrelated feature scenes');
     const ruleStart = source.indexOf('function sourceUseBehaviorRule(');
     const ruleEnd = source.indexOf('function buildPromptSections(', ruleStart);
     assert.ok(ruleStart >= 0 && ruleEnd > ruleStart);
@@ -164,7 +179,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     visualRules.proofFacts = proofFacts;
     const quantityProof = vm.runInContext('sellingPointClaimVisualRule(["Controlled portion output"], proofFacts, "product_proof")', visualRules);
     assert.match(quantityProof, /small crop of the real outlet is optional/);
-    assert.match(quantityProof, /base outlet/);
+    assert.match(quantityProof, /real outlet\/contact point/);
     assert.match(quantityProof, /premium product texture and its verified control structure dominant/);
     assert.match(quantityProof, /Do not draw a detached part, duplicate product, unsupported output/);
     assert.match(quantityProof, /static photograph need not simulate the output/);
@@ -174,7 +189,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     visualRules.waterproofFacts = {sellingPointVisualEvidence:[{claim:'Waterproof surface', imageUrl:urls[2]}]};
     const waterproofProof = vm.runInContext('sellingPointClaimVisualRule(["Waterproof surface"], waterproofFacts, "product_proof")', visualRules);
     assert.match(waterproofProof, /authentic material, finish and claim-relevant detail/);
-    assert.match(waterproofProof, /verified effect may appear directly on the product/);
+    assert.match(waterproofProof, /source-backed passive surface effect may appear directly on the product/);
     assert.match(waterproofProof, /Use at most one line diagram/);
     const productRouteStart = source.indexOf('function sellingPointVisualRouteRule(');
     const productRouteEnd = source.indexOf('function visualPlanContext(', productRouteStart);
@@ -263,7 +278,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     assert.match(overviewPrompt, /LEFT LARGE HERO must capture the product actually operating/);
     assert.match(overviewPrompt, /COMPACT WHITE CIRCULAR product inset at the LOWER LEFT/);
     assert.match(overviewPrompt, /show exactly 3 separate, complete, identical current-product units/);
-    assert.match(overviewPrompt, /Do not require or forbid an active effect in a right window/);
+    assert.match(overviewPrompt, /Reserve emitted effects for the large left hero/);
     assert.match(overviewPrompt, /SECONDARY COUNT LABEL/);
     summary.regularFacts = {productName:'Sample product',scene:'Cooking;Serving',skuUnitQuantity:3,
       skuUnitQuantityLabel:'3 Pcs',useBehavior:{mode:'active',imageUrl:'https://example.com/use.jpg'}};
@@ -273,7 +288,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     assert.match(scenePrompts['1A'], /MAIN COUNT GUARD/);
     assert.match(scenePrompts['1B'], /OPERATION: Follow source operation and outlet/);
     assert.match(scenePrompts['2'], /Four equal 2x2 panels showing different real uses/);
-    assert.match(scenePrompts['2'], /at least TWO panels must visibly show the product being operated/);
+    assert.match(scenePrompts['2'], /TWO panels visibly show the product being operated/);
     assert.match(scenePrompts['3'], /four-view studio study/);
     assert.match(scenePrompts['4'], /Height 4 in/);
     assert.match(scenePrompts['4'], /SECONDARY COUNT LABEL/);
