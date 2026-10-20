@@ -4,6 +4,11 @@ const vm = require('node:vm');
 
 const path = process.argv[2] || 'app.js';
 const source = fs.readFileSync(path, 'utf8');
+assert.match(source, /id="confirmAllSellingPointImages"/, 'selling-point plans expose one-click confirmation');
+assert.match(source, /plans\.forEach\(\(plan\) => applyVisualPlanDecision\(sku, currentFacts, plan, "show"\)\)/,
+  'one-click confirmation marks every selling-point plan for display');
+assert.match(source, /!planIncluded && !humanConfirmed/,
+  'explicit human confirmation overrides a missing visual-plan marker');
 const start = source.indexOf('async function extractSupplierSourceText(');
 const end = source.indexOf('function readFileAsText(', start);
 assert.ok(start >= 0 && end > start, 'supplier extraction function is present');
@@ -57,6 +62,44 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     assert.match(localResult.text, /OCR local detail: Capacity 100 ml/);
     assert.equal(localResult.scannedCount, 9);
     assert.equal(visionInput.length, 9, 'local route does not make another Doubao request');
+    const downloadStart = source.indexOf('async function fetchGeneratedImageBlob(');
+    const downloadEnd = source.indexOf('async function saveGeneratedSet(', downloadStart);
+    assert.ok(downloadStart >= 0 && downloadEnd > downloadStart);
+    let downloadAttempts = 0;
+    const downloads = vm.createContext({
+      encodeURIComponent,
+      window: {setTimeout: (resolve) => resolve()},
+      fetch: async () => {
+        downloadAttempts += 1;
+        if (downloadAttempts < 3) return {ok:false,status:502};
+        return {ok:true,status:200,blob:async () => ({type:'image/png',size:123})};
+      },
+    });
+    vm.runInContext(source.slice(downloadStart, downloadEnd), downloads);
+    const retriedBlob = await vm.runInContext(`fetchGeneratedImageBlob('https://file1.aitohumanize.com/file/test.png', '第 1 张图片')`, downloads);
+    assert.equal(downloadAttempts, 3, 'generated-image downloads retry transient upstream failures');
+    assert.equal(retriedBlob.type, 'image/png');
+    const cacheStart = source.indexOf('async function cacheGeneratedImageUrls(');
+    const cacheEnd = source.indexOf('async function recordGeneratedImages(', cacheStart);
+    assert.ok(cacheStart >= 0 && cacheEnd > cacheStart);
+    const imageCache = vm.createContext({
+      fetchGeneratedImageBlob: async (url) => {
+        if (url.includes('expired')) throw new Error('expired');
+        return {type:'image/png'};
+      },
+      readImageFileAsDataUrl: async () => 'data:image/png;base64,CACHED',
+    });
+    vm.runInContext(source.slice(cacheStart, cacheEnd), imageCache);
+    const cachedImages = await vm.runInContext(`cacheGeneratedImageUrls([
+      'https://file1.aitohumanize.com/file/live.png',
+      'https://file2.aitohumanize.com/file/expired.png'
+    ])`, imageCache);
+    assert.deepEqual([...cachedImages.images], [
+      'data:image/png;base64,CACHED',
+      'https://file2.aitohumanize.com/file/expired.png',
+    ], 'generated images are copied into current-page storage while failed copies retain a retryable source URL');
+    assert.equal(cachedImages.cachedCount, 1);
+    assert.equal(cachedImages.failedCount, 1);
     const candidateStart = source.indexOf('function operationEvidenceUrlForCard(');
     const candidateEnd = source.indexOf('function scheduleReferenceVisualDeduplication(', candidateStart);
     assert.ok(candidateStart >= 0 && candidateEnd > candidateStart);
@@ -71,6 +114,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       matchedSellingPointVisualEvidence: () => [], taskMatchedReferenceUrls: () => [],
       sellingPointActionDependency: () => 0,
       MAX_SELECTED_REFERENCES: 6,
+      MAX_REQUIRED_REFERENCES: 2,
     });
     vm.runInContext(source.slice(candidateStart, candidateEnd), candidates);
     for (const id of ['green', 'blue']) {
@@ -124,8 +168,34 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     });
     vm.runInContext(source.slice(generateStart, generateEnd), candidates);
     await vm.runInContext('generateImageForCard("manual-use-card")', candidates);
-    assert.deepEqual([...requestBodies[0].images], [urls[1], urls[0]],
-      'manual generation sends operation evidence and one SKU identity image without unrelated references');
+    assert.deepEqual([...requestBodies[0].images], [urls[1], urls[0], urls[2]],
+      'manual generation sends required operation evidence first and preserves every human choice in click order');
+    await vm.runInContext('generateImageForCard("manual-use-card", "auto")', candidates);
+    assert.deepEqual([...requestBodies[1].images], [urls[1], urls[0]],
+      'automatic generation keeps the existing automatic filtering and ordering behavior');
+    candidates.sellingPointGroupForImageTitle = () => ['Verified feature'];
+    candidates.visualPlanForPoints = () => ({
+      route: 'scene_use',
+      evidenceUrls: [urls[2], urls[3], urls[4]],
+    });
+    const cappedManual = vm.runInContext(
+      `manualGenerationReferencesForCard({id:'5'}, {sellingPointVisualEvidence:[],useBehavior:{mode:'active',imageUrl:'${urls[1]}'}}, {id:'green'}, ['${urls[0]}','${urls[5]}','${urls[6]}'])`,
+      candidates,
+    );
+    assert.deepEqual([...cappedManual.required], [urls[1], urls[2]],
+      'manual route keeps at most two system-required operation or selling-point evidence images');
+    assert.deepEqual([...cappedManual.combined], [urls[1], urls[2], urls[0], urls[5], urls[6]],
+      'manual route appends the human choices after required evidence without reordering them');
+    const overriddenManual = vm.runInContext(
+      `manualGenerationReferencesForCard({id:'5'}, {sellingPointVisualEvidence:[],useBehavior:{mode:'active',imageUrl:'${urls[1]}'}}, {id:'green'}, ['${urls[0]}','${urls[1]}','${urls[5]}'], 'scene', ['${urls[1]}'])`,
+      candidates,
+    );
+    assert.deepEqual([...overriddenManual.required], [urls[2]],
+      'a human override removes the cancelled system-default operation image');
+    assert.deepEqual([...overriddenManual.combined], [urls[2], urls[0], urls[5]],
+      'a cancelled system-default image is not silently added back as a manual reference');
+    assert.doesNotMatch(source, /return "待人工核对";/,
+      'generic candidates do not repeat a bottom-corner manual-review label');
     candidates.referenceMetaItemsForSku = () => [
       {url: urls[0], image_type: 'detail', sku_match: 'exact'},
       {url: urls[1], image_type: 'lifestyle', sku_match: 'exact'},
@@ -308,6 +378,11 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     const scenePrompts = Object.fromEntries(['1A','1B','2','3','4','5','6','7'].map((id) =>
       [id, vm.runInContext(`conciseSceneModulePrompt("${id}", regularFacts)`, summary)]));
     assert.match(scenePrompts['1A'], /large enough to inspect its true silhouette/);
+    summary.visualPlanForPoints = () => ({status: 'ready', route: 'product_proof', label: 'Verified Product Detail',
+      visual_prompt: 'Close product detail fills the frame with source-accurate material and construction.'});
+    const plannedProductProof = vm.runInContext('conciseSceneModulePrompt("6", regularFacts)', summary);
+    assert.match(plannedProductProof, /VISUAL PLAN: Close product detail fills the frame/,
+      'confirmed product-proof plan is embedded in its generated prompt');
     assert.match(scenePrompts['1A'], /MAIN COUNT GUARD/);
     assert.match(scenePrompts['1B'], /OPERATION: Follow source operation and outlet/);
     assert.match(scenePrompts['2'], /Four equal 2x2 panels showing different real uses/);

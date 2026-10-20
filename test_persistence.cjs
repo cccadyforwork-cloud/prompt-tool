@@ -17,7 +17,7 @@ const snapshotCode = source.slice(
 );
 const manualReferenceCode = source.slice(
   source.indexOf('function persistManualReferences('),
-  source.indexOf('function recordGeneratedImages('),
+  source.indexOf('async function cacheGeneratedImageUrls('),
 );
 
 class TestFile {
@@ -115,7 +115,8 @@ async function main() {
     fieldOverridesBySku: {}, appliedSellingPointOverridesBySku: {},
     referenceImagesBySku: {}, referenceImageMetaBySku: {}, availableReferenceImageUrls: [],
     supplierImageSourcePresent: true, latestReferenceMappingStatus: '',
-    savedReferenceSelectionByCard: {}, imageGenerationByCard: {}, bundleStateBySku: {},
+    savedReferenceSelectionByCard: {}, savedRequiredReferenceExclusionsByCard: {},
+    savedImageSettingsByCard: {}, imageGenerationByCard: {}, bundleStateBySku: {},
     supplierSourceFileNames: [], amazonTemplateSourceFileName: '', competitorSellingPointCandidates: [],
     competitorSellingPointSourceNames: [], competitorDimensionList: '', competitorDimensionSourceNames: [], competitorProductWeight: '',
     competitorCapacity: '', selectedExtractionRoute: 'local', selectedProductStructureRoute: 'single',

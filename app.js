@@ -136,6 +136,7 @@ const NO_REFERENCE_SELLING_POINT_MESSAGE = "没有参考卖点信息";
 let promptStore = [];
 let imageGenerationByCard = {};
 let savedReferenceSelectionByCard = {};
+let savedRequiredReferenceExclusionsByCard = {};
 let savedImageSettingsByCard = {};
 const referenceVisualFingerprintCache = new Map();
 const referenceVisualDedupeSignatureBySku = new Map();
@@ -315,6 +316,11 @@ function writeTabStorage(key, value) {
   durableStorageCache.set(key, value);
   durablePut(key, value);
   try {
+    if (key === IMAGE_HISTORY_STORAGE_KEY && durableDb && typeof value === "string" && value.length > 4_000_000) {
+      if (boundWorkspace) localStorage.removeItem(scopedStorageKey(key));
+      else sessionStorage.removeItem(key);
+      return true;
+    }
     if (boundWorkspace) {
       localStorage.setItem(scopedStorageKey(key), value);
       return true;
@@ -569,6 +575,7 @@ const MAX_REFERENCE_CANDIDATES = 256;
 const MAX_REFERENCE_CLASSIFIER_CANDIDATES = 200;
 const MAX_COMPETITOR_REFERENCE_IMAGES = 5;
 const MAX_SELECTED_REFERENCES = 6;
+const MAX_REQUIRED_REFERENCES = 2;
 const REFERENCE_CLASSIFIER_BATCH_SIZE = 12;
 const OCR_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
 const PDFJS_SCRIPT_URL = "./vendor/pdfjs/pdf.min.js";
@@ -676,7 +683,8 @@ async function confirmParameterOutputs() {
             : item.promptEn.includes("VISUAL PLAN:"))
         : item.promptEn.includes("Execute this specific whole-set visual plan")
           && item.promptEn.includes(plan?.label || "");
-      if (plan?.status === "ready" && !planIncluded) {
+      const humanConfirmed = plan?.humanDecision === "show";
+      if (plan?.status === "ready" && !planIncluded && !humanConfirmed) {
         throw new Error(`${type.name} 的卖点图方案尚未进入提示词，请检查方案后重试。`);
       }
     }
@@ -1162,6 +1170,7 @@ function initProductStructureRoute() {
         applyProductStructureRoute(extractedProducts);
         imageGenerationByCard = {};
         savedReferenceSelectionByCard = {};
+        savedRequiredReferenceExclusionsByCard = {};
         renderAll();
       }
     });
@@ -10010,7 +10019,7 @@ function visualPlanContext(facts) {
   const groups = sellingPointDisplayGroups(facts);
   const routes = groups.map((points, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length, points, facts, groups));
   const evidence = facts.sellingPointVisualEvidence || [];
-  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 12 };
+  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 13 };
 }
 
 function currentVisualPlans(facts) {
@@ -10032,6 +10041,23 @@ function visualPlanDecisionLabel(plan) {
   if (plan?.humanDecision === "show") return "人工确认展示";
   if (plan?.humanDecision === "skip") return "人工决定不展示";
   return "等待人工决定";
+}
+
+function applyVisualPlanDecision(sku, facts, plan, decision) {
+  if (!plan || !["show", "skip"].includes(decision)) return;
+  plan.humanDecision = decision;
+  plan.reviewed = true;
+  const points = visualPlanContext(facts).groups[plan.groupIndex] || [];
+  const template = selectedTemplate();
+  const type = template.imageTypes.find((candidate) => (
+    JSON.stringify(sellingPointGroupForImageTitle(template.id, candidate.id, facts)) === JSON.stringify(points)
+  ));
+  if (!type) return;
+  const state = imageGenerationByCard[promptCardKey(sku, template, type)];
+  if (state?.status === "needs_plan") {
+    state.status = "idle";
+    state.message = decision === "show" ? "已人工确认展示，可以生成图片。" : "已人工决定不展示此卖点图。";
+  }
 }
 
 function manualDecisionFallbackPlans(context, reason = "自动规划未完成") {
@@ -10091,7 +10117,7 @@ async function planSellingPointImages() {
   automaticVisualPlanTimer = null;
   automaticVisualPlanAttempts.add(`${sku.id}:${signature}`);
   visualPlanRequests.set(sku.id, signature);
-  visualPlanMessages.set(sku.id, "正在一起规划卖点图的动作、细节和图间区别…");
+  visualPlanMessages.set(sku.id, "正在一次完成卖点图规划与自检…");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 200000);
   try {
@@ -10162,8 +10188,8 @@ function visualPlanReviewHtml(facts) {
     ? (undecidedCount ? `还有 ${undecidedCount} 张卖点图等待人工决定。` : "所有卖点图均已由人工决定，可以进入提示词与图组。")
     : "尚无适用于当前参数的方案。";
   return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>整套卖点图方案</h3>
-    <p class="workflow-section-note">人工选择卖点，并逐张决定展示或不展示；模型无法证实时只给出提示，不阻止进入下一步。</p></div>
-    <button id="planSellingPointImages" type="button" class="secondary" ${busy ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划" : "立即规划"}</button></div>
+    <p class="workflow-section-note">确认方案后可一键让全部卖点图展示；需要排除某张时仍可在对应方案中单独设为不展示。</p></div>
+    <div class="visual-plan-heading-actions"><button id="planSellingPointImages" type="button" class="secondary" ${busy ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划" : "立即规划"}</button>${plans.length ? `<button id="confirmAllSellingPointImages" type="button" ${busy || !undecidedCount ? "disabled" : ""}>${undecidedCount ? `一键确认${plans.length}张均展示` : "已确认全部展示"}</button>` : ""}</div></div>
     <div class="visual-plan-choice-grid">${selection.slots.map((type, index) => `<label><span>${escapeHtml(type.name)} · ${sellingPointVisualRouteLabel(context.routes[index] || "flexible")}</span><select data-selling-point-slot="${index}" ${selection.points.length ? "" : "disabled"}>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}" ${selection.indices[index] === pointIndex ? "selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>`).join("")}</div>
     <p class="visual-plan-status" role="status">${escapeHtml(visualPlanMessages.get(selectedSku().id) || defaultStatus)}</p>
     ${plans.map((plan) => {
@@ -11117,6 +11143,9 @@ function conciseSceneModulePrompt(typeId, facts) {
     if (route === "product_proof") {
       blocks.push(`ROUTE: ${sellingPointVisualRouteRule(route)}`);
       blocks.push(sellingPointClaimVisualRule(claims, facts, route));
+      if (plan?.status === "ready" && plan.visual_prompt) {
+        blocks.push(`VISUAL PLAN: ${plan.visual_prompt}`);
+      }
     } else if (route === "scene_use") {
       blocks.push(`ROUTE: Show the product in an approved scene and make the claim visually clear. ${approvedScenes}`);
       blocks.push(sellingPointClaimVisualRule(claims, facts, route));
@@ -11614,6 +11643,8 @@ function imageGenerationState(cardKey) {
       selectedReferences: Array.isArray(savedSelection)
         ? [...manualSelected, ...savedSelection].slice(0, MAX_SELECTED_REFERENCES)
         : [...manualSelected, ...(latest?.referenceSnapshot || [])].slice(0, MAX_SELECTED_REFERENCES),
+      excludedRequiredReferences: Array.isArray(savedRequiredReferenceExclusionsByCard[cardKey])
+        ? [...savedRequiredReferenceExclusionsByCard[cardKey]] : [],
       referenceSelectionInitialized: Array.isArray(savedSelection) || manualSelected.length > 0 || Boolean(latest),
       referencesExpanded: false,
       generatedPromptSnapshot: latest?.promptSnapshot || "",
@@ -11631,6 +11662,11 @@ function normalizeGenerationHistoryRecord(record) {
     id: String(record.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
     createdAt: String(record.createdAt || new Date().toISOString()),
     images,
+    sourceImages: Array.isArray(record.sourceImages)
+      ? record.sourceImages.filter((url) => typeof url === "string" && url.trim())
+      : images.filter((url) => /^https?:\/\//i.test(url)),
+    cacheStatus: images.every((url) => /^data:image\//i.test(url)) ? "complete" : String(record.cacheStatus || "pending"),
+    cacheError: String(record.cacheError || ""),
     model: String(record.model || "gpt-image-2"),
     size: String(record.size || "1024x1024"),
     promptSnapshot: String(record.promptSnapshot || ""),
@@ -11665,13 +11701,33 @@ function persistManualReferences(cardKey) {
   durablePut(MANUAL_REFERENCES_STORAGE_KEY, savedManualReferencesByCard);
 }
 
-function recordGeneratedImages(cardKey, images, submitted = null) {
+async function cacheGeneratedImageUrls(images) {
+  const results = await Promise.all((images || []).map(async (url, index) => {
+    if (/^data:image\//i.test(url)) return { url, cached: true, error: "" };
+    try {
+      const blob = await fetchGeneratedImageBlob(url, `生成图片 ${index + 1}`);
+      return { url: await readImageFileAsDataUrl(blob), cached: true, error: "" };
+    } catch (error) {
+      return { url, cached: false, error: error?.message || "本页保存失败" };
+    }
+  }));
+  return {
+    images: results.map((item) => item.url),
+    cachedCount: results.filter((item) => item.cached).length,
+    failedCount: results.filter((item) => !item.cached).length,
+    errors: results.map((item) => item.error).filter(Boolean),
+  };
+}
+
+async function recordGeneratedImages(cardKey, images, submitted = null) {
   const state = imageGenerationState(cardKey);
   const item = promptStore.find((entry) => entry.key === cardKey);
   const record = normalizeGenerationHistoryRecord({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
     images,
+    sourceImages: images,
+    cacheStatus: "pending",
     model: submitted?.model || state.model,
     size: submitted?.size || state.size,
     promptSnapshot: submitted?.prompt || item?.promptEn || "",
@@ -11684,6 +11740,40 @@ function recordGeneratedImages(cardKey, images, submitted = null) {
   state.generatedPromptSnapshot = record.promptSnapshot;
   state.generatedReferenceSnapshot = [...record.referenceSnapshot];
   persistImageHistory(cardKey, state.history);
+  const cached = await cacheGeneratedImageUrls(record.images);
+  record.images = cached.images;
+  record.cacheStatus = cached.failedCount ? "partial" : "complete";
+  record.cacheError = cached.errors.join("；");
+  state.images = [...record.images];
+  persistImageHistory(cardKey, state.history);
+  return cached;
+}
+
+async function cacheExistingGeneratedImageHistory() {
+  let cachedCount = 0;
+  let failedCount = 0;
+  for (const [cardKey, state] of Object.entries(imageGenerationByCard)) {
+    let changed = false;
+    for (const record of state.history || []) {
+      if (record.images.every((url) => /^data:image\//i.test(url))) {
+        record.cacheStatus = "complete";
+        continue;
+      }
+      const cached = await cacheGeneratedImageUrls(record.images);
+      record.images = cached.images;
+      record.cacheStatus = cached.failedCount ? "partial" : "complete";
+      record.cacheError = cached.errors.join("；");
+      cachedCount += cached.cachedCount;
+      failedCount += cached.failedCount;
+      changed = changed || cached.cachedCount > 0;
+    }
+    if (!changed) continue;
+    state.images = [...(state.history.at(-1)?.images || [])];
+    persistImageHistory(cardKey, state.history);
+    updateImageGenerator(cardKey);
+  }
+  if (cachedCount) refreshPromptSurfaces();
+  return { cachedCount, failedCount };
 }
 
 function generationInputsChanged(cardKey, promptEn) {
@@ -11786,10 +11876,14 @@ function operationEvidenceUrlForCard(templateId, type, facts) {
   return route === "scene_use" ? facts.useBehavior.imageUrl || "" : "";
 }
 
-function prioritizeSelectedOperationEvidence(state, templateId, type, facts, sku) {
+function prioritizeSelectedOperationEvidence(state, templateId, type, facts, sku, respectManualExclusions = false) {
   const url = operationEvidenceUrlForCard(templateId, type, facts);
   state.operationEvidenceUrl = url && referenceImageCandidatesForCard(type, facts, sku).all.includes(url) ? url : "";
   if (!state.operationEvidenceUrl) return;
+  if (respectManualExclusions && state.excludedRequiredReferences?.includes(state.operationEvidenceUrl)) {
+    state.selectedReferences = state.selectedReferences.filter((reference) => reference !== state.operationEvidenceUrl);
+    return;
+  }
   state.availableReferences = uniqueReferenceImageUrls([state.operationEvidenceUrl, ...state.availableReferences]);
   state.selectedReferences = uniqueReferenceImageUrls([state.operationEvidenceUrl, ...state.selectedReferences]).slice(0, MAX_SELECTED_REFERENCES);
 }
@@ -11934,6 +12028,50 @@ function generationReferencesForCard(type, facts, sku, selected, templateId = se
   return images;
 }
 
+function requiredGenerationReferenceDetailsForCard(type, facts, sku, templateId = selectedTemplate().id) {
+  const required = [];
+  const operationUrl = operationEvidenceUrlForCard(templateId, type, facts);
+  if (operationUrl) required.push({ url: operationUrl, role: "operation", label: "系统默认·操作证据" });
+  const points = sellingPointGroupForImageTitle(templateId, type.id, facts);
+  const plan = points.length ? visualPlanForPoints(points, facts) : null;
+  const route = plan?.route || "flexible";
+  (plan?.evidenceUrls || []).forEach((url) => {
+    if (route === "product_proof" && url === facts.useBehavior?.imageUrl) return;
+    required.push({ url, role: "selling_point", label: "系统默认·卖点证据" });
+  });
+  const allowed = new Set(referenceImageCandidatesForCard(type, facts, sku).all);
+  const seen = new Set();
+  return required
+    .filter((item) => item.url && allowed.has(item.url) && !seen.has(item.url) && seen.add(item.url))
+    .slice(0, MAX_REQUIRED_REFERENCES);
+}
+
+function requiredGenerationReferencesForCard(type, facts, sku, templateId = selectedTemplate().id) {
+  return requiredGenerationReferenceDetailsForCard(type, facts, sku, templateId).map((item) => item.url);
+}
+
+function requiredGenerationReferenceDetailsForCardKey(cardKey) {
+  const item = promptStore.find((entry) => entry.key === cardKey);
+  const sku = selectedSku();
+  if (!item || !sku) return [];
+  const facts = promptFacts(sku, currentPromptData(sku));
+  return requiredGenerationReferenceDetailsForCard(item.type, facts, sku);
+}
+
+function manualGenerationReferencesForCard(type, facts, sku, selected, templateId = selectedTemplate().id, excludedRequired = []) {
+  const excludedSet = new Set(excludedRequired || []);
+  const required = requiredGenerationReferencesForCard(type, facts, sku, templateId)
+    .filter((url) => !excludedSet.has(url));
+  const requiredSet = new Set(required);
+  const manual = uniqueReferenceImageUrls(selected || [])
+    .filter((url) => !requiredSet.has(url) && !excludedSet.has(url));
+  return {
+    required,
+    manual,
+    combined: uniqueReferenceImageUrls([...required, ...manual]).slice(0, MAX_SELECTED_REFERENCES),
+  };
+}
+
 function scheduleReferenceVisualDeduplication(skuId, urls) {
   const candidates = uniqueReferenceImageUrls(urls);
   if (candidates.length < 2) return;
@@ -11952,43 +12090,51 @@ function scheduleReferenceVisualDeduplication(skuId, urls) {
   });
 }
 
-function prioritizeSelectedReferences(state) {
+function prioritizeSelectedReferences(state, requiredReferences = []) {
+  const required = uniqueReferenceImageUrls(requiredReferences);
+  const requiredSet = new Set(required);
   const selected = new Set(state.selectedReferences);
   const available = new Set(state.availableReferences);
   const competitorUrls = new Set(referenceMetaItemsForSku(selectedSku()?.id)
     .filter((item) => item.image_type === "amazon_competitor_reference")
     .map((item) => item.url));
   state.availableReferences = Array.from(new Set([
+    ...required.filter((reference) => available.has(reference)),
     ...state.selectedReferences.filter((reference) => available.has(reference)),
-    ...state.availableReferences.filter((reference) => !selected.has(reference) && competitorUrls.has(reference)),
-    ...state.availableReferences.filter((reference) => !selected.has(reference) && !competitorUrls.has(reference)),
+    ...state.availableReferences.filter((reference) => !requiredSet.has(reference) && !selected.has(reference) && competitorUrls.has(reference)),
+    ...state.availableReferences.filter((reference) => !requiredSet.has(reference) && !selected.has(reference) && !competitorUrls.has(reference)),
   ]));
 }
 
 function referenceCandidateBadge(item, reference) {
   if (/^data:image\//i.test(reference)) return "手动上传";
   if (reference === selectedSku()?.useBehavior?.imageUrl) return "操作原图";
-  if (!item) return "待人工核对";
+  if (!item) return "";
   if (item.image_type === "amazon_competitor_reference") return "竞品图·构图参考";
   const match = String(item.sku_match || "").toLowerCase();
   if (match === "exact") return "当前 SKU";
   if (match === "same_product_similar_color") return "相近色·人工选择";
   if (isAlternateColorReference(item)) return "异色·结构参考";
-  return "待人工核对";
+  return "";
 }
 
-function renderReferenceImages(state) {
+function renderReferenceImages(state, requiredDetails = []) {
+  const requiredByUrl = new Map(requiredDetails.map((item) => [item.url, item]));
+  const requiredUrls = [...requiredByUrl.keys()];
+  const excludedRequiredSet = new Set(state.excludedRequiredReferences || []);
+  const activeRequiredUrls = requiredUrls.filter((url) => !excludedRequiredSet.has(url));
+  const manuallySelected = state.selectedReferences.filter((url) => !requiredByUrl.has(url));
   if (!state.availableReferences.length) {
     return `
       <div class="reference-picker-summary">
         <div class="reference-picker-primary">
           <span class="reference-candidate-count">候选图 <strong>0</strong> 张</span>
-          <button type="button" class="clear-reference-selection" disabled>一键取消勾选</button>
+          <button type="button" class="clear-reference-selection" disabled>清除人工选择</button>
         </div>
       </div>
       <p class="reference-empty">暂无匹配参考图，可在下方拖入本地图片。</p>`;
   }
-  prioritizeSelectedReferences(state);
+  prioritizeSelectedReferences(state, activeRequiredUrls);
   const canExpand = state.availableReferences.length > 8;
   const metaByUrl = new Map(referenceMetaItemsForSku(selectedSku()?.id).map((item) => [item.url, item]));
   const hasSimilarColorImage = state.availableReferences.some((url) => isSimilarColorReference(metaByUrl.get(url)));
@@ -11999,14 +12145,14 @@ function renderReferenceImages(state) {
   const reviewNotice = hasVerifiedSkuImage
     ? ""
     : '<p class="reference-empty">当前 SKU 没有已确认的同款参考图。请人工核对候选图的颜色和款式后再选择。</p>';
-  const operationNotice = state.operationEvidenceUrl
-    ? '<p class="reference-empty">使用类图片会自动带上操作原图作为操作依据；其余参考图由你选择，用于款式和场景。</p>'
+  const operationNotice = requiredUrls.length
+    ? `<p class="reference-empty">标有“系统默认”的图片提交时会排在最前；如不适合，可直接取消勾选，系统不会再次加入。</p>`
     : "";
   return `
     <div class="reference-picker-summary">
       <div class="reference-picker-primary">
         <span class="reference-candidate-count">候选图 <strong>${state.availableReferences.length}</strong> 张</span>
-        <button type="button" class="clear-reference-selection" ${state.selectedReferences.length ? "" : "disabled"}>一键取消勾选</button>
+        <button type="button" class="clear-reference-selection" ${manuallySelected.length ? "" : "disabled"}>清除人工选择</button>
       </div>
       <div class="reference-picker-actions">
         ${canExpand ? `<button type="button" class="reference-expand-toggle">${state.referencesExpanded ? "收起候选区" : "扩大候选区"}</button>` : ""}
@@ -12016,21 +12162,24 @@ function renderReferenceImages(state) {
     ${operationNotice}
     ${hasSimilarColorImage ? '<p class="reference-empty">相近色仅作为候选图，需人工确认后勾选；不会自动选入参考图。</p>' : ""}
     <div class="reference-image-grid ${state.referencesExpanded ? "is-expanded" : ""}">${state.availableReferences.map((reference, index) => {
-    const checked = state.selectedReferences.includes(reference);
+    const requiredDetail = requiredByUrl.get(reference);
+    const isSystemRequired = Boolean(requiredDetail);
+    const isRequiredExcluded = isSystemRequired && excludedRequiredSet.has(reference);
+    const checked = (isSystemRequired && !isRequiredExcluded) || state.selectedReferences.includes(reference);
     const previewUrl = /^data:image\//i.test(reference) ? reference : sourceProxyUrl(reference);
     const item = metaByUrl.get(reference);
     const badge = referenceCandidateBadge(item, reference);
-    const isOperationEvidence = reference === state.operationEvidenceUrl;
     const reason = cleanFieldDisplayValue(item?.reason || "请人工核对图片与商品的关系。");
     return `
-      <div class="reference-image-option ${checked ? "is-selected" : ""}" title="${escapeHtml(reason)}">
+      <div class="reference-image-option ${checked ? "is-selected" : ""} ${isSystemRequired ? "is-system-required" : ""} ${isRequiredExcluded ? "is-system-excluded" : ""}" title="${escapeHtml(isSystemRequired ? `${requiredDetail.label}；${isRequiredExcluded ? "已人工取消；" : ""}${reason}` : reason)}">
         <label>
-          <input type="checkbox" class="reference-image-checkbox" data-reference-index="${index}" ${checked ? "checked" : ""} ${isOperationEvidence ? "disabled" : ""}>
+          <input type="checkbox" class="reference-image-checkbox" data-reference-index="${index}" ${checked ? "checked" : ""}>
           <img src="${escapeHtml(previewUrl)}" alt="参考图 ${index + 1}" loading="lazy">
         </label>
-        <small class="reference-image-source" title="${escapeHtml(reason)}">${escapeHtml(isOperationEvidence ? "操作原图·自动带入" : badge)}</small>
+        ${isSystemRequired ? `<small class="reference-image-source" title="${escapeHtml(`${requiredDetail.label}；${isRequiredExcluded ? "已人工取消；" : ""}${reason}`)}">${escapeHtml(`${requiredDetail.label}${isRequiredExcluded ? "·已取消" : ""}`)}</small>` : ""}
+        ${!isSystemRequired && badge ? `<small class="reference-image-origin" title="${escapeHtml(reason)}">${escapeHtml(badge)}</small>` : ""}
         <button type="button" class="preview-reference-image" data-reference-index="${index}" aria-label="放大查看参考图 ${index + 1}" title="放大查看">⌕</button>
-        <button type="button" class="delete-reference-image" data-reference-index="${index}" aria-label="删除参考图 ${index + 1}" title="删除参考图" ${isOperationEvidence ? "disabled" : ""}>×</button>
+        <button type="button" class="delete-reference-image" data-reference-index="${index}" aria-label="删除参考图 ${index + 1}" title="删除参考图" ${isSystemRequired ? "disabled" : ""}>×</button>
       </div>
     `;
   }).join("")}</div>`;
@@ -12038,12 +12187,24 @@ function renderReferenceImages(state) {
 
 function renderImageGenerator(cardKey) {
   const state = imageGenerationState(cardKey);
+  const requiredDetails = requiredGenerationReferenceDetailsForCardKey(cardKey);
+  const excludedRequiredSet = new Set(state.excludedRequiredReferences || []);
+  const requiredSet = new Set(requiredDetails.map((item) => item.url).filter((url) => !excludedRequiredSet.has(url)));
+  const manualReferenceCount = state.selectedReferences.filter((url) => !requiredSet.has(url)).length;
+  const submittedReferenceCount = uniqueReferenceImageUrls([
+    ...requiredDetails.map((item) => item.url),
+    ...state.selectedReferences,
+  ]).slice(0, MAX_SELECTED_REFERENCES).length;
   const isBusy = state.status === "submitting" || state.status === "processing";
   const history = Array.isArray(state.history) ? state.history : [];
   const selectedHistoryIds = new Set(state.selectedHistoryIds || []);
   const selectedImageCount = history
     .filter((record) => selectedHistoryIds.has(record.id))
     .reduce((sum, record) => sum + record.images.length, 0);
+  const historyImageCount = history.reduce((sum, record) => sum + record.images.length, 0);
+  const locallySavedImageCount = history.reduce((sum, record) => (
+    sum + record.images.filter((url) => /^data:image\//i.test(url)).length
+  ), 0);
   const historyRecordHtml = (record, round, isLatest = false) => {
     const images = record.images.map((url, index) => `
       <figure class="generated-image-item">
@@ -12070,7 +12231,7 @@ function renderImageGenerator(cardKey) {
   const historyHtml = history.length ? `
     <div class="generation-history-heading">
       <strong>生成记录</strong>
-      <span>共 ${history.length} 轮</span>
+      <span>共 ${history.length} 轮 · 本页已保存 ${locallySavedImageCount}/${historyImageCount} 张</span>
     </div>
     <div class="generation-history-toolbar">
       <div class="generation-download-guide"><strong>下载图片</strong><span>先在图片左上角勾选，再点击下载</span></div>
@@ -12086,11 +12247,11 @@ function renderImageGenerator(cardKey) {
           <strong>出图工作区</strong>
           <span>参考图最多选择 ${MAX_SELECTED_REFERENCES} 张</span>
         </div>
-        <span class="reference-count">${state.selectedReferences.length}/${MAX_SELECTED_REFERENCES}</span>
+        <span class="reference-count">系统 ${requiredDetails.length} · 人工 ${manualReferenceCount} · 提交 ${submittedReferenceCount}/${MAX_SELECTED_REFERENCES}</span>
       </div>
       <div class="reference-image-picker">
         ${assortmentReferenceNote}
-        ${renderReferenceImages(state)}
+        ${renderReferenceImages(state, requiredDetails)}
         <input class="reference-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden ${isBusy ? "disabled" : ""}>
         <button type="button" class="reference-drop-zone" ${isBusy ? "disabled" : ""}>
           <strong>拖拽参考图到这里</strong>
@@ -12143,7 +12304,11 @@ async function referenceFileDataUrl(file) {
 
 async function addReferenceFiles(cardKey, fileList) {
   const state = imageGenerationState(cardKey);
-  const remaining = Math.max(0, MAX_SELECTED_REFERENCES - state.selectedReferences.length);
+  const requiredDetails = requiredGenerationReferenceDetailsForCardKey(cardKey);
+  const excludedRequiredSet = new Set(state.excludedRequiredReferences || []);
+  const requiredSet = new Set(requiredDetails.map((item) => item.url).filter((url) => !excludedRequiredSet.has(url)));
+  const manualCount = state.selectedReferences.filter((url) => !requiredSet.has(url) && !excludedRequiredSet.has(url)).length;
+  const remaining = Math.max(0, MAX_SELECTED_REFERENCES - requiredSet.size - manualCount);
   const files = Array.from(fileList || []).slice(0, remaining);
   if (!files.length) {
     state.message = remaining ? "没有可添加的图片。" : `参考图最多选择 ${MAX_SELECTED_REFERENCES} 张。`;
@@ -12287,8 +12452,12 @@ async function pollImageGeneration(cardKey, taskId, submitted) {
     const status = String(payload?.status || payload?.data?.status || "").toLowerCase();
     if (images.length) {
       state.status = "success";
-      state.message = `生成完成，共 ${images.length} 张。`;
-      recordGeneratedImages(cardKey, images, submitted);
+      state.message = `生成完成，共 ${images.length} 张；正在保存到当前页面…`;
+      updateImageGenerator(cardKey);
+      const cached = await recordGeneratedImages(cardKey, images, submitted);
+      state.message = cached.failedCount
+        ? `生成完成，共 ${images.length} 张；${cached.failedCount} 张暂未保存到本页，下次打开会自动重试。`
+        : `生成完成，共 ${images.length} 张，已保存到当前页面。`;
       updateImageGenerator(cardKey);
       return;
     }
@@ -12302,7 +12471,7 @@ async function pollImageGeneration(cardKey, taskId, submitted) {
   throw new Error("生图等待超时，请稍后重试");
 }
 
-async function generateImageForCard(cardKey) {
+async function generateImageForCard(cardKey, referenceMode = "manual") {
   const item = promptStore.find((entry) => entry.key === cardKey);
   if (!item?.promptEn) return;
   const state = imageGenerationState(cardKey);
@@ -12319,21 +12488,38 @@ async function generateImageForCard(cardKey) {
       updateImageGenerator(cardKey);
       return;
     }
-    // Product-feature images should not inherit an operation scene merely because
-    // that image was evidence during analysis. Explicit manual choices remain intact.
-    const route = plan.route || visualPlanContext(facts).routes[plan.groupIndex] || "flexible";
-    const planReferences = (plan.evidenceUrls || []).filter((url) =>
-      route !== "product_proof" || url !== facts.useBehavior?.imageUrl);
-    state.selectedReferences = Array.from(new Set([state.selectedReferences[0], ...planReferences, ...state.selectedReferences].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES);
-    state.availableReferences = Array.from(new Set([...state.selectedReferences, ...state.availableReferences]));
+    if (referenceMode === "auto") {
+      // Product-feature images should not inherit an operation scene merely because
+      // that image was evidence during analysis.
+      const route = plan.route || visualPlanContext(facts).routes[plan.groupIndex] || "flexible";
+      const planReferences = (plan.evidenceUrls || []).filter((url) =>
+        route !== "product_proof" || url !== facts.useBehavior?.imageUrl);
+      state.selectedReferences = Array.from(new Set([state.selectedReferences[0], ...planReferences, ...state.selectedReferences].filter(Boolean))).slice(0, MAX_SELECTED_REFERENCES);
+      state.availableReferences = Array.from(new Set([...state.selectedReferences, ...state.availableReferences]));
+    }
   }
-  prioritizeSelectedOperationEvidence(state, selectedTemplate().id, item.type, facts, sku);
-  state.selectedReferences = generationReferencesForCard(item.type, facts, sku, state.selectedReferences);
+  let references;
+  if (referenceMode === "manual") {
+    const manualSubmission = manualGenerationReferencesForCard(
+      item.type, facts, sku, state.selectedReferences, selectedTemplate().id, state.excludedRequiredReferences,
+    );
+    if (!manualSubmission.manual.length) {
+      state.status = "idle";
+      state.message = "请至少人工勾选一张当前 SKU 产品身份图；系统会在前面保留必要的操作或卖点证据图。";
+      updateImageGenerator(cardKey);
+      return;
+    }
+    references = manualSubmission.combined;
+  } else {
+    prioritizeSelectedOperationEvidence(state, selectedTemplate().id, item.type, facts, sku);
+    state.selectedReferences = generationReferencesForCard(item.type, facts, sku, state.selectedReferences);
+    references = [...state.selectedReferences];
+  }
   const submitted = {
     model: state.model,
     size: state.size,
     prompt: item.promptEn,
-    references: [...state.selectedReferences],
+    references,
   };
   state.status = "submitting";
   state.message = "正在提交生图任务…";
@@ -12347,8 +12533,12 @@ async function generateImageForCard(cardKey) {
     const images = normalizeGeneratedImages(payload);
     if (images.length) {
       state.status = "success";
-      state.message = `生成完成，共 ${images.length} 张。`;
-      recordGeneratedImages(cardKey, images, submitted);
+      state.message = `生成完成，共 ${images.length} 张；正在保存到当前页面…`;
+      updateImageGenerator(cardKey);
+      const cached = await recordGeneratedImages(cardKey, images, submitted);
+      state.message = cached.failedCount
+        ? `生成完成，共 ${images.length} 张；${cached.failedCount} 张暂未保存到本页，下次打开会自动重试。`
+        : `生成完成，共 ${images.length} 张，已保存到当前页面。`;
       updateImageGenerator(cardKey);
       return;
     }
@@ -12431,7 +12621,12 @@ async function generateAllImagesForCurrentOutput(referenceMode = "auto") {
     return;
   }
   if (referenceMode === "manual") {
-    const missingItems = items.filter((item) => !imageGenerationState(item.key).selectedReferences.length);
+    const sku = selectedSku();
+    const facts = promptFacts(sku, currentPromptData(sku));
+    const missingItems = items.filter((item) => !manualGenerationReferencesForCard(
+      item.type, facts, sku, imageGenerationState(item.key).selectedReferences,
+      selectedTemplate().id, imageGenerationState(item.key).excludedRequiredReferences,
+    ).manual.length);
     if (missingItems.length) {
       setBulkGenerationUi(`人工选图路线尚缺 ${missingItems.length} 个任务：${missingItems.map((item) => item.id).join("、")}。请逐项勾选参考图后再生成。`);
       return;
@@ -12474,7 +12669,7 @@ async function generateAllImagesForCurrentOutput(referenceMode = "auto") {
     while (nextIndex < items.length) {
       const item = items[nextIndex];
       nextIndex += 1;
-      await generateImageForCard(item.key);
+      await generateImageForCard(item.key, referenceMode);
       completed += 1;
       const successCount = items.filter((entry) => imageGenerationState(entry.key).status === "success").length;
       setBulkGenerationUi(`批量生成进度 ${completed}/${items.length}，已成功 ${successCount} 张。`, completed, items.length);
@@ -12729,6 +12924,28 @@ function setSaveGeneratedSetUi(message = "") {
   if (byId("saveGeneratedSetStatus")) byId("saveGeneratedSetStatus").textContent = message;
 }
 
+async function fetchGeneratedImageBlob(url, label = "图片", maxAttempts = 3) {
+  const requestUrl = /^data:image\//i.test(url) ? url : `/api/download-image?url=${encodeURIComponent(url)}`;
+  let lastStatus = 0;
+  let lastError = null;
+  const attempts = /^data:image\//i.test(url) ? 1 : Math.max(1, maxAttempts);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(requestUrl, { cache: "no-store" });
+      if (response.ok) return await response.blob();
+      lastStatus = response.status;
+      if (![408, 425, 429, 500, 502, 503, 504].includes(response.status)) break;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < attempts) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt * 500));
+    }
+  }
+  const detail = lastStatus ? `HTTP ${lastStatus}` : (lastError?.message || "网络错误");
+  throw new Error(`${label}读取失败（${detail}，已自动重试 ${attempts} 次）`);
+}
+
 async function saveGeneratedSet() {
   if (generatedSetSaving) return;
   const items = selectedGeneratedImageItemsForCurrentSet();
@@ -12757,18 +12974,16 @@ async function saveGeneratedSet() {
     }
   }
   const baseName = bridge ? context.product_name : chineseProductFilenameBase();
-  const entries = [];
   try {
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      const requestUrl = /^data:image\//i.test(item.url) ? item.url : `/api/download-image?url=${encodeURIComponent(item.url)}`;
-      const response = await fetch(requestUrl);
-      if (!response.ok) throw new Error(`第 ${index + 1} 张图片读取失败（HTTP ${response.status}）`);
-      const blob = await response.blob();
+    let completed = 0;
+    const entries = await Promise.all(items.map(async (item, index) => {
+      const blob = await fetchGeneratedImageBlob(item.url, `第 ${index + 1} 张图片`);
       const extension = imageExtension(blob.type, item.url);
-      entries.push({ name: `${baseName}${index + 1}.${extension}`, extension, bytes: new Uint8Array(await blob.arrayBuffer()) });
-      setSaveGeneratedSetUi(`正在读取 ${index + 1}/${items.length} 张图片…`);
-    }
+      const entry = { name: `${baseName}${index + 1}.${extension}`, extension, bytes: new Uint8Array(await blob.arrayBuffer()) };
+      completed += 1;
+      setSaveGeneratedSetUi(`正在读取 ${completed}/${items.length} 张图片…`);
+      return entry;
+    }));
     if (bridge) {
       const zip = buildStoredZip(entries);
       const uploadUrl = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
@@ -12816,10 +13031,7 @@ async function downloadSelectedGenerationHistory(cardKey) {
     for (const { record, round } of selectedRecords) {
       for (let imageIndex = 0; imageIndex < record.images.length; imageIndex += 1) {
         const url = record.images[imageIndex];
-        const requestUrl = /^data:image\//i.test(url) ? url : `/api/download-image?url=${encodeURIComponent(url)}`;
-        const response = await fetch(requestUrl);
-        if (!response.ok) throw new Error(`第 ${round} 轮图片读取失败（HTTP ${response.status}）`);
-        const blob = await response.blob();
+        const blob = await fetchGeneratedImageBlob(url, `第 ${round} 轮第 ${imageIndex + 1} 张图片`);
         const extension = imageExtension(blob.type, url);
         entries.push({
           name: `${baseName}${entries.length + 1}.${extension}`,
@@ -12844,6 +13056,10 @@ async function downloadSelectedGenerationHistory(cardKey) {
 function bindImageGeneratorSection(section) {
   const cardKey = section.dataset.cardKey;
   const state = imageGenerationState(cardKey);
+  const requiredReferenceDetails = requiredGenerationReferenceDetailsForCardKey(cardKey);
+  const defaultRequiredReferenceSet = new Set(requiredReferenceDetails.map((item) => item.url));
+  const excludedRequiredReferenceSet = new Set(state.excludedRequiredReferences || []);
+  const requiredReferenceSet = new Set([...defaultRequiredReferenceSet].filter((url) => !excludedRequiredReferenceSet.has(url)));
   section.querySelector(".rematch-supplier-references")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     const sku = selectedSku();
@@ -12883,10 +13099,10 @@ function bindImageGeneratorSection(section) {
     persistWorkspaceSnapshot();
   });
   section.querySelector(".clear-reference-selection")?.addEventListener("click", () => {
-    state.selectedReferences = state.operationEvidenceUrl ? [state.operationEvidenceUrl] : [];
+    state.selectedReferences = state.selectedReferences.filter((url) => requiredReferenceSet.has(url));
     savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
     lastReferenceSelectionCardKey = cardKey;
-    state.message = state.operationEvidenceUrl ? "已清除其他参考图，操作原图已保留。" : "已取消当前任务的全部候选图勾选。";
+    state.message = requiredReferenceSet.size ? "已清除人工选择，系统必需证据图继续保留。" : "已取消当前任务的全部人工选择。";
     updateImageGenerator(cardKey);
     persistManualReferences(cardKey);
     persistWorkspaceSnapshot();
@@ -12911,9 +13127,31 @@ function bindImageGeneratorSection(section) {
     checkbox.addEventListener("change", () => {
       const reference = state.availableReferences[Number(checkbox.dataset.referenceIndex)];
       if (!reference) return;
-      if (checkbox.checked && state.selectedReferences.length >= MAX_SELECTED_REFERENCES) {
+      if (defaultRequiredReferenceSet.has(reference)) {
+        if (checkbox.checked) {
+          const manualCount = state.selectedReferences.filter((url) => !defaultRequiredReferenceSet.has(url)).length;
+          const nextRequiredCount = requiredReferenceSet.size + (requiredReferenceSet.has(reference) ? 0 : 1);
+          if (nextRequiredCount + manualCount > MAX_SELECTED_REFERENCES) {
+            checkbox.checked = false;
+            state.message = `系统默认图与人工选图合计最多 ${MAX_SELECTED_REFERENCES} 张，请先取消另一张。`;
+          } else {
+            state.excludedRequiredReferences = (state.excludedRequiredReferences || []).filter((url) => url !== reference);
+            state.message = "已恢复该系统默认参考图，提交时会自动带入。";
+          }
+        } else {
+          state.excludedRequiredReferences = uniqueReferenceImageUrls([...(state.excludedRequiredReferences || []), reference]);
+          state.selectedReferences = state.selectedReferences.filter((url) => url !== reference);
+          state.message = "已人工取消该系统默认参考图，提交时不会再次加入。";
+        }
+        savedRequiredReferenceExclusionsByCard[cardKey] = [...state.excludedRequiredReferences];
+        updateImageGenerator(cardKey);
+        persistWorkspaceSnapshot();
+        return;
+      }
+      const manualCount = state.selectedReferences.filter((url) => !requiredReferenceSet.has(url)).length;
+      if (checkbox.checked && requiredReferenceSet.size + manualCount >= MAX_SELECTED_REFERENCES) {
         checkbox.checked = false;
-        state.message = `参考图最多选择 ${MAX_SELECTED_REFERENCES} 张。`;
+        state.message = `系统必需图与人工选图合计最多 ${MAX_SELECTED_REFERENCES} 张。`;
       } else if (checkbox.checked) {
         state.selectedReferences = Array.from(new Set([...state.selectedReferences, reference]));
         lastReferenceSelectionCardKey = cardKey;
@@ -13162,10 +13400,13 @@ function renderProductPromptGrid() {
     state.availableReferences = uniqueReferenceImageUrls([...referenceCandidates.all, ...manuallyUploaded]);
     state.selectedReferences = state.selectedReferences.filter((url) => state.availableReferences.includes(url));
     if (!state.referenceSelectionInitialized) {
-      state.selectedReferences = referenceCandidates.matched.slice(0, MAX_SELECTED_REFERENCES);
+      // A fresh manual route starts without inferred product-identity choices.
+      // Required operation evidence is pinned below; the user supplies identity
+      // and any additional references in their own click order.
+      state.selectedReferences = [];
       state.referenceSelectionInitialized = true;
     }
-    prioritizeSelectedOperationEvidence(state, template.id, type, facts, sku);
+    prioritizeSelectedOperationEvidence(state, template.id, type, facts, sku, true);
   });
 
   const visibleItems = promptStore.filter((item) => !item.empty);
@@ -13249,6 +13490,14 @@ function renderParameterPromptGrid() {
     renderAll();
   }));
   byId("planSellingPointImages")?.addEventListener("click", planSellingPointImages);
+  byId("confirmAllSellingPointImages")?.addEventListener("click", () => {
+    const currentFacts = promptFacts(sku, currentPromptData(sku));
+    const plans = currentVisualPlans(currentFacts);
+    plans.forEach((plan) => applyVisualPlanDecision(sku, currentFacts, plan, "show"));
+    visualPlanMessages.set(sku.id, `${plans.length} 张卖点图已一键确认展示，可以进入提示词与图组。`);
+    renderAll();
+    persistWorkspaceSnapshot();
+  });
   grid.querySelectorAll("[data-visual-plan-decision]").forEach((button) => button.addEventListener("click", () => {
     const index = Number(button.dataset.planIndex);
     const decision = button.dataset.visualPlanDecision;
@@ -13256,24 +13505,12 @@ function renderParameterPromptGrid() {
     const currentFacts = promptFacts(sku, currentPromptData(sku));
     const plan = currentVisualPlans(currentFacts).find((item) => item.groupIndex === index);
     if (!plan) return;
-    plan.humanDecision = decision;
-    plan.reviewed = true;
+    applyVisualPlanDecision(sku, currentFacts, plan, decision);
     const plans = currentVisualPlans(currentFacts);
     const undecided = plans.filter((item) => !["show", "skip"].includes(item.humanDecision)).length;
     visualPlanMessages.set(sku.id, undecided
       ? `人工决定已保存；还有 ${undecided} 张卖点图待决定。`
       : "所有卖点图均已由人工决定，可以进入提示词与图组。");
-    const points = visualPlanContext(currentFacts).groups[index] || [];
-    const type = selectedTemplate().imageTypes.find((candidate) => (
-      JSON.stringify(sellingPointGroupForImageTitle(selectedTemplate().id, candidate.id, currentFacts)) === JSON.stringify(points)
-    ));
-    if (type) {
-      const state = imageGenerationByCard[promptCardKey(sku, selectedTemplate(), type)];
-      if (state?.status === "needs_plan") {
-        state.status = "idle";
-        state.message = decision === "show" ? "已人工确认展示，可以生成图片。" : "已人工决定不展示此卖点图。";
-      }
-    }
     renderAll();
     persistWorkspaceSnapshot();
   }));
@@ -13323,6 +13560,11 @@ function persistWorkspaceSnapshot() {
       ...savedReferenceSelectionByCard,
       ...Object.fromEntries(Object.entries(imageGenerationByCard).map(([key, state]) => [key,
         state.selectedReferences.filter((url) => /^https?:\/\//i.test(url)).slice(0, MAX_SELECTED_REFERENCES)])),
+    },
+    requiredReferenceExclusionsByCard: {
+      ...savedRequiredReferenceExclusionsByCard,
+      ...Object.fromEntries(Object.entries(imageGenerationByCard).map(([key, state]) => [key,
+        uniqueReferenceImageUrls(state.excludedRequiredReferences || [])])),
     },
     imageSettingsByCard: {
       ...savedImageSettingsByCard,
@@ -13399,6 +13641,9 @@ function restoreWorkspaceSnapshot() {
     supplierImageSourcePresent = snapshot.supplierImageSourcePresent === true;
     savedReferenceSelectionByCard = snapshot.referenceSelectionsByCard && typeof snapshot.referenceSelectionsByCard === "object"
       ? snapshot.referenceSelectionsByCard : {};
+    savedRequiredReferenceExclusionsByCard = snapshot.requiredReferenceExclusionsByCard
+      && typeof snapshot.requiredReferenceExclusionsByCard === "object"
+      ? snapshot.requiredReferenceExclusionsByCard : {};
     savedImageSettingsByCard = snapshot.imageSettingsByCard && typeof snapshot.imageSettingsByCard === "object"
       ? snapshot.imageSettingsByCard : {};
     bundleStateBySku = snapshot.bundleStateBySku && typeof snapshot.bundleStateBySku === "object" ? snapshot.bundleStateBySku : {};
@@ -13482,6 +13727,7 @@ function clearExtractedSourceState({ render = true } = {}) {
   promptStore = [];
   imageGenerationByCard = {};
   savedReferenceSelectionByCard = {};
+  savedRequiredReferenceExclusionsByCard = {};
   savedImageSettingsByCard = {};
   lastReferenceSelectionCardKey = "";
   bulkImageGenerationRunning = false;
@@ -13636,6 +13882,7 @@ async function init() {
   initExtractionRoutePreview();
   renderFields(true);
   renderAll();
+  void cacheExistingGeneratedImageHistory();
   if (restoredWorkspace) {
     showWorkflowPage(restoredWorkspace.activeWorkflowPage || "studio");
     byId("extractStatus").textContent = boundWorkspace
@@ -13705,6 +13952,7 @@ async function init() {
     referenceImageMetaBySku = {};
     imageGenerationByCard = {};
     savedReferenceSelectionByCard = {};
+    savedRequiredReferenceExclusionsByCard = {};
     savedImageSettingsByCard = {};
     productStructureRouteManuallySelected = false;
     syncProductStructureRouteFromBinding(true);

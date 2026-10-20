@@ -440,6 +440,14 @@ body {
   font-size: 12px;
 }
 
+.visual-plan-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .visual-plan-choice-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -2862,6 +2870,35 @@ ul {
   transform: translateY(-1px);
 }
 
+.reference-image-option.is-system-required {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+
+.reference-image-option.is-system-required::after {
+  background: #d97706;
+  content: "系";
+  font-size: 11px;
+}
+
+.reference-image-option.is-system-required .reference-image-source {
+  background: rgba(146, 64, 14, 0.92);
+}
+
+.reference-image-option.is-system-excluded {
+  border-color: rgba(148, 163, 184, 0.55);
+  box-shadow: none;
+  transform: none;
+}
+
+.reference-image-option.is-system-excluded::after {
+  display: none;
+}
+
+.reference-image-option.is-system-excluded .reference-image-source {
+  background: rgba(71, 85, 105, 0.9);
+}
+
 .reference-image-option.is-selected::after {
   position: absolute;
   top: 5px;
@@ -2911,6 +2948,23 @@ ul {
   padding: 2px 4px;
   color: #fff;
   background: rgba(10, 16, 32, 0.78);
+  font-size: 9px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.reference-image-origin {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  border-radius: 4px;
+  padding: 2px 4px;
+  color: #fff;
+  background: rgba(10, 16, 32, 0.68);
   font-size: 9px;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -3470,6 +3524,10 @@ html[data-theme="dark"] .reference-count {
 
 html[data-theme="dark"] .reference-image-option.is-selected {
   border-color: var(--accent);
+}
+
+html[data-theme="dark"] .reference-image-option.is-system-required {
+  border-color: #fbbf24;
 }
 
 @media (max-width: 1500px) {
