@@ -474,5 +474,23 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       'Wide 60 degree atomization spray range'
     ], 4)`, pointContext);
     assert.equal(nearOverlap.length, 3, 'only exact duplicate claims are removed');
+    const pointFallbackStart = source.indexOf('function autoEnrichSellingPointsIfNeeded(');
+    const pointFallbackEnd = source.indexOf('async function fetchLocalUseSceneProxy(', pointFallbackStart);
+    assert.ok(pointFallbackStart >= 0 && pointFallbackEnd > pointFallbackStart);
+    let webRequests = 0;
+    const pointFallback = vm.createContext({
+      supplierImageSourcePresent: true,
+      sellingPointResearchAttemptedBySku: new Set(),
+      selectedSku: () => ({id: 'grow-bag'}),
+      sellingPointReviewForSku: () => ({locked: false}),
+      byId: () => ({value: ''}),
+      splitSellingPointText: (value) => value ? [value] : [],
+      enrichSellingPointsOnline: () => {webRequests += 1;},
+    });
+    vm.runInContext(source.slice(pointFallbackStart, pointFallbackEnd), pointFallback);
+    vm.runInContext('autoEnrichSellingPointsIfNeeded()', pointFallback);
+    assert.equal(webRequests, 1, 'empty image-based result triggers web fallback even when supplier images exist');
+    vm.runInContext('autoEnrichSellingPointsIfNeeded()', pointFallback);
+    assert.equal(webRequests, 1, 'fallback is not submitted twice for the same SKU');
     console.log('Every unique image reaches Doubao; only Doubao-selected images enter the shared candidate list.');
   }).catch((error) => {console.error(error); process.exitCode = 1;});

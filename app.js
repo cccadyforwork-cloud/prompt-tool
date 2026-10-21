@@ -7944,7 +7944,7 @@ async function extractSources() {
         : `豆包识图：已调用，但未整理出可确认信息。${supplierSource.visionMessage || ""}${visionErrorText ? ` 原因：${visionErrorText}` : ""}`
       : "";
     const webStatus = routeId === "web"
-      ? "已提取场景优先；联网只补充缺少的场景，不覆盖原有内容。无供应商图片且卖点为空时才尝试联网卖点候选。"
+      ? "已提取场景优先；联网只补充缺少的场景，不覆盖原有内容。当前 SKU 没有已确认的供应商卖点时才尝试联网卖点候选。"
       : "";
     const identityStatus = mergeResult.warnings.length ? `身份校验提示：${mergeResult.warnings.join("；")} ` : "";
     byId("extractStatus").textContent = `已按“${structureRouteName} / ${routeName}”提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}${identityStatus}${htmlFileStatus}${ocrStatus}${ocrAvailability}${visionStatus}${referenceMappingStatus}${webStatus}`;
@@ -8524,9 +8524,9 @@ function autoEnrichSellingPointsIfNeeded() {
   const skuId = selectedSku()?.id || "";
   if (!skuId || sellingPointResearchAttemptedBySku.has(skuId)) return;
   if (sellingPointReviewForSku(selectedSku(), false)?.locked) return;
-  // An empty vision result does not prove that supplier images contain no
-  // selling points. Keep the field empty until image evidence is reviewed.
-  if (supplierImageSourcePresent) return;
+  // The existence of supplier images does not mean vision extracted a claim.
+  // Web research fills only an empty current-SKU field and never replaces
+  // image-backed or operator-locked selling points.
   // Presence alone never proves a point came from 1688. Keep the provenance
   // assigned by extraction, online fallback or the operator's own edit.
   if (splitSellingPointText(byId("field-sellingPoints")?.value || "").length) return;
