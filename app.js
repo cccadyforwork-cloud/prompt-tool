@@ -604,7 +604,6 @@ function showWorkflowPage(pageName) {
     panel.classList.toggle("is-active", panel.dataset.workflowPanel === activeWorkflowPage);
   });
   persistWorkspaceSnapshot();
-  scheduleAutomaticVisualPlan();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -634,6 +633,8 @@ async function confirmParameterOutputs() {
     const facts = promptFacts(sku, currentPromptData(sku));
     const context = visualPlanContext(facts);
     const planSignature = JSON.stringify(context);
+    sku.confirmedSellingPointPlanInput = currentVisualPlanConfirmationSignature(sku);
+    persistWorkspaceSnapshot();
     if (context.groups.length && !currentVisualPlans(facts).length) {
       status.textContent = "正在规划当前卖点图，请稍候…";
       const inFlightSignature = visualPlanRequests.get(sku.id);
@@ -1544,11 +1545,74 @@ function sellingPointReviewHtml(sku) {
     ${selectedHtml}
     <div class="selling-point-candidate-list">${candidateHtml}</div>
     <div class="selling-point-review-actions"><button type="button" id="lockSellingPointChoices"${candidates.length ? "" : " disabled"}>确认所选并锁定</button><button type="button" class="secondary" id="refreshSellingPointChoices"${canRefresh ? "" : " disabled"}>重新识图</button></div>
-    <div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增人工卖点候选" placeholder="新增人工卖点候选（英文）"><button type="button" class="secondary" id="addManualSellingPointCandidate">添加</button></div>
+    <div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增中文卖点候选" maxlength="300" placeholder="输入中文卖点，自动翻译为英文候选"><button type="button" class="secondary" id="addManualSellingPointCandidate">翻译并添加</button></div>
     ${canRefresh ? "" : '<p class="parameter-source">重新识图需先用当前资料解析一次，以保存本子体的图片清单。</p>'}
     <p id="sellingPointReviewStatus" class="parameter-source" role="status" aria-live="polite"></p>
     <details class="selling-point-history"><summary>查看历史版本（${(review.history || []).length}）</summary>${history || '<p class="parameter-source">暂无历史版本</p>'}</details>
   </section>`;
+}
+
+async function addManualSellingPointCandidate(sku, review) {
+  const input = byId("manualSellingPointCandidate");
+  const button = byId("addManualSellingPointCandidate");
+  const status = byId("sellingPointReviewStatus");
+  const claimZh = String(input?.value || "").trim();
+  if (!claimZh || claimZh.length > 300 || !/[\u3400-\u9fff]/.test(claimZh)) {
+    if (status) status.textContent = "请输入不超过 300 字的中文卖点。";
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "正在翻译…";
+  if (status) status.textContent = "正在翻译为英文卖点标题…";
+  try {
+    const response = await fetch("/api/translate-manual-selling-point", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ claim_zh: claimZh }),
+    });
+    let result = {};
+    try { result = await response.json(); } catch { /* use the HTTP error below */ }
+    if (!response.ok) throw new Error(result.error || `翻译失败（HTTP ${response.status}）`);
+    const claim = cleanFieldDisplayValue(result.claim_en);
+    if (!/^[\x20-\x7E]{5,120}$/.test(claim)) throw new Error("没有收到有效的英文卖点标题，请重试。");
+    const entries = normalizeSellingPointEntries(review.candidateEntries);
+    const duplicate = entries.find((entry) => entry.claim.toLowerCase() === claim.toLowerCase());
+    if (duplicate) {
+      review.candidateEntries = entries.map((entry) => entry.claim === duplicate.claim && !entry.meaningZh
+        ? { ...entry, meaningZh: claimZh }
+        : entry);
+      review.checkedClaims = [...new Set([...(review.checkedClaims || []), duplicate.claim])];
+      persistSellingPointReviews();
+      if (selectedSku()?.id === sku.id) {
+        renderFields(true);
+        renderAll();
+        const nextStatus = byId("sellingPointReviewStatus");
+        if (nextStatus) nextStatus.textContent = "该英文卖点已存在，已勾选为候选。";
+      }
+      return;
+    }
+    const entry = { claim, meaningZh: claimZh, source: SELLING_POINT_SOURCE_MANUAL, evidence: "", imageUrl: "" };
+    review.candidateEntries = normalizeSellingPointEntries([...entries, entry]);
+    review.checkedClaims = [...new Set([...(review.checkedClaims || []), claim])];
+    appendSellingPointReviewHistory(review, "人工候选", [entry]);
+    persistSellingPointReviews();
+    input.value = "";
+    if (selectedSku()?.id === sku.id) {
+      renderFields(true);
+      renderAll();
+      const nextStatus = byId("sellingPointReviewStatus");
+      if (nextStatus) nextStatus.textContent = `已将“${claim}”翻译并加入勾选候选。`;
+    }
+  } catch (error) {
+    const nextStatus = selectedSku()?.id === sku.id ? byId("sellingPointReviewStatus") : null;
+    if (nextStatus) nextStatus.textContent = error?.message || "翻译失败，请重试。";
+  } finally {
+    const nextButton = selectedSku()?.id === sku.id ? byId("addManualSellingPointCandidate") : null;
+    if (nextButton) {
+      nextButton.disabled = false;
+      nextButton.textContent = "翻译并添加";
+    }
+  }
 }
 
 function bindSellingPointReviewControls(sku) {
@@ -1579,19 +1643,7 @@ function bindSellingPointReviewControls(sku) {
     byId("sellingPointReviewStatus").textContent = "已锁定当前 SKU 的卖点；普通重新解析不会覆盖。";
   });
   byId("addManualSellingPointCandidate")?.addEventListener("click", () => {
-    const input = byId("manualSellingPointCandidate");
-    const claim = String(input?.value || "").trim();
-    if (!/^[\x20-\x7E]{5,120}$/.test(claim)) {
-      byId("sellingPointReviewStatus").textContent = "请填写 5–120 个英文字符的卖点。";
-      return;
-    }
-    const entry = { claim, source: SELLING_POINT_SOURCE_MANUAL, evidence: "", imageUrl: "" };
-    review.candidateEntries = normalizeSellingPointEntries([...(review.candidateEntries || []), entry]);
-    review.checkedClaims = [...new Set([...(review.checkedClaims || []), claim])];
-    appendSellingPointReviewHistory(review, "人工候选", [entry]);
-    persistSellingPointReviews();
-    renderFields(true);
-    renderAll();
+    void addManualSellingPointCandidate(sku, review);
   });
   byId("refreshSellingPointChoices")?.addEventListener("click", refreshSellingPointCandidates);
 }
@@ -4482,6 +4534,9 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
       + (Array.isArray(analysisResult?.dimensions) ? analysisResult.dimensions.length : 0)
       + (Array.isArray(analysisResult?.selling_points) ? analysisResult.selling_points.length : 0)
       + (Array.isArray(analysisResult?.use_scenes) ? analysisResult.use_scenes.length : 0),
+    visionSentCount: routeId === "web" && !skipLockedVision ? visionImageCandidates.length : 0,
+    visionSellingPointCount: Array.isArray(analysisResult?.selling_points) ? analysisResult.selling_points.length : 0,
+    visionSelectedCount: selectedByDoubao?.filter((item) => item.review_status !== "pending").length || 0,
     visionMessage: cleanFieldDisplayValue(analysisResult?.message || ""),
     visionErrors: Array.isArray(analysisResult?.errors) ? analysisResult.errors.map((error) => cleanFieldDisplayValue(error)).filter(Boolean) : [],
     sellingPointVisualEvidence: productAnalysisSellingPointVisualEvidence(analysisResult),
@@ -4565,6 +4620,9 @@ function mergeSupplierSourceResults(results) {
     sellingPointCount: values.reduce((sum, item) => sum + (item.sellingPointCount || 0), 0),
     collectorCandidateCount: values.reduce((sum, item) => sum + (item.collectorCandidateCount || 0), 0),
     visionEvidenceCount: values.reduce((sum, item) => sum + (item.visionEvidenceCount || 0), 0),
+    visionSentCount: values.reduce((sum, item) => sum + (item.visionSentCount || 0), 0),
+    visionSellingPointCount: values.reduce((sum, item) => sum + (item.visionSellingPointCount || 0), 0),
+    visionSelectedCount: values.reduce((sum, item) => sum + (item.visionSelectedCount || 0), 0),
     visionMessage: values.map((item) => cleanFieldDisplayValue(item.visionMessage || "")).filter(Boolean).join("；"),
     visionErrors: values.flatMap((item) => Array.isArray(item.visionErrors) ? item.visionErrors : []).filter(Boolean),
     sellingPointVisualEvidence: values.flatMap((item) => Array.isArray(item.sellingPointVisualEvidence) ? item.sellingPointVisualEvidence : []),
@@ -7904,50 +7962,27 @@ async function extractSources() {
       sku.id, [...competitorReferenceMeta, ...supplierReferenceMeta],
     ]));
     const resolvedTargetProducts = extractedProducts.filter((product) => targetIdSet.has(product.id));
-    const referenceMappingStatus = supplierSource.selectionPendingCount
-      ? `${routeId === "local" ? "本地分析" : "豆包筛图"}有 ${supplierSource.selectionPendingCount} 张未完成判断，已作为待人工核对图片保留；候选区共 ${supplierReferenceImageUrls.length} 张，所有 SKU 均可查看。`
-      : `豆包筛出 ${supplierReferenceImageUrls.length} 张供应商候选图，排除 ${supplierSource.selectionRejectedCount || 0} 张；所有 SKU 均可查看，颜色和款式由人工确认。`;
+    const referenceMappingStatus = routeId === "web"
+      ? `候选图筛选：${supplierSource.visionSelectedCount ? "成功" : "未选出"}，豆包选出 ${supplierSource.visionSelectedCount || 0} 张${supplierSource.selectionPendingCount ? `，另有 ${supplierSource.selectionPendingCount} 张待人工核对` : ""}。`
+      : `候选图：本地保留 ${supplierReferenceImageUrls.length} 张。`;
     renderProductSelect(resolvedTargetProducts[0]?.id || extractedProducts[0]?.id);
     renderFields(true);
     renderAll();
-    const ocrStatus = supplierSource.imageCount
-      ? `1688 图片：共发现 ${supplierSource.candidateCount || supplierSource.imageCount} 条候选，清理无效及重复链接后保留 ${supplierSource.imageCount} 张；${routeId === "local" ? `本地 OCR 已扫描 ${supplierSource.scannedCount || 0} 张` : "图片内容交由豆包识别"}。`
-      : "未找到可识别的 1688 图片。";
-    const ocrAvailability = "";
-    const amazonTemplateStatus = amazonTemplateFile
-      ? `Amazon 模板：${useSupplierFileProducts
-        ? "多 1688 文件模式已改按文件输出产品，未使用模板款式"
-        : mergeResult.mergedIds.length
-            ? `${amazonTemplate.products.length} 个子 SKU 款式；1688事实已按${resolvedBindingScope.kind === "parent" ? "父体共享" : "子 SKU 专属"}作用域写入 ${mergeResult.mergedIds.length} 个 SKU；Amazon 仅保留商品身份、标题与变体差异`
-            : `${amazonTemplate.products.length} 个子 SKU 款式`}。`
-      : "";
-    const pastedListStatus = pastedSupplierImageListText
-      ? `已粘贴链接清单${supplierSource.collectorCandidateCount ? `，过滤去重后 ${supplierSource.collectorCandidateCount} 张` : ""}`
-      : "未粘贴链接清单";
-    const competitorDimensionCount = dimensionListItems(competitorDimensionList).length;
-    const competitorMeasurementStatus = [
-      competitorDimensionCount ? `产品尺寸 ${competitorDimensionCount} 项` : "",
-      competitorProductWeight ? "产品净重" : "",
-      competitorCapacity ? "容量" : "",
-    ].filter(Boolean).join("、");
-    const htmlFileStatus = `1688 HTML：${supplierFiles.length} 个；采集助手图片链接：${pastedListStatus}；参考链接 HTML：${competitorFiles.length} 个${competitorReferenceImageUrls.length ? `，已抽取竞品候选图 ${competitorReferenceImageUrls.length} 张` : ""}${competitorMeasurementStatus ? `，识别竞品${competitorMeasurementStatus}（仅作末级兜底）` : ""}。`;
-    const supplierFileStatus = useSupplierFileProducts
-      ? `多 1688 文件：已按 ${supplierFileProducts.length} 个文件生成 ${supplierFileProducts.length} 个独立产品选项；旧参考链接内容未参与本次提示词。`
-      : amazonTemplate.products.length > 1
-        ? `多个 Amazon 子 SKU：1688资料已按“${resolvedBindingScope.kind === "parent" ? `父体 ${resolvedBindingScope.parentSku} 共享` : resolvedBindingScope.kind === "child" ? `仅 ${resolvedBindingScope.targets[0]?.id}` : "未绑定"}”处理；未在作用域内的 SKU 不读取这份1688事实。`
-        : "";
     const visionEvidenceCount = supplierSource.visionEvidenceCount || 0;
-    const visionErrorText = (supplierSource.visionErrors || []).slice(0, 2).join("；");
+    const visionErrorText = (supplierSource.visionErrors || []).slice(0, 1).join("；");
     const visionStatus = routeId === "web"
-      ? visionEvidenceCount
-        ? `豆包识图：已整理 ${visionEvidenceCount} 项带图片证据的信息。`
-        : `豆包识图：已调用，但未整理出可确认信息。${supplierSource.visionMessage || ""}${visionErrorText ? ` 原因：${visionErrorText}` : ""}`
-      : "";
-    const webStatus = routeId === "web"
-      ? "已提取场景优先；联网只补充缺少的场景，不覆盖原有内容。当前 SKU 没有已确认的供应商卖点时才尝试联网卖点候选。"
-      : "";
-    const identityStatus = mergeResult.warnings.length ? `身份校验提示：${mergeResult.warnings.join("；")} ` : "";
-    byId("extractStatus").textContent = `已按“${structureRouteName} / ${routeName}”提取 ${extractedProducts.length} 个产品 / 款式。${supplierFileStatus}${amazonTemplateStatus}${identityStatus}${htmlFileStatus}${ocrStatus}${ocrAvailability}${visionStatus}${referenceMappingStatus}${webStatus}`;
+      ? !supplierSource.visionSentCount
+        ? "豆包识图：本次未执行。"
+        : visionEvidenceCount
+          ? `豆包识图：成功；识图卖点 ${supplierSource.visionSellingPointCount || 0} 条。`
+          : visionErrorText
+            ? `豆包识图：失败；识图卖点 0 条（${visionErrorText}）。`
+            : "豆包识图：返回空结果；识图卖点 0 条。"
+      : `本地 OCR：扫描 ${supplierSource.scannedCount || 0} 张。`;
+    const imageStatus = routeId === "web"
+      ? `送豆包图片：${supplierSource.visionSentCount || 0} 张。`
+      : `本地图片：${supplierSource.imageCount || 0} 张。`;
+    byId("extractStatus").textContent = `资料解析完成。${imageStatus}${visionStatus}${referenceMappingStatus}`;
     if (routeId === "web") {
       autoEnrichSellingPointsIfNeeded();
       autoEnrichUseScenesIfNeeded();
@@ -8459,7 +8494,7 @@ async function enrichSellingPointsOnline() {
   const requestedGeneration = extractionGeneration;
   const status = byId("extractStatus");
   const statusPrefix = status?.textContent || "";
-  if (status) status.textContent = `${statusPrefix} 1688未提取到有效卖点，正在由豆包联网查证…`;
+  if (status) status.textContent = `${statusPrefix} 联网卖点：处理中。`;
   try {
     const facts = currentSceneResearchFacts();
     const data = await fetchLocalSellingPointProxy(facts);
@@ -8491,10 +8526,10 @@ async function enrichSellingPointsOnline() {
     renderAll();
     if (status) {
       status.textContent = webPoints.length
-        ? `${statusPrefix} 1688未提取到有效卖点；豆包已联网补全 ${webPoints.length} 个英文卖点。`
+        ? `${statusPrefix} 联网卖点：成功，补充 ${webPoints.length} 条。`
         : points.length
-          ? `${statusPrefix} 1688与联网均未提取到有效卖点；已从竞品资料提取 ${points.length} 个候选卖点，请人工确认。`
-          : `${statusPrefix} ${NO_REFERENCE_SELLING_POINT_MESSAGE}`;
+          ? `${statusPrefix} 联网卖点：未找到；竞品候选 ${points.length} 条。`
+          : `${statusPrefix} 联网卖点：未找到。`;
     }
   } catch {
     if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== skuId || sellingPointInputRevision !== requestedRevision) return;
@@ -8515,8 +8550,8 @@ async function enrichSellingPointsOnline() {
     renderFields(true);
     renderAll();
     if (status) status.textContent = points.length
-      ? `${statusPrefix} 联网补充失败；已从竞品资料提取 ${points.length} 个候选卖点，请人工确认。`
-      : `${statusPrefix} ${NO_REFERENCE_SELLING_POINT_MESSAGE}`;
+      ? `${statusPrefix} 联网卖点：失败；竞品候选 ${points.length} 条。`
+      : `${statusPrefix} 联网卖点：失败。`;
   }
 }
 
@@ -9973,8 +10008,6 @@ function sellingPointProofDominanceRule(points = [], facts = {}, route = "flexib
 const visualPlanRequests = new Map();
 const visualPlanRequestPromises = new Map();
 const visualPlanMessages = new Map();
-const automaticVisualPlanAttempts = new Set();
-let automaticVisualPlanTimer = null;
 
 function sellingPointActionDependency(points = []) {
   const claim = points.join(" ").toLowerCase();
@@ -10020,6 +10053,20 @@ function visualPlanContext(facts) {
   const routes = groups.map((points, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length, points, facts, groups));
   const evidence = facts.sellingPointVisualEvidence || [];
   return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 13 };
+}
+
+function currentVisualPlanConfirmationSignature(sku = selectedSku()) {
+  if (!sku) return "";
+  const facts = promptFacts(sku, currentPromptData(sku));
+  return JSON.stringify({
+    skuId: sku.id,
+    fields: currentFieldSignature(),
+    context: visualPlanContext(facts),
+  });
+}
+
+function visualPlanParametersConfirmed(sku = selectedSku()) {
+  return Boolean(sku && sku.confirmedSellingPointPlanInput === currentVisualPlanConfirmationSignature(sku));
 }
 
 function currentVisualPlans(facts) {
@@ -10078,44 +10125,20 @@ function manualDecisionFallbackPlans(context, reason = "自动规划未完成") 
   }));
 }
 
-function scheduleAutomaticVisualPlan() {
-  clearTimeout(automaticVisualPlanTimer);
-  automaticVisualPlanTimer = null;
-  if (!["parameters", "studio"].includes(activeWorkflowPage) || !hasExtractedProducts()) return;
-  const sku = selectedSku();
-  if (!sku) return;
-  const facts = promptFacts(sku, currentPromptData(sku));
-  const context = visualPlanContext(facts);
-  if (!context.groups.length || currentVisualPlans(facts).length || visualPlanRequests.has(sku.id)) return;
-  const signature = JSON.stringify(context);
-  const attemptKey = `${sku.id}:${signature}`;
-  if (automaticVisualPlanAttempts.has(attemptKey)) return;
-  visualPlanMessages.set(sku.id, "当前卖点图方案即将自动规划…");
-  const status = byId("planSellingPointImages")?.parentElement?.querySelector('[role="status"]');
-  if (status) status.textContent = visualPlanMessages.get(sku.id);
-  automaticVisualPlanTimer = setTimeout(() => {
-    automaticVisualPlanTimer = null;
-    const currentSku = selectedSku();
-    if (!currentSku || currentSku.id !== sku.id || !["parameters", "studio"].includes(activeWorkflowPage)) return;
-    const currentFacts = promptFacts(currentSku, currentPromptData(currentSku));
-    if (JSON.stringify(visualPlanContext(currentFacts)) !== signature || currentVisualPlans(currentFacts).length) return;
-    automaticVisualPlanAttempts.add(attemptKey);
-    void planSellingPointImages();
-  }, 2500);
-}
-
 async function planSellingPointImages() {
   const sku = selectedSku();
   if (!sku) return;
+  if (!visualPlanParametersConfirmed(sku)) {
+    visualPlanMessages.set(sku.id, "请先完成参数修改，再点击页面上方“确认参数”；确认后才会开始卖点规划。");
+    renderParameterPromptGrid();
+    return;
+  }
   if (visualPlanRequests.has(sku.id)) return visualPlanRequestPromises.get(sku.id);
   const context = visualPlanContext(promptFacts(sku, currentPromptData(sku)));
   if (!context.groups.length) return;
   const signature = JSON.stringify(context);
   let resolvePending;
   visualPlanRequestPromises.set(sku.id, new Promise((resolve) => { resolvePending = resolve; }));
-  clearTimeout(automaticVisualPlanTimer);
-  automaticVisualPlanTimer = null;
-  automaticVisualPlanAttempts.add(`${sku.id}:${signature}`);
   visualPlanRequests.set(sku.id, signature);
   visualPlanMessages.set(sku.id, "正在一次完成卖点图规划与自检…");
   const controller = new AbortController();
@@ -10168,7 +10191,6 @@ async function planSellingPointImages() {
     visualPlanRequests.delete(sku.id);
     try {
       renderParameterPromptGrid();
-      scheduleAutomaticVisualPlan();
     } finally {
       visualPlanRequestPromises.delete(sku.id);
       resolvePending();
@@ -10181,6 +10203,7 @@ function visualPlanReviewHtml(facts) {
   if (!context.groups.length) return "";
   const plans = currentVisualPlans(facts);
   const busy = visualPlanRequests.has(selectedSku().id);
+  const parametersConfirmed = visualPlanParametersConfirmed();
   const template = selectedTemplate();
   const selection = sellingPointImageSelection(facts);
   const undecidedCount = plans.filter((plan) => !["show", "skip"].includes(plan.humanDecision)).length;
@@ -10189,7 +10212,7 @@ function visualPlanReviewHtml(facts) {
     : "尚无适用于当前参数的方案。";
   return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>整套卖点图方案</h3>
     <p class="workflow-section-note">确认方案后可一键让全部卖点图展示；需要排除某张时仍可在对应方案中单独设为不展示。</p></div>
-    <div class="visual-plan-heading-actions"><button id="planSellingPointImages" type="button" class="secondary" ${busy ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划" : "立即规划"}</button>${plans.length ? `<button id="confirmAllSellingPointImages" type="button" ${busy || !undecidedCount ? "disabled" : ""}>${undecidedCount ? `一键确认${plans.length}张均展示` : "已确认全部展示"}</button>` : ""}</div></div>
+    <div class="visual-plan-heading-actions"><button id="planSellingPointImages" type="button" class="secondary" ${busy || !parametersConfirmed ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划" : parametersConfirmed ? "立即规划" : "等待参数确认"}</button>${plans.length ? `<button id="confirmAllSellingPointImages" type="button" ${busy || !undecidedCount ? "disabled" : ""}>${undecidedCount ? `一键确认${plans.length}张均展示` : "已确认全部展示"}</button>` : ""}</div></div>
     <div class="visual-plan-choice-grid">${selection.slots.map((type, index) => `<label><span>${escapeHtml(type.name)} · ${sellingPointVisualRouteLabel(context.routes[index] || "flexible")}</span><select data-selling-point-slot="${index}" ${selection.points.length ? "" : "disabled"}>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}" ${selection.indices[index] === pointIndex ? "selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>`).join("")}</div>
     <p class="visual-plan-status" role="status">${escapeHtml(visualPlanMessages.get(selectedSku().id) || defaultStatus)}</p>
     ${plans.map((plan) => {
@@ -12913,13 +12936,7 @@ function setSaveGeneratedSetUi(message = "") {
     button.disabled = generatedSetSaving || !selectedCount;
     button.textContent = generatedSetSaving
       ? "正在整理选中图片…"
-      : boundWorkspace && storeParentOrigin
-        ? selectedCount ? `交接 S3 候选图组（${selectedCount} 张）` : "勾选图片后交接 S3 候选图组"
-        : selectedCount === 1
-          ? "下载选中图片（1）"
-          : selectedCount > 1
-            ? `打包下载选中图组（${selectedCount}）`
-            : "选择图片后下载";
+      : selectedCount ? `下载勾选图片（${selectedCount} 张）` : "下载勾选图片";
   }
   if (byId("saveGeneratedSetStatus")) byId("saveGeneratedSetStatus").textContent = message;
 }
@@ -12955,25 +12972,7 @@ async function saveGeneratedSet() {
   }
   generatedSetSaving = true;
   setSaveGeneratedSetUi(`正在读取 0/${items.length} 张图片…`);
-  const bridge = boundWorkspace && storeParentOrigin;
-  let context = null;
-  if (bridge) {
-    try {
-      const contextUrl = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
-        + `/image-candidates/context?sku=${encodeURIComponent(boundWorkspace.sku)}`);
-      const response = await fetch(new Request(contextUrl), { cache: "no-store" });
-      context = await response.json();
-      if (!response.ok || !context.ok || context.sku !== boundWorkspace.sku || !context.product_name) {
-        throw new Error(context.error || "运营系统尚无当前子体的已确认中文品名，请先核对 S1 定价资料。");
-      }
-    } catch (error) {
-      setSaveGeneratedSetUi(`无法交接当前子体：${error?.message || "运营系统未连接"}`);
-      generatedSetSaving = false;
-      setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
-      return;
-    }
-  }
-  const baseName = bridge ? context.product_name : chineseProductFilenameBase();
+  const baseName = chineseProductFilenameBase();
   try {
     let completed = 0;
     const entries = await Promise.all(items.map(async (item, index) => {
@@ -12984,30 +12983,14 @@ async function saveGeneratedSet() {
       setSaveGeneratedSetUi(`正在读取 ${completed}/${items.length} 张图片…`);
       return entry;
     }));
-    if (bridge) {
-      const zip = buildStoredZip(entries);
-      const uploadUrl = storeWorkflowEndpoint(`/api/projects/${encodeURIComponent(boundWorkspace.projectId)}`
-        + `/image-candidates/import?sku=${encodeURIComponent(boundWorkspace.sku)}`
-        + `&expected_revision=${encodeURIComponent(context.revision)}`);
-      setSaveGeneratedSetUi(`正在将 ${entries.length} 张图交接到运营系统 S3 候选区；不会下载到桌面…`);
-      const response = await fetch(new Request(uploadUrl), {
-        method: "POST",
-        headers: { "Content-Type": "application/zip", "X-Workflow-Import": "prompt-tool-selected-v1" },
-        body: zip,
-      });
-      const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || `交接失败（HTTP ${response.status}）`);
-      setSaveGeneratedSetUi(`已交接 ${entries.length} 张到 ${context.sku} 的 S3 候选区；请在运营系统比较并确认采用，确认前不会下载到桌面。`);
-      return;
-    }
     if (entries.length === 1) {
       downloadBlob(imageBlobFromEntry(entries[0]), entries[0].name);
-      setSaveGeneratedSetUi(`已直接保存图片“${entries[0].name}”。`);
+      setSaveGeneratedSetUi(`已下载勾选图片“${entries[0].name}”。`);
       return;
     }
     const zip = buildStoredZip(entries);
     downloadBlob(zip, `${baseName}.zip`);
-    setSaveGeneratedSetUi(`已保存 ${entries.length} 张选中图片；压缩包为“${baseName}.zip”，图片从“${baseName}1”起连续编号。`);
+    setSaveGeneratedSetUi(`已下载 ${entries.length} 张勾选图片；压缩包为“${baseName}.zip”，图片从“${baseName}1”起连续编号。`);
   } catch (error) {
     setSaveGeneratedSetUi(error?.message || "选中图片图组保存失败");
   } finally {
@@ -13536,7 +13519,6 @@ function renderAll() {
   }
   renderBundleEditor();
   renderProductParameters();
-  scheduleAutomaticVisualPlan();
   renderFacts();
   const productLabel = hasExtractedProducts() ? skuDisplayLabel(selectedSku()) : "新产品";
   document.title = `${productLabel} · 提示词工具`;
