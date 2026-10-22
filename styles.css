@@ -258,6 +258,37 @@ body {
   padding-inline: 20px;
 }
 
+.workflow-stage-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.workflow-stage-action p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workflow-stage-action button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 220px;
+  margin: 0;
+}
+
+.workflow-stage-action.is-checkpoint {
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: 0;
+}
+
 .workflow-heading-action {
   flex: 0 0 auto;
   max-width: 100%;
@@ -411,6 +442,16 @@ body {
   border: 2px solid var(--accent);
   background: linear-gradient(140deg, var(--accent-soft), var(--surface) 52%);
   box-shadow: 0 12px 30px rgba(96, 60, 255, 0.13);
+}
+
+.parameter-selling-point-gate {
+  margin: 6px 0 10px;
+}
+
+.parameter-selling-point-gate button {
+  width: 100%;
+  min-height: 46px;
+  margin: 0;
 }
 
 .visual-plan-review-heading {
@@ -1048,6 +1089,15 @@ html[data-theme="dark"] .workflow-app-header {
   .workflow-page-heading,
   .studio-heading {
     display: grid;
+  }
+
+  .workflow-stage-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workflow-stage-action button {
+    width: 100%;
   }
 
   .workflow-next,

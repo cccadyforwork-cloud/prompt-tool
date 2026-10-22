@@ -4,11 +4,23 @@ const vm = require('node:vm');
 
 const path = process.argv[2] || 'app.js';
 const source = fs.readFileSync(path, 'utf8');
-assert.match(source, /id="confirmAllSellingPointImages"/, 'selling-point plans expose one-click confirmation');
-assert.match(source, /plans\.forEach\(\(plan\) => applyVisualPlanDecision\(sku, currentFacts, plan, "show"\)\)/,
-  'one-click confirmation marks every selling-point plan for display');
-assert.match(source, /!planIncluded && !humanConfirmed/,
-  'explicit human confirmation overrides a missing visual-plan marker');
+assert.match(source, /id="confirmParametersAndSellingPoints"[^>]*>确认参数和卖点，开始规划卖点方案/,
+  'parameter and selling-point confirmation starts planning at the workflow checkpoint');
+assert.match(source, /confirmedSellingPointPlanInput = currentVisualPlanConfirmationSignature\(sku\)/,
+  'the checkpoint locks the current parameter and selling-point input before planning');
+assert.match(source, /applyVisualPlanDecision\(sku, latestFacts, plan, "show"\)/,
+  'the top-right action confirms the completed plan before entering the image set');
+const filenameStart = source.indexOf('function generatedImageFilename(');
+const filenameEnd = source.indexOf('function selectedSetPreviewItems(', filenameStart);
+assert.ok(filenameStart >= 0 && filenameEnd > filenameStart, 'typed product image filename helper is present');
+const filenameContext = vm.createContext({});
+vm.runInContext(source.slice(filenameStart, filenameEnd), filenameContext);
+assert.equal(vm.runInContext('generatedImageFilename("鞋子", {imageTypeName:"产品说明图", imageTypeOrder:"4", imageTypeVariantCount:1}, "png")', filenameContext),
+  '鞋子产品说明图4.png', 'single downloads include the product, image type and sequence');
+assert.equal(vm.runInContext('generatedImageFilename("鞋子", {imageTypeName:"产品说明图", imageTypeOrder:"4", imageTypeVariant:2, imageTypeVariantCount:2}, "jpg")', filenameContext),
+  '鞋子产品说明图4-2.jpg', 'multiple images from one slot receive a distinguishing sequence suffix');
+assert.equal((source.match(/name: generatedImageFilename\(/g) || []).length, 2,
+  'set downloads and selected generation-history downloads share the naming rule');
 const start = source.indexOf('async function extractSupplierSourceText(');
 const end = source.indexOf('function readFileAsText(', start);
 assert.ok(start >= 0 && end > start, 'supplier extraction function is present');

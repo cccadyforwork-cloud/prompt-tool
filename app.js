@@ -618,35 +618,35 @@ function initWorkflowNavigation() {
 
 async function confirmParameterOutputs() {
   const button = byId("confirmParameterOutputs");
-  const status = byId("parameterConfirmationStatus");
   if (!button || button.disabled) return;
   const label = button.textContent;
   button.disabled = true;
-  button.textContent = "正在确认参数与卖点图方案…";
+  button.textContent = "正在确认方案…";
+  const setStatus = (message) => {
+    const target = document.querySelector("#parameterPromptGrid .visual-plan-status") || byId("parameterConfirmationStatus");
+    if (target) target.textContent = message;
+  };
   try {
     if (!hasExtractedProducts()) throw new Error("请先在第 01 页解析产品资料。");
     captureFieldOverrides();
-    renderAll();
     const sku = selectedSku();
     const template = selectedTemplate();
     const fieldSignature = currentFieldSignature();
     const facts = promptFacts(sku, currentPromptData(sku));
     const context = visualPlanContext(facts);
     const planSignature = JSON.stringify(context);
-    sku.confirmedSellingPointPlanInput = currentVisualPlanConfirmationSignature(sku);
-    persistWorkspaceSnapshot();
-    if (context.groups.length && !currentVisualPlans(facts).length) {
-      status.textContent = "正在规划当前卖点图，请稍候…";
-      const inFlightSignature = visualPlanRequests.get(sku.id);
-      await planSellingPointImages();
-      if (inFlightSignature && inFlightSignature !== planSignature
-        && selectedSku()?.id === sku.id && selectedTemplate().id === template.id
-        && currentFieldSignature() === fieldSignature) {
-        await planSellingPointImages();
-      }
+    if (!visualPlanParametersConfirmed(sku)) {
+      setStatus("请先在中间点击“确认参数和卖点，开始规划卖点方案”。");
+      document.querySelector("#parameterSellingPointConfirmation")?.scrollIntoView({behavior: "smooth", block: "center"});
+      return;
     }
-    captureFieldOverrides();
-    renderAll();
+
+    let plans = currentVisualPlans(facts);
+    if (context.groups.length && !plans.length) {
+      setStatus("还没有当前参数对应的卖点图方案，请先在中间确认并规划。");
+      document.querySelector("#parameterSellingPointConfirmation")?.scrollIntoView({behavior: "smooth", block: "center"});
+      return;
+    }
     if (selectedSku()?.id !== sku.id || selectedTemplate().id !== template.id || currentFieldSignature() !== fieldSignature) {
       throw new Error("确认期间产品或参数发生变化，请再点一次确认。");
     }
@@ -655,47 +655,94 @@ async function confirmParameterOutputs() {
     if (JSON.stringify(visualPlanContext(latestFacts)) !== planSignature) {
       throw new Error("确认期间卖点图依据发生变化，请再点一次确认。");
     }
-    const plans = currentVisualPlans(latestFacts);
+    plans = currentVisualPlans(latestFacts);
     for (let index = 0; index < context.groups.length; index += 1) {
       const plan = plans.find((entry) => entry.groupIndex === index);
-      if (!plan || !["show", "skip"].includes(plan.humanDecision)) {
-        throw new Error(`请先人工决定卖点图 ${index + 1} 是否展示，再进入图组。`);
-      }
+      if (!plan) throw new Error(`卖点图 ${index + 1} 尚无规划结果，请先重新规划。`);
+      applyVisualPlanDecision(sku, latestFacts, plan, "show");
     }
+    renderAll();
+    persistWorkspaceSnapshot();
     for (const type of template.imageTypes) {
       const item = promptStore.find((entry) => entry.key === promptCardKey(sku, template, type));
       const points = sellingPointGroupForImageTitle(template.id, type.id, latestFacts);
-      const plan = points.length ? visualPlanForPoints(points, latestFacts) : null;
-      const skipped = plan?.humanDecision === "skip";
-      const expected = skipped ? "" : bracketPromptVariables(promptFor(template.id, type.id, sku, latestData), latestFacts, type.id);
+      const expected = bracketPromptVariables(promptFor(template.id, type.id, sku, latestData), latestFacts, type.id);
       if (!item || item.promptEn !== expected) throw new Error("提示词尚未同步最新参数，请再点一次确认。");
       if (!points.length) continue;
-      if (skipped) continue;
-      const conciseScenePlan = template.id === "scene" && ["5", "6"].includes(String(type.id));
-      const readablePrompt = item.promptEn.replace(/[【】]/g, "");
-      const planIncluded = conciseScenePlan
-        ? readablePrompt.includes(plan?.route === "product_proof"
-          ? "TASK: Present only this source-verified selling point:"
-          : "TASK: Visually prove only this current selling point:")
-          && readablePrompt.includes(`"${sellingPointHeadlineForClaim(points[0], plan?.label)}"`)
-          && readablePrompt.includes(`"${sellingPointBodyCopy(points[0])}"`)
-          && (plan?.route === "scene_use"
-            ? item.promptEn.includes("OPERATION:")
-            : item.promptEn.includes("VISUAL PLAN:"))
-        : item.promptEn.includes("Execute this specific whole-set visual plan")
-          && item.promptEn.includes(plan?.label || "");
-      const humanConfirmed = plan?.humanDecision === "show";
-      if (plan?.status === "ready" && !planIncluded && !humanConfirmed) {
-        throw new Error(`${type.name} 的卖点图方案尚未进入提示词，请检查方案后重试。`);
+      const plan = visualPlanForPoints(points, latestFacts);
+      if (plan?.status === "ready") {
+        const conciseScenePlan = template.id === "scene" && ["5", "6"].includes(String(type.id));
+        const readablePrompt = item.promptEn.replace(/[【】]/g, "");
+        const planIncluded = conciseScenePlan
+          ? readablePrompt.includes(plan?.route === "product_proof"
+            ? "TASK: Present only this source-verified selling point:"
+            : "TASK: Visually prove only this current selling point:")
+            && readablePrompt.includes(`"${sellingPointHeadlineForClaim(points[0], plan?.label)}"`)
+            && readablePrompt.includes(`"${sellingPointBodyCopy(points[0])}"`)
+            && (plan?.route === "scene_use"
+              ? item.promptEn.includes("OPERATION:")
+              : item.promptEn.includes("VISUAL PLAN:"))
+          : item.promptEn.includes("Execute this specific whole-set visual plan")
+            && item.promptEn.includes(plan?.label || "");
+        if (!planIncluded) throw new Error(`${type.name} 的卖点图方案尚未进入提示词，请检查后重试。`);
       }
     }
-    status.textContent = "已确认；人工选择展示的卖点图已进入提示词，不展示的图位已跳过。";
+    setStatus("参数、卖点和整套卖点图方案已确认，正在进入图组。");
     showWorkflowPage("studio");
   } catch (error) {
-    status.textContent = error?.message || "确认未完成，请检查参数和卖点图方案。";
+    setStatus(error?.message || "确认未完成，请检查参数和卖点图方案。");
   } finally {
-    button.disabled = false;
-    button.textContent = label;
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = label;
+    }
+  }
+}
+
+async function confirmParametersAndSellingPoints() {
+  const button = byId("confirmParametersAndSellingPoints");
+  if (!button || button.disabled) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在规划卖点方案…";
+  const setStatus = (message) => {
+    const target = byId("parameterConfirmationStatus");
+    if (target) target.textContent = message;
+  };
+  try {
+    if (!hasExtractedProducts()) throw new Error("请先在第 01 页解析产品资料。");
+    captureFieldOverrides();
+    const sku = selectedSku();
+    const review = sellingPointReviewForSku(sku, false);
+    const candidates = normalizeSellingPointEntries(review?.candidateEntries);
+    if (candidates.length && !review?.locked) {
+      setStatus("请先勾选要使用的卖点并点击“确认所选并锁定”。");
+      document.querySelector(".selling-point-review")?.scrollIntoView({behavior: "smooth", block: "center"});
+      return;
+    }
+    sku.confirmedSellingPointPlanInput = currentVisualPlanConfirmationSignature(sku);
+    persistWorkspaceSnapshot();
+    const facts = promptFacts(sku, currentPromptData(sku));
+    const context = visualPlanContext(facts);
+    if (context.groups.length && !currentVisualPlans(facts).length) {
+      setStatus("参数和卖点已确认，正在规划卖点方案…");
+      await planSellingPointImages();
+    } else {
+      renderAll();
+    }
+    const currentPlans = currentVisualPlans(promptFacts(sku, currentPromptData(sku)));
+    setStatus(context.groups.length
+      ? currentPlans.some((plan) => plan.status === "blocked")
+        ? "参数和卖点已确认，部分方案需检查。"
+        : "参数和卖点及方案已确认。"
+      : "参数和卖点已确认。");
+  } catch (error) {
+    setStatus(error?.message || "确认未完成，请检查参数和卖点。");
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = label;
+    }
   }
 }
 
@@ -10129,7 +10176,7 @@ async function planSellingPointImages() {
   const sku = selectedSku();
   if (!sku) return;
   if (!visualPlanParametersConfirmed(sku)) {
-    visualPlanMessages.set(sku.id, "请先完成参数修改，再点击页面上方“确认参数”；确认后才会开始卖点规划。");
+    visualPlanMessages.set(sku.id, "请先确认参数和卖点。");
     renderParameterPromptGrid();
     return;
   }
@@ -10140,7 +10187,7 @@ async function planSellingPointImages() {
   let resolvePending;
   visualPlanRequestPromises.set(sku.id, new Promise((resolve) => { resolvePending = resolve; }));
   visualPlanRequests.set(sku.id, signature);
-  visualPlanMessages.set(sku.id, "正在一次完成卖点图规划与自检…");
+  visualPlanMessages.set(sku.id, "正在规划…");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 200000);
   try {
@@ -10150,13 +10197,13 @@ async function planSellingPointImages() {
     if (!response.ok || !Array.isArray(result.plans)) throw new Error(result.error || "规划失败");
     // Never apply a late response to another SKU, template, or edited parameters.
     if (selectedSku()?.id !== sku.id || JSON.stringify(visualPlanContext(promptFacts(sku, currentPromptData(sku)))) !== signature) {
-      visualPlanMessages.set(sku.id, "参数或当前产品已变化，请重新规划。");
+      visualPlanMessages.set(sku.id, "参数或产品已变化，请重新规划。");
       return;
     }
     sku.sellingPointVisualPlan = {signature, plans: result.plans};
     visualPlanMessages.set(sku.id, result.plans.some((plan) => plan.status === "blocked")
-      ? "部分卖点缺少充分证明；请人工决定继续展示或不展示。"
-      : "规划已完成；请逐张人工确认展示或不展示后进入图组。");
+      ? "规划完成，部分方案需检查。"
+      : "规划完成。");
     const plannedFacts = promptFacts(sku, currentPromptData(sku));
     promptStore.forEach((item) => {
       const state = imageGenerationByCard[item.key];
@@ -10170,7 +10217,7 @@ async function planSellingPointImages() {
         state.status = "idle";
         state.message = "已人工决定不展示此卖点图。";
       } else if (plan?.reason) {
-        state.message = `等待人工决定：${plan.reason}`;
+        state.message = `方案已生成，请在第 02 页检查后统一确认：${plan.reason}`;
       }
     });
     renderAll();
@@ -10181,10 +10228,10 @@ async function planSellingPointImages() {
         signature,
         plans: manualDecisionFallbackPlans(context, failureMessage),
       };
-      visualPlanMessages.set(sku.id, `${failureMessage}；请人工决定每张卖点图继续展示或不展示。`);
+      visualPlanMessages.set(sku.id, `${failureMessage}。`);
       renderAll();
     } else {
-      visualPlanMessages.set(sku.id, `${failureMessage}；参数或当前产品已变化，请重新规划。`);
+      visualPlanMessages.set(sku.id, `${failureMessage}；参数或产品已变化。`);
     }
   } finally {
     clearTimeout(timeout);
@@ -10198,29 +10245,30 @@ async function planSellingPointImages() {
   }
 }
 
+function parameterSellingPointConfirmationHtml() {
+  const sku = selectedSku();
+  if (!sku || visualPlanParametersConfirmed(sku)) return "";
+  return '<section id="parameterSellingPointConfirmation" class="parameter-selling-point-gate"><button id="confirmParametersAndSellingPoints" type="button" class="workflow-next">确认参数和卖点，开始规划卖点方案</button></section>';
+}
+
 function visualPlanReviewHtml(facts) {
   const context = visualPlanContext(facts);
-  if (!context.groups.length) return "";
   const plans = currentVisualPlans(facts);
   const busy = visualPlanRequests.has(selectedSku().id);
   const parametersConfirmed = visualPlanParametersConfirmed();
   const template = selectedTemplate();
   const selection = sellingPointImageSelection(facts);
-  const undecidedCount = plans.filter((plan) => !["show", "skip"].includes(plan.humanDecision)).length;
-  const defaultStatus = plans.length
-    ? (undecidedCount ? `还有 ${undecidedCount} 张卖点图等待人工决定。` : "所有卖点图均已由人工决定，可以进入提示词与图组。")
-    : "尚无适用于当前参数的方案。";
-  return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>整套卖点图方案</h3>
-    <p class="workflow-section-note">确认方案后可一键让全部卖点图展示；需要排除某张时仍可在对应方案中单独设为不展示。</p></div>
-    <div class="visual-plan-heading-actions"><button id="planSellingPointImages" type="button" class="secondary" ${busy || !parametersConfirmed ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划" : parametersConfirmed ? "立即规划" : "等待参数确认"}</button>${plans.length ? `<button id="confirmAllSellingPointImages" type="button" ${busy || !undecidedCount ? "disabled" : ""}>${undecidedCount ? `一键确认${plans.length}张均展示` : "已确认全部展示"}</button>` : ""}</div></div>
+  const status = visualPlanMessages.get(selectedSku().id) || "";
+  if (!context.groups.length) return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>卖点图规划</h3></div></div></section>`;
+  return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>整套卖点图方案</h3></div>
+    <div class="visual-plan-heading-actions"><button id="planSellingPointImages" type="button" class="secondary" ${busy || !parametersConfirmed ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划卖点图" : parametersConfirmed ? "开始规划卖点图" : "等待确认"}</button></div></div>
     <div class="visual-plan-choice-grid">${selection.slots.map((type, index) => `<label><span>${escapeHtml(type.name)} · ${sellingPointVisualRouteLabel(context.routes[index] || "flexible")}</span><select data-selling-point-slot="${index}" ${selection.points.length ? "" : "disabled"}>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}" ${selection.indices[index] === pointIndex ? "selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>`).join("")}</div>
-    <p class="visual-plan-status" role="status">${escapeHtml(visualPlanMessages.get(selectedSku().id) || defaultStatus)}</p>
+    ${status ? `<p class="visual-plan-status" role="status">${escapeHtml(status)}</p>` : ""}
     ${plans.map((plan) => {
       const points = context.groups[plan.groupIndex] || [];
       const type = template.imageTypes.find((candidate) => JSON.stringify(sellingPointGroupForImageTitle(template.id, candidate.id, facts)) === JSON.stringify(points));
-      return `<details class="visual-plan-card"><summary class="visual-plan-card-summary"><span class="visual-plan-slot">${escapeHtml(type?.name || `卖点图 ${plan.groupIndex + 1}`)} · ${sellingPointVisualRouteLabel(context.routes[plan.groupIndex])}</span><strong>${escapeHtml(points.join(" + "))}</strong><span class="visual-plan-short-label">${escapeHtml(visualPlanDecisionLabel(plan))}</span></summary><div class="visual-plan-card-body">
-      ${plan.status === "ready" ? `<dl>${[["goal", "本图表达"], ["subject", "主体与状态"], ["action", "动作 / 细节"], ["composition", "构图重点"], ["basis", "事实依据"], ["difference", "与其他图的区别"]].map(([key, label]) => `<div><dt>${label}</dt><dd>${escapeHtml(plan[key])}</dd></div>`).join("")}</dl>` : `<p>模型提示：${escapeHtml(plan.reason)}。这只是建议，请由人工决定是否继续展示。</p>`}
-      <div class="visual-plan-decision-actions"><button type="button" data-visual-plan-decision="show" data-plan-index="${plan.groupIndex}"${plan.humanDecision === "show" ? " disabled" : ""}>人工确认展示</button><button type="button" class="secondary" data-visual-plan-decision="skip" data-plan-index="${plan.groupIndex}"${plan.humanDecision === "skip" ? " disabled" : ""}>人工决定不展示</button></div>
+      return `<details class="visual-plan-card"><summary class="visual-plan-card-summary"><span class="visual-plan-slot">${escapeHtml(type?.name || `卖点图 ${plan.groupIndex + 1}`)} · ${sellingPointVisualRouteLabel(context.routes[plan.groupIndex])}</span><strong>${escapeHtml(points.join(" + "))}</strong><span class="visual-plan-short-label">${plan.status === "ready" ? "方案已生成" : "需要检查"}</span></summary><div class="visual-plan-card-body">
+      ${plan.status === "ready" ? `<dl>${[["goal", "本图表达"], ["subject", "主体与状态"], ["action", "动作 / 细节"], ["composition", "构图重点"], ["basis", "事实依据"], ["difference", "与其他图的区别"]].map(([key, label]) => `<div><dt>${label}</dt><dd>${escapeHtml(plan[key])}</dd></div>`).join("")}</dl>` : `<p>模型提示：${escapeHtml(plan.reason)}。可修改下方方案内容，再由右上角整体确认。</p>`}
       <details class="visual-plan-editor"><summary>修订方案内容</summary><div class="field-list" data-plan-editor="${plan.groupIndex}">
       ${[["action", "具体动作"], ["composition", "构图"], ["basis", "依据"], ["difference", "图间区别"], ["visual_prompt", "画面指令（英文）"], ["reason", "模型提示 / 人工备注"]].map(([key, label]) => `<div><label for="plan-${plan.groupIndex}-${key}">${label}</label><textarea id="plan-${plan.groupIndex}-${key}" data-plan-field="${key}" rows="3">${escapeHtml(plan[key])}</textarea></div>`).join("")}
       <button type="button" data-save-visual-plan="${plan.groupIndex}">保存此方案</button></div></details></div></details>`;
@@ -12506,8 +12554,8 @@ async function generateImageForCard(cardKey, referenceMode = "manual") {
     if (plan?.humanDecision !== "show") {
       state.status = "needs_plan";
       state.message = plan?.humanDecision === "skip"
-        ? "已人工决定不展示此卖点图。"
-        : "请先在第 02 页人工决定是否展示此卖点图。";
+        ? "已整体确认不展示此卖点图。"
+        : "请先在第 02 页完成参数和卖点确认，再从右上角整体确认方案。";
       updateImageGenerator(cardKey);
       return;
     }
@@ -12760,13 +12808,40 @@ function chineseProductFilenameBase() {
 }
 
 function selectedGeneratedImageItemsForCurrentSet() {
-  return promptStore.flatMap((item) => {
+  const selected = promptStore.flatMap((item) => {
     const state = imageGenerationState(item.key);
     const selectedIds = new Set(state.selectedHistoryIds || []);
     return state.history
       .filter((record) => selectedIds.has(record.id))
-      .flatMap((record) => record.images.map((url) => ({ cardKey: item.key, url })));
+      .flatMap((record) => record.images.map((url) => ({
+        cardKey: item.key,
+        url,
+        imageTypeName: item.type.name.replace(/^\s*[0-9]+[A-Z]?\.\s*/, "").replace(/\s+/g, ""),
+        imageTypeOrder: String(item.type.id || ""),
+      })));
   });
+  const counts = new Map();
+  selected.forEach((item) => counts.set(item.cardKey, (counts.get(item.cardKey) || 0) + 1));
+  const orders = new Map();
+  return selected.map((item) => {
+    const entry = promptStore.find((candidate) => candidate.key === item.cardKey);
+    const order = (orders.get(item.cardKey) || 0) + 1;
+    orders.set(item.cardKey, order);
+    return {
+      ...item,
+      imageTypeName: entry?.type.name.replace(/^\s*[0-9]+[A-Z]?\.\s*/, "").replace(/\s+/g, "") || "图片",
+      imageTypeOrder: String(entry?.type.id || ""),
+      imageTypeVariant: order,
+      imageTypeVariantCount: counts.get(item.cardKey) || 1,
+    };
+  });
+}
+
+function generatedImageFilename(baseName, item, extension) {
+  const safeType = String(item.imageTypeName || "图片").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-").slice(0, 32) || "图片";
+  const safeOrder = String(item.imageTypeOrder || "").replace(/[^a-zA-Z0-9\u3400-\u9fff-]/g, "");
+  const variant = Number(item.imageTypeVariantCount) > 1 ? `-${item.imageTypeVariant || 1}` : "";
+  return `${baseName}${safeType}${safeOrder}${variant}.${extension}`;
 }
 
 function selectedSetPreviewItems() {
@@ -12978,7 +13053,15 @@ async function saveGeneratedSet() {
     const entries = await Promise.all(items.map(async (item, index) => {
       const blob = await fetchGeneratedImageBlob(item.url, `第 ${index + 1} 张图片`);
       const extension = imageExtension(blob.type, item.url);
-      const entry = { name: `${baseName}${index + 1}.${extension}`, extension, bytes: new Uint8Array(await blob.arrayBuffer()) };
+      const entry = {
+        name: generatedImageFilename(baseName, {
+          ...item,
+          imageTypeVariant: (items.slice(0, index).filter((candidate) => candidate.cardKey === item.cardKey).length) + 1,
+          imageTypeVariantCount: items.filter((candidate) => candidate.cardKey === item.cardKey).length,
+        }, extension),
+        extension,
+        bytes: new Uint8Array(await blob.arrayBuffer()),
+      };
       completed += 1;
       setSaveGeneratedSetUi(`正在读取 ${completed}/${items.length} 张图片…`);
       return entry;
@@ -12990,7 +13073,7 @@ async function saveGeneratedSet() {
     }
     const zip = buildStoredZip(entries);
     downloadBlob(zip, `${baseName}.zip`);
-    setSaveGeneratedSetUi(`已下载 ${entries.length} 张勾选图片；压缩包为“${baseName}.zip”，图片从“${baseName}1”起连续编号。`);
+    setSaveGeneratedSetUi(`已下载 ${entries.length} 张勾选图片；文件名包含商品名、图片类型和顺序。`);
   } catch (error) {
     setSaveGeneratedSetUi(error?.message || "选中图片图组保存失败");
   } finally {
@@ -13008,6 +13091,8 @@ async function downloadSelectedGenerationHistory(cardKey) {
   if (!selectedRecords.length) return;
   const baseName = chineseProductFilenameBase();
   const entries = [];
+  const imageType = promptStore.find((item) => item.key === cardKey);
+  const selectedImageCount = selectedRecords.reduce((count, {record}) => count + record.images.length, 0);
   state.message = `正在整理已选择的 ${selectedRecords.length} 轮图片…`;
   updateImageGenerator(cardKey);
   try {
@@ -13017,7 +13102,12 @@ async function downloadSelectedGenerationHistory(cardKey) {
         const blob = await fetchGeneratedImageBlob(url, `第 ${round} 轮第 ${imageIndex + 1} 张图片`);
         const extension = imageExtension(blob.type, url);
         entries.push({
-          name: `${baseName}${entries.length + 1}.${extension}`,
+          name: generatedImageFilename(baseName, {
+            imageTypeName: imageType?.type.name.replace(/^\s*[0-9]+[A-Z]?\.\s*/, "").replace(/\s+/g, "") || "图片",
+            imageTypeOrder: String(imageType?.type.id || ""),
+            imageTypeVariant: entries.length + 1,
+            imageTypeVariantCount: selectedImageCount,
+          }, extension),
           extension,
           bytes: new Uint8Array(await blob.arrayBuffer()),
         });
@@ -13438,6 +13528,7 @@ function renderParameterPromptGrid() {
   }
   grid.innerHTML = `
     <div class="parameter-prompt-workbench">
+      ${parameterSellingPointConfirmationHtml(facts)}
       ${visualPlanReviewHtml(facts)}
       ${promptTaskListHtml(visibleItems, activeItem, "参数对应提示词任务")}
       <article class="prompt-card parameter-prompt-detail">
@@ -13473,30 +13564,7 @@ function renderParameterPromptGrid() {
     renderAll();
   }));
   byId("planSellingPointImages")?.addEventListener("click", planSellingPointImages);
-  byId("confirmAllSellingPointImages")?.addEventListener("click", () => {
-    const currentFacts = promptFacts(sku, currentPromptData(sku));
-    const plans = currentVisualPlans(currentFacts);
-    plans.forEach((plan) => applyVisualPlanDecision(sku, currentFacts, plan, "show"));
-    visualPlanMessages.set(sku.id, `${plans.length} 张卖点图已一键确认展示，可以进入提示词与图组。`);
-    renderAll();
-    persistWorkspaceSnapshot();
-  });
-  grid.querySelectorAll("[data-visual-plan-decision]").forEach((button) => button.addEventListener("click", () => {
-    const index = Number(button.dataset.planIndex);
-    const decision = button.dataset.visualPlanDecision;
-    if (!["show", "skip"].includes(decision)) return;
-    const currentFacts = promptFacts(sku, currentPromptData(sku));
-    const plan = currentVisualPlans(currentFacts).find((item) => item.groupIndex === index);
-    if (!plan) return;
-    applyVisualPlanDecision(sku, currentFacts, plan, decision);
-    const plans = currentVisualPlans(currentFacts);
-    const undecided = plans.filter((item) => !["show", "skip"].includes(item.humanDecision)).length;
-    visualPlanMessages.set(sku.id, undecided
-      ? `人工决定已保存；还有 ${undecided} 张卖点图待决定。`
-      : "所有卖点图均已由人工决定，可以进入提示词与图组。");
-    renderAll();
-    persistWorkspaceSnapshot();
-  }));
+  byId("confirmParametersAndSellingPoints")?.addEventListener("click", confirmParametersAndSellingPoints);
   grid.querySelectorAll("[data-save-visual-plan]").forEach((button) => button.addEventListener("click", () => {
     const index = Number(button.dataset.saveVisualPlan);
     const plan = currentVisualPlans(facts).find((item) => item.groupIndex === index);
@@ -13840,6 +13908,8 @@ function initThemeToggle() {
     applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
   });
 }
+
+
 
 async function init() {
   window.renderAll = renderAll;
