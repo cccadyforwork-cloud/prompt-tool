@@ -129,6 +129,7 @@ const sellingPointFieldKeys = new Set(["sellingPoints"]);
 const SELLING_POINT_SOURCE_VISION = "1688 页面图片 · 豆包识图提取";
 const SELLING_POINT_SOURCE_WEB = "豆包联网补充";
 const SELLING_POINT_SOURCE_MANUAL = "人工填写/修改";
+const SELLING_POINT_SOURCE_TRANSLATED = "中文卖点翻译";
 const SELLING_POINT_SOURCE_UNKNOWN = "来源未追踪（旧记录）";
 const NO_REFERENCE_SCENE_MESSAGE = "没有参考场景信息";
 const NO_REFERENCE_SELLING_POINT_MESSAGE = "没有参考卖点信息";
@@ -623,7 +624,7 @@ async function confirmParameterOutputs() {
   button.disabled = true;
   button.textContent = "正在确认方案…";
   const setStatus = (message) => {
-    const target = document.querySelector("#parameterPromptGrid .visual-plan-status") || byId("parameterConfirmationStatus");
+    const target = document.querySelector("#visualPlanWorkspace .visual-plan-status") || byId("parameterConfirmationStatus");
     if (target) target.textContent = message;
   };
   try {
@@ -806,35 +807,12 @@ function supplierBindingModeFromValue(value = "") {
   return "child";
 }
 
-function updateSupplierBindingHelp() {
-  const select = byId("supplierSkuBinding");
-  const help = byId("supplierBindingHelp");
-  if (!select || !help) return;
+function updateSupplierBindingModeButtons() {
   document.querySelectorAll("[data-supplier-binding-mode]").forEach((button) => {
     const active = button.dataset.supplierBindingMode === selectedSupplierBindingMode;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  if (!supplierBindingProducts.length) {
-    help.textContent = "上传 Amazon 模板后，可在这里选择资料对应的父体或 Child SKU。";
-    return;
-  }
-  if (!select.value) {
-    help.textContent = selectedSupplierBindingMode === "parent"
-      ? "当前模板没有可共享的多子 SKU 父体，或需要先选择具体父体。"
-      : "请选择这份1688资料唯一对应的 Child SKU。";
-    return;
-  }
-  if (selectedSupplierBindingMode === "parent") {
-    const parentSku = select.value.slice(7);
-    const childCount = supplierParentGroups(supplierBindingProducts).get(parentSku)?.length || 0;
-    help.textContent = `通用参数将共享给父体 ${parentSku} 下的 ${childCount} 个 Child SKU；款式专属信息仍需分别匹配。`;
-    return;
-  }
-  const sku = boundSupplierSku(supplierBindingProducts);
-  help.textContent = sku
-    ? `1688参数与图片只写入 ${sku.label || sku.displayLabel || sku.model || sku.id}，不会进入其他 Child SKU。`
-    : "请选择这份1688资料唯一对应的 Child SKU。";
 }
 
 function renderSupplierBindingOptions(products = [], mode = "child", preferredValue = "") {
@@ -860,7 +838,7 @@ function renderSupplierBindingOptions(products = [], mode = "child", preferredVa
   select.value = validPreferred ? normalizedPreferred : "";
   select.hidden = !products.length;
   select.disabled = !values.length;
-  updateSupplierBindingHelp();
+  updateSupplierBindingModeButtons();
 }
 
 function populateSupplierSkuBinding(products = []) {
@@ -1135,14 +1113,12 @@ function renderBundleEditor() {
     return;
   }
   if (selectedProductStructureRoute === "assortment") {
-    const count = Number(sku.skuUnitQuantity || 0);
-    const countText = count > 1 ? `当前标题识别为 ${count} 件；` : "";
-    editor.innerHTML = `<h2 id="bundle-title">不同款组合套装确认</h2><p class="bundle-note">${countText}各款外观与结构不在文字参数中展开描述，直接以第 3 页选中的完整组合参考图为产品身份依据。未按成员分别取证的共享尺寸会保持为空，避免把某一款的长宽厚套到另外两款。</p><p class="bundle-confirmed">✓ 展示规则：完整套装图呈现所有不同款；使用图按参考图选择真实成员；禁止复制同一款、融合不同款、遗漏成员或凭文字重画结构。</p>`;
+    editor.innerHTML = `<h2 id="bundle-title">不同款组合套装确认</h2><p class="bundle-confirmed">✓ 完整套装图呈现所有不同款；使用图按参考图选择真实成员。</p>`;
     return;
   }
   const state = bundleStateForSku(sku); const options = (value) => (supplierSourceFileNames.length ? supplierSourceFileNames : ["未关联 1688 资料"]).map((file) => `<option value="${escapeHtml(file)}"${file === value ? " selected" : ""}>${escapeHtml(file)}</option>`).join("");
   const rows = state.components.map((item, index) => `<article class="bundle-component-card"><div class="bundle-component-top"><div><label>组件名称</label><input data-bundle-index="${index}" data-bundle-field="name" value="${escapeHtml(item.name || "")}"></div><div><label>数量</label><input data-bundle-index="${index}" data-bundle-field="quantity" type="number" min="1" value="${escapeHtml(String(item.quantity || 1))}"></div></div><div class="bundle-component-bottom"><div><label>该组件的 1688 来源</label><select data-bundle-index="${index}" data-bundle-field="sourceFile">${options(item.sourceFile)}</select></div><button type="button" class="bundle-remove" data-bundle-remove="${index}">×</button></div></article>`).join("");
-  editor.innerHTML = `<h2 id="bundle-title">套装资料确认</h2><p class="bundle-note">只对当前 SKU 生效。确认后右侧全部图组严格使用这份组件、数量与来源。</p><label class="bundle-editor-toggle"><input id="bundleEnabled" type="checkbox"${state.enabled ? " checked" : ""}>当前 SKU 是套装（主体 + 配套产品）</label>${state.enabled ? `${rows}<button id="addBundleComponent" type="button" class="secondary bundle-add">+ 添加套装组件</button><button id="confirmBundleComponents" type="button">确认套装构成并更新提示词</button>${state.confirmed ? `<p class="bundle-confirmed">✓ 已确认：${escapeHtml(bundleComponentPromptText(state))}</p>` : ""}` : ""}`;
+  editor.innerHTML = `<h2 id="bundle-title">套装资料确认</h2><label class="bundle-editor-toggle"><input id="bundleEnabled" type="checkbox"${state.enabled ? " checked" : ""}>当前 SKU 是套装（主体 + 配套产品）</label>${state.enabled ? `${rows}<button id="addBundleComponent" type="button" class="secondary bundle-add">+ 添加套装组件</button><button id="confirmBundleComponents" type="button">确认套装构成并更新提示词</button>${state.confirmed ? `<p class="bundle-confirmed">✓ 已确认：${escapeHtml(bundleComponentPromptText(state))}</p>` : ""}` : ""}`;
   byId("bundleEnabled")?.addEventListener("change", (e) => { state.enabled = e.currentTarget.checked; state.confirmed = false; if (state.enabled && !state.components.length) state.components.push({ name: cleanFieldDisplayValue(sku.productName), quantity: 1, sourceFile: supplierSourceFileNames[0] || "" }); renderAll(); });
   document.querySelectorAll("[data-bundle-field]").forEach((input) => input.addEventListener("change", (e) => { const item = state.components[Number(e.currentTarget.dataset.bundleIndex)]; item[e.currentTarget.dataset.bundleField] = e.currentTarget.value; state.confirmed = false; }));
   document.querySelectorAll("[data-bundle-remove]").forEach((button) => button.addEventListener("click", () => { state.components.splice(Number(button.dataset.bundleRemove), 1); state.confirmed = false; renderAll(); }));
@@ -1310,6 +1286,7 @@ function renderFields(reset = false) {
   const values = valueMap(sku);
   const fieldList = byId("fieldList");
   const manualFieldList = byId("manualFieldList");
+  const sellingPointWorkspace = byId("sellingPointWorkspaceContent");
   if (reset) {
     fieldOverrides = { ...(fieldOverridesBySku[sku?.id] || {}) };
     sellingPointDraftDirty = false;
@@ -1317,6 +1294,7 @@ function renderFields(reset = false) {
   ensureAppliedSellingPointValues(sku);
   if (!hasExtractedProducts()) {
     fieldList.innerHTML = `<p class="empty-state">解析资料后显示可替换参数。</p>`;
+    if (sellingPointWorkspace) sellingPointWorkspace.innerHTML = `<p class="empty-state">解析资料后显示卖点候选。</p>`;
     if (manualFieldList) manualFieldList.innerHTML = `<p class="empty-state">解析资料后可手动补充数量、尺寸、重量等参数。</p>`;
     return;
   }
@@ -1328,7 +1306,9 @@ function renderFields(reset = false) {
       ? useExtractedDefaults(key)
       : useExtractedDefaults;
     const parameterData = { ...sku, ...values };
-    const displayLabel = label;
+    const displayLabel = key === "sellingPoints"
+      ? `最终采用卖点（英文${sellingPointReview?.locked ? "" : "，可编辑"}）`
+      : label;
     const hasSavedOverride = !suppressSharedAssortmentDimension
       && Object.prototype.hasOwnProperty.call(fieldOverrides, key);
     const currentValue = reset ? fieldOverrides[key] ?? "" : byId(`field-${key}`)?.value ?? fieldOverrides[key] ?? "";
@@ -1354,12 +1334,10 @@ function renderFields(reset = false) {
     const fieldControl = key === "scene"
       ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="${NO_REFERENCE_SCENE_MESSAGE}">${escapeHtml(displayValue)}</textarea>
         ${selectedExtractionRoute === "web"
-          ? '<button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补充缺少的英文场景</button><p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite">保留已提取场景，只补充不足的条目；联网失败时不清空原内容。</p>'
-          : '<p class="scene-enrich-status">本地路线只使用页面文字和本地 OCR，不联网补充。</p>'}
-        ${sku.useBehavior?.imageUrl ? `<p class="parameter-source">原图使用依据：${escapeHtml(sku.useBehavior.action)}（${sku.useBehavior.mode === "active" ? "操作演示" : "自然使用"}）</p>` : '<p class="parameter-source">未从原图识别到明确操作；人物图不会编造使用动作。</p>'}`
+          ? '<button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补充缺少的英文场景</button><p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite"></p>'
+          : ""}`
       : key === "productDimensions"
-        ? `<textarea id="field-${key}" class="product-dimensions-input" data-key="${key}" rows="7" placeholder="每行一个尺寸，例如 Length: 5.9 in">${escapeHtml(displayValue)}</textarea>
-          <p class="scene-enrich-status">每行保留“部位名称: 数值 + 单位”；可直接增加或删除尺寸行。</p>`
+        ? `<textarea id="field-${key}" class="product-dimensions-input" data-key="${key}" rows="4" placeholder="每行一个尺寸，例如 Length: 5.9 in">${escapeHtml(displayValue)}</textarea>`
       : multilineFieldKeys.has(key)
         ? `<textarea id="field-${key}" class="selling-point-input" data-key="${key}" rows="4"${key === "sellingPoints" && sellingPointReview?.locked ? " disabled" : ""}>${escapeHtml(displayValue)}</textarea>`
         : `<input id="field-${key}" data-key="${key}" value="${escapeHtml(displayValue)}"${suppressSharedAssortmentDimension ? " disabled placeholder=\"不同款需按成员分别取证\"" : ""}>`;
@@ -1373,25 +1351,25 @@ function renderFields(reset = false) {
       : "";
     return `
       <div>
-        <label for="field-${key}">${displayLabel}</label>
+        <div class="parameter-field-heading"><label for="field-${key}">${displayLabel}</label>
+          ${key === "pack" ? '<span class="parameter-field-hint">每个 SKU 默认售卖 1 Pack；这里填写包内数量与单位，如 10 Pcs 或 10 Rolls。</span>' : ""}
+          ${key === "productDimensions" ? '<span class="parameter-field-hint">每行保留“部位名称: 数值 + 单位”；可直接增加或删除尺寸行。</span>' : ""}
+        </div>
         ${fieldControl}
-        ${key === "pack" ? '<p class="parameter-source">每个 SKU 默认售卖 1 Pack；这里填写包内数量与单位，如 10 Pcs 或 10 Rolls。</p>' : ""}
-        ${sourceText ? `<p class="parameter-source">来源：${escapeHtml(sourceText)}</p>` : ""}
-        ${key === "sellingPoints" ? `<div id="sellingPointSourceList">${sellingPointSourcesHtml(sku, displayValue)}</div>` : ""}
+        ${sourceText ? `<p class="parameter-source parameter-field-source">来源：${escapeHtml(sourceText)}</p>` : ""}
       </div>
     `;
   }).join("");
-  const fieldControls = renderFieldControls(fields, true);
+  const fieldControls = renderFieldControls(fields.filter(([key]) => key !== "sellingPoints"), true);
+  const sellingPointControl = renderFieldControls(fields.filter(([key]) => key === "sellingPoints"), true);
   const manualFieldControls = renderFieldControls(manualFields, (key) => extractedManualFieldKeys.has(key));
-  fieldList.innerHTML = `${fieldControls}
+  fieldList.innerHTML = fieldControls;
+  if (sellingPointWorkspace) sellingPointWorkspace.innerHTML = `
     ${sellingPointReviewHtml(sku)}
-    <div id="sellingPointApplyWrap" class="selling-point-apply-wrap${sellingPointDraftDirty ? "" : " is-hidden"}">
-      <button id="applySellingPoints" type="button" class="ghost selling-point-apply">确认生成卖点图提示词</button>
-      <p class="selling-point-apply-note">卖点已修改，点击后更新右侧卖点图场景和提示词。</p>
-    </div>
+    <div hidden>${sellingPointControl}</div>
   `;
   if (manualFieldList) manualFieldList.innerHTML = manualFieldControls;
-  document.querySelectorAll("#fieldList [data-key], #manualFieldList [data-key]").forEach((input) => {
+  document.querySelectorAll("#fieldList [data-key], #sellingPointWorkspaceContent [data-key], #manualFieldList [data-key]").forEach((input) => {
     ["input", "change"].forEach((eventName) => input.addEventListener(eventName, handleFieldInput));
   });
   byId("applySellingPoints")?.addEventListener("click", applySellingPointChanges);
@@ -1472,6 +1450,23 @@ function normalizeSellingPointEntries(entries) {
   }).slice(0, 12);
 }
 
+function isManualSellingPointSource(source) {
+  return source === SELLING_POINT_SOURCE_MANUAL || source === SELLING_POINT_SOURCE_TRANSLATED;
+}
+
+function isSupplementalSellingPointSource(source) {
+  return isManualSellingPointSource(source) || /联网|竞品/.test(source);
+}
+
+function sellingPointCandidateGroup(entry) {
+  const source = cleanFieldDisplayValue(entry.source);
+  if (source === SELLING_POINT_SOURCE_TRANSLATED) return "translated";
+  if (source === SELLING_POINT_SOURCE_MANUAL) return "manual";
+  if (/1688|识图/.test(source)) return "supplier";
+  if (/联网|竞品/.test(source)) return "web";
+  return "other";
+}
+
 function loadSellingPointReviews() {
   try {
     const saved = JSON.parse(readTabStorage(SELLING_POINT_REVIEW_STORAGE_KEY) || "{}");
@@ -1510,6 +1505,36 @@ function sellingPointReviewForSku(sku, create = true) {
   return review || null;
 }
 
+function seedDemoSellingPointPreview() {
+  const sku = selectedSku();
+  if (!sku || !/DEMO-COFFEE-FILTER-V02/i.test([sku.id, sku.model, sku.label, sku.amazonTitle].filter(Boolean).join(" "))) return false;
+  const review = sellingPointReviewForSku(sku);
+  if (!review || normalizeSellingPointEntries(review.candidateEntries).length
+      || splitSellingPointText(sku.sellingPoints || "").length
+      || splitSellingPointText(fieldOverridesBySku[sku.id]?.sellingPoints || "").length) return false;
+  const entries = normalizeSellingPointEntries([
+    { claim: "V-shaped cone fits V60 pour-over brewing", source: "演示数据 · 1688 分析", evidence: "示例：锥形结构与适用范围" },
+    { claim: "Heat-sealed side seam with a pull tab", source: "演示数据 · 1688 分析", evidence: "示例：当前产品结构" },
+    { claim: "Natural brown unbleached paper appearance", source: "演示数据 · 联网补充" },
+    { claim: "100-count pack for routine brewing", source: SELLING_POINT_SOURCE_MANUAL },
+    { claim: "Warm natural brown color", meaningZh: "自然棕色外观", source: SELLING_POINT_SOURCE_TRANSLATED },
+  ]);
+  const selected = entries.slice(0, 3);
+  const text = selected.map((entry) => entry.claim).join("\n");
+  review.candidateEntries = entries;
+  review.checkedClaims = selected.map((entry) => entry.claim);
+  review.candidateSetVersion = 2;
+  review.demo = true;
+  appendSellingPointReviewHistory(review, "演示候选", entries);
+  sku.sellingPoints = text;
+  sku.sellingPointEntries = selected;
+  sku.fieldSources = { ...(sku.fieldSources || {}), sellingPoints: "演示数据" };
+  fieldOverridesBySku[sku.id] = { ...(fieldOverridesBySku[sku.id] || {}), sellingPoints: text };
+  appliedSellingPointOverridesBySku[sku.id] = { sellingPoints: text };
+  persistSellingPointReviews();
+  return true;
+}
+
 function currentSellingPointReviewEntries(sku) {
   const text = fieldOverridesBySku[sku.id]?.sellingPoints ?? sku.sellingPoints ?? "";
   return normalizeSellingPointEntries(sellingPointEntriesForText(sku, text));
@@ -1521,7 +1546,7 @@ function alignSavedSellingPointReview(sku) {
   const current = currentSellingPointReviewEntries(sku);
   if (!current.length) return;
   const manual = normalizeSellingPointEntries(review.candidateEntries)
-    .filter((entry) => entry.source === SELLING_POINT_SOURCE_MANUAL);
+    .filter((entry) => isSupplementalSellingPointSource(entry.source));
   const previous = normalizeSellingPointEntries(review.candidateEntries);
   review.candidateEntries = normalizeSellingPointEntries([...current, ...manual]).map((entry) => ({
     ...entry,
@@ -1533,15 +1558,20 @@ function alignSavedSellingPointReview(sku) {
   persistSellingPointReviews();
 }
 
-function addSellingPointCandidates(sku, entries) {
+function addSellingPointCandidates(sku, entries, { append = false } = {}) {
   const review = sellingPointReviewForSku(sku);
   if (!review) return;
   const incoming = normalizeSellingPointEntries(entries);
   if (!incoming.length) return;
+  if (review.demo && incoming.some((entry) => !isManualSellingPointSource(entry.source) && !entry.source.startsWith("演示数据"))) {
+    review.candidateEntries = [];
+    review.checkedClaims = [];
+    review.demo = false;
+  }
   const previous = normalizeSellingPointEntries(review.candidateEntries);
   const changed = JSON.stringify(incoming) !== JSON.stringify(normalizeSellingPointEntries(review.latestEntries || previous));
-  const manual = previous.filter((entry) => entry.source === SELLING_POINT_SOURCE_MANUAL);
-  review.candidateEntries = normalizeSellingPointEntries([...incoming, ...manual]).map((entry) => ({
+  const preserved = append ? previous : previous.filter((entry) => isSupplementalSellingPointSource(entry.source));
+  review.candidateEntries = normalizeSellingPointEntries(append ? [...preserved, ...incoming] : [...incoming, ...preserved]).map((entry) => ({
     ...entry,
     meaningZh: entry.meaningZh || previous.find((item) => item.claim === entry.claim)?.meaningZh || "",
   }));
@@ -1577,26 +1607,34 @@ function sellingPointReviewHtml(sku) {
   const review = sellingPointReviewForSku(sku);
   if (!review) return "";
   const candidates = normalizeSellingPointEntries(review.candidateEntries);
-  const checked = new Set(review.checkedClaims || []);
-  const selected = normalizeSellingPointEntries(review.selectedEntries);
-  const selectedHtml = review.locked
-    ? `<p class="selling-point-review-active">已锁定：${escapeHtml(selected.map((item) => item.claim).join(" · "))}</p>`
-    : '<p class="selling-point-review-active">候选尚未确认；请勾选要使用的卖点，再锁定。</p>';
-  const candidateHtml = candidates.length
-    ? candidates.map((entry, index) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}><span><strong>${escapeHtml(entry.claim)}${entry.meaningZh ? `（${escapeHtml(entry.meaningZh)}）` : ""}</strong><small>来源：${escapeHtml(entry.source)}${entry.evidence ? ` · 依据：${escapeHtml(entry.evidence)}` : ""}</small></span></label>`).join("")
-    : '<p class="parameter-source">尚无候选卖点；可以先解析资料，或手动添加。</p>';
+  const visibleCandidates = review.locked ? normalizeSellingPointEntries(review.selectedEntries) : candidates;
+  const checked = new Set(review.locked ? visibleCandidates.map((entry) => entry.claim) : review.checkedClaims || []);
+  const candidateRows = visibleCandidates.map((entry, index) => ({ entry, index }));
+  const candidateHtml = (group) => {
+    const rows = candidateRows.filter(({ entry }) => sellingPointCandidateGroup(entry) === group);
+    return rows.length
+      ? rows.map(({ entry, index }) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}${entry.meaningZh ? `（${escapeHtml(entry.meaningZh)}）` : ""}</strong><small>来源：${escapeHtml(entry.source)}${entry.evidence ? ` · 依据：${escapeHtml(entry.evidence)}` : ""}</small></span></label>`).join("")
+      : '<p class="selling-point-group-empty">暂无卖点</p>';
+  };
+  const groupHtml = (group, title, action = "", addControl = "") => {
+    if (review.locked && !candidateRows.some(({ entry }) => sellingPointCandidateGroup(entry) === group)) return "";
+    return `<div class="selling-point-group"><div class="selling-point-group-head"><strong>${title}</strong>${review.locked ? "" : action}</div><div class="selling-point-candidate-list">${candidateHtml(group)}</div>${review.locked ? "" : addControl}</div>`;
+  };
   const history = (review.history || []).slice().reverse().map((item) => `<div class="selling-point-history-row"><b>V${Number(item.version) || 1} · ${escapeHtml(item.kind || "候选")}</b><small>${escapeHtml(item.at || "")}</small><p>${escapeHtml((item.entries || []).map((entry) => entry.claim).join(" / ") || "未提取到卖点")}</p></div>`).join("");
   const canRefresh = selectedExtractionRoute === "web" && Boolean(review.visionRequest?.imageUrls?.length);
-  return `<section class="selling-point-review" aria-label="卖点候选与确认">
-    <div class="selling-point-review-head"><strong>卖点候选 · ${review.locked ? "已锁定" : "待人工确认"}</strong><span>只影响当前 SKU</span></div>
-    ${selectedHtml}
-    <div class="selling-point-candidate-list">${candidateHtml}</div>
-    <div class="selling-point-review-actions"><button type="button" id="lockSellingPointChoices"${candidates.length ? "" : " disabled"}>确认所选并锁定</button><button type="button" class="secondary" id="refreshSellingPointChoices"${canRefresh ? "" : " disabled"}>重新识图</button></div>
-    <div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增中文卖点候选" maxlength="300" placeholder="输入中文卖点，自动翻译为英文候选"><button type="button" class="secondary" id="addManualSellingPointCandidate">翻译并添加</button></div>
-    ${canRefresh ? "" : '<p class="parameter-source">重新识图需先用当前资料解析一次，以保存本子体的图片清单。</p>'}
+  return `<div class="selling-point-review" aria-label="卖点候选与确认">
+    <div class="selling-point-review-head"><strong>卖点候选</strong><span>${review.demo ? "演示数据 · " : ""}${review.locked ? "已锁定" : "待确认"}</span></div>
+    ${groupHtml("supplier", "1688 分析卖点", `<button type="button" class="secondary" id="refreshSellingPointChoices"${canRefresh ? "" : " disabled"}>重新识图</button>`)}
+    ${groupHtml("web", "联网补充卖点", `<button type="button" class="secondary" id="supplementSellingPointChoices"${selectedExtractionRoute === "web" ? "" : " disabled"}>联网补充</button>`)}
+    ${candidateRows.some(({ entry }) => sellingPointCandidateGroup(entry) === "other") ? groupHtml("other", "其他来源") : ""}
+    ${groupHtml("manual", "人工输入卖点", "", '<div class="selling-point-add"><input id="manualEnglishSellingPointCandidate" aria-label="新增英文卖点候选" maxlength="300" placeholder="输入英文卖点"><button type="button" class="secondary" id="addManualEnglishSellingPointCandidate">添加</button></div>')}
+    ${groupHtml("translated", "中文翻译卖点", "", '<div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增中文卖点候选" maxlength="300" placeholder="输入中文卖点"><button type="button" class="secondary" id="addManualSellingPointCandidate">翻译并添加</button></div>')}
+    <div class="selling-point-review-actions">${review.locked
+      ? '<button type="button" class="secondary" id="unlockSellingPointChoices">取消锁定，查看全部卖点</button>'
+      : `<button type="button" id="lockSellingPointChoices"${candidates.length ? "" : " disabled"}>确认所选并锁定</button>`}</div>
     <p id="sellingPointReviewStatus" class="parameter-source" role="status" aria-live="polite"></p>
     <details class="selling-point-history"><summary>查看历史版本（${(review.history || []).length}）</summary>${history || '<p class="parameter-source">暂无历史版本</p>'}</details>
-  </section>`;
+  </div>`;
 }
 
 async function addManualSellingPointCandidate(sku, review) {
@@ -1638,7 +1676,7 @@ async function addManualSellingPointCandidate(sku, review) {
       }
       return;
     }
-    const entry = { claim, meaningZh: claimZh, source: SELLING_POINT_SOURCE_MANUAL, evidence: "", imageUrl: "" };
+    const entry = { claim, meaningZh: claimZh, source: SELLING_POINT_SOURCE_TRANSLATED, evidence: "", imageUrl: "" };
     review.candidateEntries = normalizeSellingPointEntries([...entries, entry]);
     review.checkedClaims = [...new Set([...(review.checkedClaims || []), claim])];
     appendSellingPointReviewHistory(review, "人工候选", [entry]);
@@ -1660,6 +1698,29 @@ async function addManualSellingPointCandidate(sku, review) {
       nextButton.textContent = "翻译并添加";
     }
   }
+}
+
+function addManualEnglishSellingPointCandidate(sku, review) {
+  const input = byId("manualEnglishSellingPointCandidate");
+  const status = byId("sellingPointReviewStatus");
+  const claim = cleanFieldDisplayValue(input?.value);
+  if (!claim || claim.length > 300) {
+    if (status) status.textContent = "请输入不超过 300 字的英文卖点。";
+    return;
+  }
+  const entries = normalizeSellingPointEntries(review.candidateEntries);
+  const existing = entries.find((entry) => entry.claim.toLowerCase() === claim.toLowerCase());
+  if (!existing) {
+    const entry = { claim, source: SELLING_POINT_SOURCE_MANUAL };
+    review.candidateEntries = normalizeSellingPointEntries([...entries, entry]);
+    appendSellingPointReviewHistory(review, "人工候选", [entry]);
+  }
+  review.checkedClaims = [...new Set([...(review.checkedClaims || []), existing?.claim || claim])];
+  persistSellingPointReviews();
+  if (selectedSku()?.id !== sku.id) return;
+  renderFields(true);
+  const nextStatus = byId("sellingPointReviewStatus");
+  if (nextStatus) nextStatus.textContent = existing ? "该卖点已存在，已勾选。" : "已加入人工卖点候选。";
 }
 
 function bindSellingPointReviewControls(sku) {
@@ -1689,10 +1750,21 @@ function bindSellingPointReviewControls(sku) {
     renderAll();
     byId("sellingPointReviewStatus").textContent = "已锁定当前 SKU 的卖点；普通重新解析不会覆盖。";
   });
+  byId("unlockSellingPointChoices")?.addEventListener("click", () => {
+    review.locked = false;
+    persistSellingPointReviews();
+    renderFields(true);
+    renderAll();
+    byId("sellingPointReviewStatus").textContent = "已取消锁定，可重新勾选全部候选卖点。";
+  });
   byId("addManualSellingPointCandidate")?.addEventListener("click", () => {
     void addManualSellingPointCandidate(sku, review);
   });
+  byId("addManualEnglishSellingPointCandidate")?.addEventListener("click", () => {
+    addManualEnglishSellingPointCandidate(sku, review);
+  });
   byId("refreshSellingPointChoices")?.addEventListener("click", refreshSellingPointCandidates);
+  byId("supplementSellingPointChoices")?.addEventListener("click", supplementSellingPointCandidatesOnline);
 }
 
 function queueSellingPointTranslations(sku) {
@@ -1758,7 +1830,9 @@ async function refreshSellingPointCandidates() {
       if (status) status.textContent = "本次识图没有提取出新卖点；原有锁定结果未改变。";
       return;
     }
-    addSellingPointCandidates(sku, entries);
+    review.candidateEntries = normalizeSellingPointEntries(review.candidateEntries)
+      .filter((entry) => sellingPointCandidateGroup(entry) !== "supplier");
+    addSellingPointCandidates(sku, entries, { append: true });
     renderFields(true);
     renderAll();
     byId("sellingPointReviewStatus").textContent = `本次识图得到 ${entries.length} 条候选；请与历史版本比较，勾选后再确认锁定。`;
@@ -1788,7 +1862,7 @@ function recordSellingPointEntries(sku, text, source) {
   if (!sku) return;
   sku.sellingPointEntries = splitSellingPointText(text).map((claim) => ({ claim, source }));
   sku.fieldSources = { ...(sku.fieldSources || {}), sellingPoints: source };
-  if (!sellingPointReviewForSku(sku, false)?.locked) addSellingPointCandidates(sku, sku.sellingPointEntries);
+  if (!sellingPointReviewForSku(sku, false)?.locked) addSellingPointCandidates(sku, sku.sellingPointEntries, { append: /联网|竞品/.test(source) });
 }
 
 function cleanTokenValue(value) {
@@ -2172,7 +2246,7 @@ function handleFieldInput(event) {
     const review = sellingPointReviewForSku(sku);
     if (review && !review.locked) {
       const entries = sellingPointEntriesForText(sku, event.currentTarget.value);
-      addSellingPointCandidates(sku, entries);
+      addSellingPointCandidates(sku, entries, { append: true });
       review.checkedClaims = entries.map((entry) => entry.claim);
       persistSellingPointReviews();
       // A change event may be caused by clicking "lock" while the textarea
@@ -8531,6 +8605,38 @@ async function fetchLocalSellingPointProxy(facts, timeoutMs = 55000) {
   }
 }
 
+async function supplementSellingPointCandidatesOnline() {
+  const sku = selectedSku();
+  if (!sku || !hasExtractedProducts()) return;
+  const button = byId("supplementSellingPointChoices");
+  const status = byId("sellingPointReviewStatus");
+  const requestedGeneration = extractionGeneration;
+  if (button) button.disabled = true;
+  if (status) status.textContent = "正在联网补充卖点…";
+  try {
+    const data = await fetchLocalSellingPointProxy(currentSceneResearchFacts());
+    if (extractionGeneration !== requestedGeneration || selectedSku()?.id !== sku.id) return;
+    const claims = uniqueSellingPoints((Array.isArray(data?.selling_points) ? data.selling_points : [])
+      .map((point) => String(point || "").replace(/\s+/g, " ").trim())
+      .filter(isUsableEnglishSellingPoint), 4);
+    if (!claims.length) {
+      if (status) status.textContent = "联网未找到可补充的卖点。";
+      return;
+    }
+    const review = sellingPointReviewForSku(sku);
+    const before = normalizeSellingPointEntries(review.candidateEntries).length;
+    addSellingPointCandidates(sku, claims.map((claim) => ({ claim, source: SELLING_POINT_SOURCE_WEB })), { append: true });
+    const added = normalizeSellingPointEntries(review.candidateEntries).length - before;
+    renderFields(true);
+    const nextStatus = byId("sellingPointReviewStatus");
+    if (nextStatus) nextStatus.textContent = added ? `已补充 ${added} 条联网卖点，请勾选确认。` : "联网卖点已在候选中。";
+  } catch (error) {
+    if (status?.isConnected) status.textContent = `联网补充失败：${error?.message || "请求失败"}`;
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
+}
+
 async function enrichSellingPointsOnline() {
   const sku = selectedSku();
   const skuId = sku?.id || "";
@@ -9880,34 +9986,39 @@ const sellingPointSlotIdsByTemplate = {
 };
 
 function sellingPointImageSelection(facts = {}, sku = selectedSku(), template = selectedTemplate()) {
-  const points = sellingPointCandidates(facts, 6);
+  const review = sku && sellingPointReviewForSku(sku, false);
+  const points = review?.locked && review.selectedEntries?.length
+    ? normalizeSellingPointEntries(review.selectedEntries).map((entry) => entry.claim)
+    : sellingPointCandidates(facts, 6);
   const slots = (sellingPointSlotIdsByTemplate[template.id] || [])
     .map((id) => template.imageTypes.find((type) => type.id === id))
     .filter(Boolean);
   const saved = sku?.sellingPointImageChoices?.[template.id] || [];
-  const indices = [];
+  const groups = [];
   slots.forEach((_, slotIndex) => {
-    const savedKey = saved[slotIndex];
-    let pointIndex = savedKey ? points.findIndex((point) => comparablePromptItem(point) === savedKey) : -1;
-    if (pointIndex < 0 || indices.includes(pointIndex)) {
-      pointIndex = points.findIndex((_, index) => !indices.includes(index));
+    const savedKeys = Array.isArray(saved[slotIndex]) ? saved[slotIndex] : [saved[slotIndex]];
+    const chosen = savedKeys.map((key) => points.find((point) => comparablePromptItem(point) === key))
+      .filter((point, index, items) => point && items.indexOf(point) === index).slice(0, 2);
+    if (!chosen.length) {
+      const used = groups.flat();
+      const next = points.find((point) => !used.includes(point));
+      if (next) chosen.push(next);
     }
-    indices.push(pointIndex);
+    groups.push(chosen);
   });
   // Older scene workspaces chose the product-only point for 5 and the use
   // point for 6. Move the more action-dependent claim into the new use slot
   // until the operator explicitly edits the two choices in this order.
-  if (template.id === "scene" && !sku?.sceneSellingPointOrderV2 && indices.length === 2
-      && indices[0] >= 0 && indices[1] >= 0
-      && sellingPointActionDependency([points[indices[1]]]) > sellingPointActionDependency([points[indices[0]]])) {
-    indices.reverse();
+  if (template.id === "scene" && !sku?.sceneSellingPointOrderV2 && groups.length === 2
+      && groups[0].length && groups[1].length
+      && sellingPointActionDependency(groups[1]) > sellingPointActionDependency(groups[0])) {
+    groups.reverse();
   }
-  return { points, slots, indices };
+  return { points, slots, groups, indices: groups.map((group) => points.indexOf(group[0])) };
 }
 
 function sellingPointDisplayGroups(facts = {}) {
-  const { points, indices } = sellingPointImageSelection(facts);
-  return indices.filter((index) => index >= 0).map((index) => [points[index]]);
+  return sellingPointImageSelection(facts).groups.filter((group) => group.length);
 }
 
 function sellingPointGroups(facts, groupIndex = 0) {
@@ -10102,6 +10213,52 @@ function visualPlanContext(facts) {
   return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 13 };
 }
 
+function seedDemoVisualPlanPreview() {
+  const sku = selectedSku();
+  const review = sku && sellingPointReviewForSku(sku, false);
+  if (!review?.demo) return false;
+  const facts = promptFacts(sku, currentPromptData(sku));
+  const context = visualPlanContext(facts);
+  if (!context.groups.length) return false;
+  const signature = JSON.stringify(context);
+  if (sku.sellingPointVisualPlan?.signature === signature) return false;
+  if (sku.sellingPointVisualPlan && !sku.sellingPointVisualPlan.demo) return false;
+  const details = [
+    {
+      goal: "展示锥形滤纸在 V60 滤杯中的贴合与手冲准备场景",
+      subject: "当前 Natural Brown V02 咖啡滤纸，置于 V60 滤杯中",
+      action: "近景呈现滤纸放入滤杯后的锥形状态，不加入未经确认的冲煮效果",
+      composition: "滤杯与滤纸占画面主体，保留少量咖啡冲煮环境，突出形状与贴合关系",
+      difference: "以实际使用场景说明适配方式，与另一张产品结构特写区分",
+      visual_prompt: "Show the actual natural brown V-shaped coffee filter seated in a V60 dripper in a realistic pour-over preparation scene. Keep the filter and its cone fit prominent; avoid invented performance results or pack-count claims.",
+    },
+    {
+      goal: "突出滤纸侧边热封线与提拉片的真实结构",
+      subject: "一张当前 SKU 的自然棕色锥形滤纸",
+      action: "展示侧边热封线与提拉片的局部细节",
+      composition: "产品本体大幅占画面，侧边结构清晰可见；使用柔和中性色背景",
+      difference: "以产品结构细节为主，与前一张使用场景区分",
+      visual_prompt: "Create a product-focused close-up of one actual natural brown V-shaped coffee filter. Clearly reveal the heat-sealed side seam and pull tab with accurate paper texture against a subtle neutral background. No hands, props, or unsupported claims.",
+    },
+  ];
+  sku.confirmedSellingPointPlanInput = currentVisualPlanConfirmationSignature(sku);
+  sku.sellingPointVisualPlan = {
+    signature,
+    demo: true,
+    plans: context.groups.map((points, index) => ({
+      groupIndex: index,
+      route: context.routes[index] || "flexible",
+      status: "ready",
+      label: sellingPointDisplayText(points, "Product Feature"),
+      ...details[Math.min(index, details.length - 1)],
+      basis: `演示数据 · 当前 SKU 已填写卖点：${points.join(" + ")}`,
+      reason: "",
+      evidenceUrls: [],
+    })),
+  };
+  return true;
+}
+
 function currentVisualPlanConfirmationSignature(sku = selectedSku()) {
   if (!sku) return "";
   const facts = promptFacts(sku, currentPromptData(sku));
@@ -10260,14 +10417,17 @@ function visualPlanReviewHtml(facts) {
   const selection = sellingPointImageSelection(facts);
   const status = visualPlanMessages.get(selectedSku().id) || "";
   if (!context.groups.length) return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>卖点图规划</h3></div></div></section>`;
-  return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>整套卖点图方案</h3></div>
+  return `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><div><h3>卖点图规划</h3></div>
     <div class="visual-plan-heading-actions"><button id="planSellingPointImages" type="button" class="secondary" ${busy || !parametersConfirmed ? "disabled" : ""}>${busy ? "正在规划…" : plans.length ? "重新规划卖点图" : parametersConfirmed ? "开始规划卖点图" : "等待确认"}</button></div></div>
-    <div class="visual-plan-choice-grid">${selection.slots.map((type, index) => `<label><span>${escapeHtml(type.name)} · ${sellingPointVisualRouteLabel(context.routes[index] || "flexible")}</span><select data-selling-point-slot="${index}" ${selection.points.length ? "" : "disabled"}>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}" ${selection.indices[index] === pointIndex ? "selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>`).join("")}</div>
+    <div class="visual-plan-choice-grid">${selection.slots.map((type, index) => `<div class="visual-plan-choice-card"><strong>${escapeHtml(type.name)} · ${sellingPointVisualRouteLabel(context.routes[index] || "flexible")}</strong>
+      <label><span>卖点 1</span><select data-selling-point-slot="${index}" data-selling-point-position="0" aria-label="${escapeHtml(type.name)}的第一个卖点"${selection.points.length ? "" : " disabled"}><option value="">请选择</option>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}"${selection.groups[index]?.[0] === point ? " selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>
+      <label><span>卖点 2（可选）</span><select data-selling-point-slot="${index}" data-selling-point-position="1" aria-label="${escapeHtml(type.name)}的第二个卖点"${selection.groups[index]?.length ? "" : " disabled"}><option value="">不添加</option>${selection.points.map((point, pointIndex) => `<option value="${pointIndex}"${selection.groups[index]?.[1] === point ? " selected" : ""}>${pointIndex + 1}. ${escapeHtml(point)}</option>`).join("")}</select></label>
+    </div>`).join("")}</div>
     ${status ? `<p class="visual-plan-status" role="status">${escapeHtml(status)}</p>` : ""}
     ${plans.map((plan) => {
       const points = context.groups[plan.groupIndex] || [];
-      const type = template.imageTypes.find((candidate) => JSON.stringify(sellingPointGroupForImageTitle(template.id, candidate.id, facts)) === JSON.stringify(points));
-      return `<details class="visual-plan-card"><summary class="visual-plan-card-summary"><span class="visual-plan-slot">${escapeHtml(type?.name || `卖点图 ${plan.groupIndex + 1}`)} · ${sellingPointVisualRouteLabel(context.routes[plan.groupIndex])}</span><strong>${escapeHtml(points.join(" + "))}</strong><span class="visual-plan-short-label">${plan.status === "ready" ? "方案已生成" : "需要检查"}</span></summary><div class="visual-plan-card-body">
+      const type = selection.slots[plan.groupIndex];
+      return `<details class="visual-plan-card"><summary class="visual-plan-card-summary"><span class="visual-plan-slot">${escapeHtml(type?.name || `卖点图 ${plan.groupIndex + 1}`)} · ${sellingPointVisualRouteLabel(context.routes[plan.groupIndex])}</span><span class="visual-plan-short-label">${plan.status === "ready" ? "方案已生成" : "需要检查"}</span></summary><div class="visual-plan-card-body">
       ${plan.status === "ready" ? `<dl>${[["goal", "本图表达"], ["subject", "主体与状态"], ["action", "动作 / 细节"], ["composition", "构图重点"], ["basis", "事实依据"], ["difference", "与其他图的区别"]].map(([key, label]) => `<div><dt>${label}</dt><dd>${escapeHtml(plan[key])}</dd></div>`).join("")}</dl>` : `<p>模型提示：${escapeHtml(plan.reason)}。可修改下方方案内容，再由右上角整体确认。</p>`}
       <details class="visual-plan-editor"><summary>修订方案内容</summary><div class="field-list" data-plan-editor="${plan.groupIndex}">
       ${[["action", "具体动作"], ["composition", "构图"], ["basis", "依据"], ["difference", "图间区别"], ["visual_prompt", "画面指令（英文）"], ["reason", "模型提示 / 人工备注"]].map(([key, label]) => `<div><label for="plan-${plan.groupIndex}-${key}">${label}</label><textarea id="plan-${plan.groupIndex}-${key}" data-plan-field="${key}" rows="3">${escapeHtml(plan[key])}</textarea></div>`).join("")}
@@ -12194,18 +12354,21 @@ function renderReferenceImages(state, requiredDetails = []) {
   const requiredUrls = [...requiredByUrl.keys()];
   const excludedRequiredSet = new Set(state.excludedRequiredReferences || []);
   const activeRequiredUrls = requiredUrls.filter((url) => !excludedRequiredSet.has(url));
-  const manuallySelected = state.selectedReferences.filter((url) => !requiredByUrl.has(url));
   if (!state.availableReferences.length) {
     return `
       <div class="reference-picker-summary">
         <div class="reference-picker-primary">
-          <span class="reference-candidate-count">候选图 <strong>0</strong> 张</span>
-          <button type="button" class="clear-reference-selection" disabled>清除人工选择</button>
+          <span class="reference-candidate-count">候选图 <strong>0/${MAX_SELECTED_REFERENCES}</strong> 张</span>
+          <button type="button" class="clear-reference-selection" disabled>清空选择</button>
         </div>
       </div>
       <p class="reference-empty">暂无匹配参考图，可在下方拖入本地图片。</p>`;
   }
   prioritizeSelectedReferences(state, activeRequiredUrls);
+  const selectedCount = state.availableReferences.filter((reference) => (
+    (requiredByUrl.has(reference) && !excludedRequiredSet.has(reference))
+    || state.selectedReferences.includes(reference)
+  )).length;
   const canExpand = state.availableReferences.length > 8;
   const metaByUrl = new Map(referenceMetaItemsForSku(selectedSku()?.id).map((item) => [item.url, item]));
   const hasSimilarColorImage = state.availableReferences.some((url) => isSimilarColorReference(metaByUrl.get(url)));
@@ -12222,8 +12385,8 @@ function renderReferenceImages(state, requiredDetails = []) {
   return `
     <div class="reference-picker-summary">
       <div class="reference-picker-primary">
-        <span class="reference-candidate-count">候选图 <strong>${state.availableReferences.length}</strong> 张</span>
-        <button type="button" class="clear-reference-selection" ${manuallySelected.length ? "" : "disabled"}>清除人工选择</button>
+        <span class="reference-candidate-count">候选图 <strong>${selectedCount}/${MAX_SELECTED_REFERENCES}</strong> 张</span>
+        <button type="button" class="clear-reference-selection" ${selectedCount ? "" : "disabled"}>清空选择</button>
       </div>
       <div class="reference-picker-actions">
         ${canExpand ? `<button type="button" class="reference-expand-toggle">${state.referencesExpanded ? "收起候选区" : "扩大候选区"}</button>` : ""}
@@ -12250,7 +12413,6 @@ function renderReferenceImages(state, requiredDetails = []) {
         ${isSystemRequired ? `<small class="reference-image-source" title="${escapeHtml(`${requiredDetail.label}；${isRequiredExcluded ? "已人工取消；" : ""}${reason}`)}">${escapeHtml(`${requiredDetail.label}${isRequiredExcluded ? "·已取消" : ""}`)}</small>` : ""}
         ${!isSystemRequired && badge ? `<small class="reference-image-origin" title="${escapeHtml(reason)}">${escapeHtml(badge)}</small>` : ""}
         <button type="button" class="preview-reference-image" data-reference-index="${index}" aria-label="放大查看参考图 ${index + 1}" title="放大查看">⌕</button>
-        <button type="button" class="delete-reference-image" data-reference-index="${index}" aria-label="删除参考图 ${index + 1}" title="删除参考图" ${isSystemRequired ? "disabled" : ""}>×</button>
       </div>
     `;
   }).join("")}</div>`;
@@ -12259,13 +12421,6 @@ function renderReferenceImages(state, requiredDetails = []) {
 function renderImageGenerator(cardKey) {
   const state = imageGenerationState(cardKey);
   const requiredDetails = requiredGenerationReferenceDetailsForCardKey(cardKey);
-  const excludedRequiredSet = new Set(state.excludedRequiredReferences || []);
-  const requiredSet = new Set(requiredDetails.map((item) => item.url).filter((url) => !excludedRequiredSet.has(url)));
-  const manualReferenceCount = state.selectedReferences.filter((url) => !requiredSet.has(url)).length;
-  const submittedReferenceCount = uniqueReferenceImageUrls([
-    ...requiredDetails.map((item) => item.url),
-    ...state.selectedReferences,
-  ]).slice(0, MAX_SELECTED_REFERENCES).length;
   const isBusy = state.status === "submitting" || state.status === "processing";
   const history = Array.isArray(state.history) ? state.history : [];
   const selectedHistoryIds = new Set(state.selectedHistoryIds || []);
@@ -12282,6 +12437,7 @@ function renderImageGenerator(cardKey) {
         <a class="generated-image-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" aria-label="打开${isLatest ? "最新" : `第 ${round} 轮`}生成原图 ${index + 1}">
           <img src="${escapeHtml(url)}" alt="${isLatest ? "最新" : `第 ${round} 轮`}生成结果 ${index + 1}" loading="lazy">
         </a>
+        <button type="button" class="generated-image-zoom" data-history-id="${escapeHtml(record.id)}" data-image-index="${index}" aria-label="放大查看${isLatest ? "最新" : `第 ${round} 轮`}生成图片 ${index + 1}" title="放大查看">⌕</button>
       </figure>
     `).join("");
     return `
@@ -12313,13 +12469,6 @@ function renderImageGenerator(cardKey) {
   ` : "";
   return `
     <section class="image-generator" data-card-key="${escapeHtml(cardKey)}">
-      <div class="image-generator-heading">
-        <div>
-          <strong>出图工作区</strong>
-          <span>参考图最多选择 ${MAX_SELECTED_REFERENCES} 张</span>
-        </div>
-        <span class="reference-count">系统 ${requiredDetails.length} · 人工 ${manualReferenceCount} · 提交 ${submittedReferenceCount}/${MAX_SELECTED_REFERENCES}</span>
-      </div>
       <div class="reference-image-picker">
         ${assortmentReferenceNote}
         ${renderReferenceImages(state, requiredDetails)}
@@ -12483,9 +12632,9 @@ function updateImageGenerator(cardKey) {
   setSaveGeneratedSetUi(byId("saveGeneratedSetStatus")?.textContent || "");
 }
 
-function openReferenceLightbox(reference, label = "参考图") {
+function openReferenceLightbox(reference, label = "参考图", useSourceProxy = true) {
   document.querySelector(".reference-lightbox")?.remove();
-  const previewUrl = /^data:image\//i.test(reference) ? reference : sourceProxyUrl(reference);
+  const previewUrl = !useSourceProxy || /^data:image\//i.test(reference) ? reference : sourceProxyUrl(reference);
   const overlay = document.createElement("div");
   overlay.className = "reference-lightbox";
   overlay.setAttribute("role", "dialog");
@@ -12850,11 +12999,12 @@ function selectedSetPreviewItems() {
     const selectedIds = new Set(state.selectedHistoryIds || []);
     return state.history
       .filter((record) => selectedIds.has(record.id))
-      .flatMap((record) => record.images.map((url) => ({
+      .flatMap((record) => record.images.map((url, imageIndex) => ({
         id: item.id,
         name: item.type.name.replace(/^\s*[0-9]+[A-Z]?\.\s*/, ""),
         cardKey: item.key,
         historyId: record.id,
+        imageIndex,
         roundImageCount: record.images.length,
         url,
       })));
@@ -12870,6 +13020,7 @@ function selectedSetPreviewHtml() {
       ${items.length ? `<div class="selected-set-preview-list">${items.map((item) => `
         <figure class="selected-set-preview-item">
           <img src="${escapeHtml(item.url)}" alt="${escapeHtml(`${item.id} ${item.name}`)}" loading="lazy">
+          <button type="button" class="generated-image-zoom" data-card-key="${escapeHtml(item.cardKey)}" data-history-id="${escapeHtml(item.historyId)}" data-image-index="${item.imageIndex}" aria-label="放大查看${escapeHtml(`${item.id} ${item.name}`)}" title="放大查看">⌕</button>
           <button type="button" class="selected-set-preview-remove" data-card-key="${escapeHtml(item.cardKey)}" data-history-id="${escapeHtml(item.historyId)}" aria-label="取消选择${escapeHtml(`${item.id} ${item.name}`)}${item.roundImageCount > 1 ? `所在轮次的 ${item.roundImageCount} 张图片` : ""}" title="${item.roundImageCount > 1 ? `取消本轮 ${item.roundImageCount} 张图片的选择` : "取消选择"}">×</button>
           <figcaption><b>${escapeHtml(item.id)}</b><span>${escapeHtml(item.name)}</span></figcaption>
         </figure>
@@ -12893,6 +13044,14 @@ function bindSelectedSetPreview(grid) {
     const download = event.target.closest(".selected-set-download");
     if (download && grid.contains(download)) {
       saveGeneratedSet();
+      return;
+    }
+    const zoom = event.target.closest(".selected-set-preview-item .generated-image-zoom");
+    if (zoom && grid.contains(zoom)) {
+      const record = imageGenerationState(zoom.dataset.cardKey).history
+        .find((item) => item.id === zoom.dataset.historyId);
+      const url = record?.images[Number(zoom.dataset.imageIndex)];
+      if (url) openReferenceLightbox(url, "已选生成图片", false);
       return;
     }
     const button = event.target.closest(".selected-set-preview-remove");
@@ -13172,10 +13331,15 @@ function bindImageGeneratorSection(section) {
     persistWorkspaceSnapshot();
   });
   section.querySelector(".clear-reference-selection")?.addEventListener("click", () => {
-    state.selectedReferences = state.selectedReferences.filter((url) => requiredReferenceSet.has(url));
-    savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
+    state.selectedReferences = [];
+    state.excludedRequiredReferences = uniqueReferenceImageUrls([
+      ...(state.excludedRequiredReferences || []),
+      ...defaultRequiredReferenceSet,
+    ]);
+    savedReferenceSelectionByCard[cardKey] = [];
+    savedRequiredReferenceExclusionsByCard[cardKey] = [...state.excludedRequiredReferences];
     lastReferenceSelectionCardKey = cardKey;
-    state.message = requiredReferenceSet.size ? "已清除人工选择，系统必需证据图继续保留。" : "已取消当前任务的全部人工选择。";
+    state.message = "已清空当前任务的参考图选择。";
     updateImageGenerator(cardKey);
     persistManualReferences(cardKey);
     persistWorkspaceSnapshot();
@@ -13241,21 +13405,6 @@ function bindImageGeneratorSection(section) {
       persistWorkspaceSnapshot();
     });
   });
-  section.querySelectorAll(".delete-reference-image").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const reference = state.availableReferences[Number(button.dataset.referenceIndex)];
-      if (!reference) return;
-      state.availableReferences = state.availableReferences.filter((item) => item !== reference);
-      state.selectedReferences = state.selectedReferences.filter((item) => item !== reference);
-      state.message = "已删除该参考图。";
-      updateImageGenerator(cardKey);
-      savedReferenceSelectionByCard[cardKey] = state.selectedReferences.filter((url) => /^https?:\/\//i.test(url));
-      persistManualReferences(cardKey);
-      persistWorkspaceSnapshot();
-    });
-  });
   section.querySelectorAll(".preview-reference-image").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -13263,6 +13412,14 @@ function bindImageGeneratorSection(section) {
       const index = Number(button.dataset.referenceIndex);
       const reference = state.availableReferences[index];
       if (reference) openReferenceLightbox(reference, `参考图 ${index + 1}`);
+    });
+  });
+  section.querySelectorAll(".generated-image-zoom").forEach((button) => {
+    button.addEventListener("click", () => {
+      const record = state.history.find((item) => item.id === button.dataset.historyId);
+      const index = Number(button.dataset.imageIndex);
+      const url = record?.images[index];
+      if (url) openReferenceLightbox(url, `生成图片 ${index + 1}`, false);
     });
   });
   const fileInput = section.querySelector(".reference-file-input");
@@ -13511,8 +13668,10 @@ function renderProductPromptGrid() {
 
 function renderParameterPromptGrid() {
   const grid = byId("parameterPromptGrid");
-  if (!grid) return;
+  const planGrid = byId("visualPlanWorkspace");
+  if (!grid || !planGrid) return;
   if (!hasExtractedProducts() || !promptStore.length) {
+    planGrid.innerHTML = `<section class="control-group visual-plan-review"><div class="visual-plan-review-heading"><h3>卖点图规划</h3></div></section>`;
     grid.innerHTML = `<p class="empty-state">第 1 页解析出产品后，这里显示参数对应的整套提示词。</p>`;
     return;
   }
@@ -13523,13 +13682,13 @@ function renderParameterPromptGrid() {
   const visibleItems = promptStore.filter((item) => !item.empty);
   const activeItem = visibleItems.find((item) => item.key === activePromptCardKey) || visibleItems[0];
   if (!activeItem) {
+    planGrid.innerHTML = visualPlanReviewHtml(facts);
     grid.innerHTML = `<p class="empty-state">当前模板没有可用提示词。</p>`;
     return;
   }
+  planGrid.innerHTML = `${parameterSellingPointConfirmationHtml(facts)}${visualPlanReviewHtml(facts)}`;
   grid.innerHTML = `
     <div class="parameter-prompt-workbench">
-      ${parameterSellingPointConfirmationHtml(facts)}
-      ${visualPlanReviewHtml(facts)}
       ${promptTaskListHtml(visibleItems, activeItem, "参数对应提示词任务")}
       <article class="prompt-card parameter-prompt-detail">
         <div class="prompt-card-head"><div><span>${escapeHtml(displayLabel)}</span><h3>${escapeHtml(activeItem.type.name)}</h3></div><div class="prompt-actions"><button type="button" class="copy-prompt" data-prompt-key="${escapeHtml(activeItem.key)}">复制</button><button type="button" class="language-toggle" data-prompt-key="${escapeHtml(activeItem.key)}">${activeItem.language === "zh" ? "切英文" : "切中文"}</button></div></div>
@@ -13545,19 +13704,27 @@ function renderParameterPromptGrid() {
     else expandedParameterPrompts.add(activeItem.key);
     renderParameterPromptGrid();
   });
-  grid.querySelectorAll("[data-selling-point-slot]").forEach((select) => select.addEventListener("change", () => {
+  planGrid.querySelectorAll("[data-selling-point-slot]").forEach((select) => select.addEventListener("change", () => {
     const selection = sellingPointImageSelection(promptFacts(sku, currentPromptData(sku)), sku, selectedTemplate());
     const slotIndex = Number(select.dataset.sellingPointSlot);
-    const pointIndex = Number(select.value);
-    if (!selection.slots[slotIndex] || !selection.points[pointIndex]) return;
-    const indices = [...selection.indices];
-    const previousIndex = indices[slotIndex];
-    const otherSlot = indices.findIndex((index, position) => position !== slotIndex && index === pointIndex);
-    if (otherSlot >= 0) indices[otherSlot] = previousIndex;
-    indices[slotIndex] = pointIndex;
+    const position = Number(select.dataset.sellingPointPosition);
+    if (!selection.slots[slotIndex] || ![0, 1].includes(position)) return;
+    const point = select.value === "" ? "" : selection.points[Number(select.value)];
+    const groups = selection.groups.map((group) => [...group]);
+    if (position === 0 && !point) return;
+    if (position === 1 && !point) groups[slotIndex] = groups[slotIndex].slice(0, 1);
+    else groups[slotIndex][position] = point;
+    if (groups[slotIndex][0] === groups[slotIndex][1]) groups[slotIndex] = groups[slotIndex].slice(0, 1);
+    if (groups[slotIndex].length > 2) groups[slotIndex] = groups[slotIndex].slice(0, 2);
+    if (groups.some((group, index) => index !== slotIndex && group.length
+        && JSON.stringify(group) === JSON.stringify(groups[slotIndex]))) {
+      visualPlanMessages.set(sku.id, "两张卖点图请选择不同的卖点组合。");
+      renderParameterPromptGrid();
+      return;
+    }
     sku.sellingPointImageChoices = {
       ...(sku.sellingPointImageChoices || {}),
-      [selectedTemplate().id]: indices.map((index) => index >= 0 ? comparablePromptItem(selection.points[index]) : ""),
+      [selectedTemplate().id]: groups.map((group) => group.map(comparablePromptItem)),
     };
     if (selectedTemplate().id === "scene") sku.sceneSellingPointOrderV2 = true;
     visualPlanMessages.delete(sku.id);
@@ -13565,11 +13732,11 @@ function renderParameterPromptGrid() {
   }));
   byId("planSellingPointImages")?.addEventListener("click", planSellingPointImages);
   byId("confirmParametersAndSellingPoints")?.addEventListener("click", confirmParametersAndSellingPoints);
-  grid.querySelectorAll("[data-save-visual-plan]").forEach((button) => button.addEventListener("click", () => {
+  planGrid.querySelectorAll("[data-save-visual-plan]").forEach((button) => button.addEventListener("click", () => {
     const index = Number(button.dataset.saveVisualPlan);
     const plan = currentVisualPlans(facts).find((item) => item.groupIndex === index);
     if (!plan) return;
-    const edits = Object.fromEntries(Array.from(grid.querySelectorAll(`[data-plan-editor="${index}"] textarea`)).map((input) => [input.dataset.planField, input.value.trim()]));
+    const edits = Object.fromEntries(Array.from(planGrid.querySelectorAll(`[data-plan-editor="${index}"] textarea`)).map((input) => [input.dataset.planField, input.value.trim()]));
     if (!edits.reason && (!edits.action || !edits.composition || !edits.visual_prompt)) return;
     Object.assign(plan, edits, {status: edits.reason ? "blocked" : "ready", reviewed: true});
     visualPlanMessages.set(sku.id, "修订已保存，并同步到对应提示词。");
@@ -13705,9 +13872,10 @@ function restoreWorkspaceSnapshot() {
     competitorDimensionSourceNames = Array.isArray(snapshot.competitorDimensionSourceNames) ? snapshot.competitorDimensionSourceNames : [];
     competitorProductWeight = String(snapshot.competitorProductWeight || "");
     competitorCapacity = String(snapshot.competitorCapacity || "");
-    selectedExtractionRoute = snapshot.selectedExtractionRoute === "local" ? "local" : "web";
-    selectedProductStructureRoute = productStructureRoutePreviews[snapshot.selectedProductStructureRoute] ? snapshot.selectedProductStructureRoute : "single";
-    productStructureRouteManuallySelected = Boolean(productStructureRoutePreviews[snapshot.selectedProductStructureRoute]);
+    // Opening the tool starts a new parsing choice, even when product data is restored.
+    selectedExtractionRoute = "web";
+    selectedProductStructureRoute = "single";
+    productStructureRouteManuallySelected = false;
     hasUserSourceAttempt = true;
     sourcePayload = {
       purchase: "",
@@ -13716,18 +13884,12 @@ function restoreWorkspaceSnapshot() {
       competitor: "",
     };
     renderProductSelect(snapshot.selectedSkuId);
-    const restoredSku = extractedProducts.find((sku) => sku.id === (snapshot.selectedSkuId || extractedProducts[0]?.id));
-    if (productStructureRoutePreviews[restoredSku?.productStructureRoute]) {
-      selectedProductStructureRoute = restoredSku.productStructureRoute;
-    }
     const legacyBinding = extractedProducts.some((sku) => sku.id === snapshot.supplierSkuBinding)
       ? `sku:${snapshot.supplierSkuBinding}`
       : snapshot.supplierSkuBinding || "";
-    selectedSupplierBindingMode = ["parent", "child"].includes(snapshot.supplierBindingMode)
-      ? snapshot.supplierBindingMode
-      : supplierBindingModeFromValue(legacyBinding);
+    selectedSupplierBindingMode = "child";
     supplierBindingProducts = extractedProducts;
-    renderSupplierBindingOptions(extractedProducts, selectedSupplierBindingMode, legacyBinding);
+    renderSupplierBindingOptions(extractedProducts, "child", legacyBinding.startsWith("sku:") ? legacyBinding : "");
     if (templates.some((template) => template.id === snapshot.templateId && !template.disabled)) {
       byId("templateSelect").value = snapshot.templateId;
     }
@@ -13932,8 +14094,10 @@ async function init() {
   });
   initProductStructureRoute();
   initExtractionRoutePreview();
+  seedDemoSellingPointPreview();
   renderFields(true);
   renderAll();
+  if (seedDemoVisualPlanPreview()) renderAll();
   void cacheExistingGeneratedImageHistory();
   if (restoredWorkspace) {
     showWorkflowPage(restoredWorkspace.activeWorkflowPage || "studio");
@@ -14012,7 +14176,7 @@ async function init() {
     byId("extractStatus").textContent = "1688资料的 SKU 归属已更新，请重新解析资料。";
   };
   byId("supplierSkuBinding")?.addEventListener("change", () => {
-    updateSupplierBindingHelp();
+    updateSupplierBindingModeButtons();
     handleSupplierBindingChange();
   });
   document.querySelectorAll("[data-supplier-binding-mode]").forEach((button) => {
@@ -14046,6 +14210,9 @@ async function init() {
   // Assigning FileList programmatically does not fire change. Populate the
   // supplier-binding choices from the S1 template without starting extraction.
   if (sourceInputFiles("amazonTemplateFile").length) await refreshSupplierBindingOptions();
+  // Prefilling a saved SKU can infer a bundle; keep the opening choice on single.
+  productStructureRouteManuallySelected = false;
+  renderProductStructureRoute("single");
 }
 
 init();

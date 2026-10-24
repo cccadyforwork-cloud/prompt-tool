@@ -253,11 +253,13 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     const selectionStart = source.indexOf('const sellingPointSlotIdsByTemplate =');
     const selectionEnd = source.indexOf('function clampSellingPointTitle(', selectionStart);
     assert.ok(selectionStart >= 0 && selectionEnd > selectionStart);
-    const selectedClaims = ['Quantitative oil control', 'Wide 60 degree atomization spray range'];
+    const selectedClaims = ['Quantitative oil control', 'Wide 60 degree atomization spray range', 'Durable material'];
     const selectedSku = {sellingPointImageChoices: {scene: selectedClaims.map((claim) => claim.toLowerCase())}};
     const selection = vm.createContext({
       selectedSku: () => selectedSku,
       selectedTemplate: () => ({id: 'scene', imageTypes: [{id: '5'}, {id: '6'}]}),
+      sellingPointReviewForSku: () => selectedSku.review || null,
+      normalizeSellingPointEntries: (entries) => entries,
       sellingPointCandidates: () => selectedClaims,
       comparablePromptItem: (claim) => claim.toLowerCase(),
       sellingPointActionDependency: (claims) => /spray|atomization/i.test(claims.join(' ')) ? 4 : 1,
@@ -268,6 +270,16 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     selectedSku.sceneSellingPointOrderV2 = true;
     assert.deepEqual([...vm.runInContext('sellingPointImageSelection().indices', selection)], [0, 1],
       'an explicit new-order selection remains in the chosen slots');
+    selectedSku.sellingPointImageChoices.scene = [
+      [selectedClaims[0].toLowerCase(), selectedClaims[2].toLowerCase()],
+      [selectedClaims[1].toLowerCase()],
+    ];
+    assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(sellingPointDisplayGroups())', selection)),
+      [[selectedClaims[0], selectedClaims[2]], [selectedClaims[1]]],
+      'each image can retain one or two chosen claims');
+    selectedSku.review = {locked: true, selectedEntries: [{claim: selectedClaims[0]}, {claim: selectedClaims[2]}]};
+    assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(sellingPointImageSelection().points)', selection)),
+      [selectedClaims[0], selectedClaims[2]], 'a locked review limits planning choices to checked claims');
     const visualRuleStart = source.indexOf('function sellingPointClaimCopyRule(');
     const visualRuleEnd = source.indexOf('function conciseSceneModulePrompt(', visualRuleStart);
     assert.ok(visualRuleStart >= 0 && visualRuleEnd > visualRuleStart);
@@ -341,6 +353,8 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       normalizeSellingPointEntries: (entries) => [...new Map((entries || []).map((entry) => [entry.claim, entry])).values()].slice(0, 12),
       sellingPointEntriesForText: (_sku, text) => text.split('\n').map((claim) => ({claim, source: 'vision'})),
       sellingPointReviewForSku: () => review, cleanFieldDisplayValue: String,
+      isSupplementalSellingPointSource: (source) => source === 'manual' || source === 'web',
+      isManualSellingPointSource: (source) => source === 'manual',
       persistSellingPointReviews: () => {}, appendSellingPointReviewHistory: () => {},
     });
     vm.runInContext(source.slice(reviewStart, reviewEnd), reviews);
