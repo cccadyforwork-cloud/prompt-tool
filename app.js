@@ -127,6 +127,7 @@ const supplierStructuredFieldKeys = new Set(["material", "applicableRange"]);
 const multilineFieldKeys = new Set(["scene", "sellingPoints", "productDimensions"]);
 const sellingPointFieldKeys = new Set(["sellingPoints"]);
 const SELLING_POINT_SOURCE_VISION = "1688 页面图片 · 豆包识图提取";
+const SELLING_POINT_SOURCE_COMPETITOR = "竞品图组 · 豆包识别";
 const SELLING_POINT_SOURCE_WEB = "豆包联网补充";
 const SELLING_POINT_SOURCE_MANUAL = "人工填写/修改";
 const SELLING_POINT_SOURCE_TRANSLATED = "中文卖点翻译";
@@ -153,6 +154,7 @@ const WORKSPACE_STORAGE_KEY = "prompt-tool-workspace-v1";
 const SELLING_POINT_REVIEW_STORAGE_KEY = "prompt-tool-selling-point-review-v1";
 const SOURCE_FILES_STORAGE_KEY = "prompt-tool-source-files-v1";
 const SOURCE_TEXT_STORAGE_KEY = "prompt-tool-source-text-v1";
+const COMPETITOR_BINDING_STORAGE_KEY = "prompt-tool-competitor-binding-v1";
 const MANUAL_REFERENCES_STORAGE_KEY = "prompt-tool-manual-references-v1";
 const workspaceParams = new URLSearchParams(window.location.search);
 const workspaceProjectId = workspaceParams.get("store_project_id") || "";
@@ -230,7 +232,8 @@ async function initializeDurableStorage() {
     });
     const keys = [WORKSPACE_STORAGE_KEY, IMAGE_HISTORY_STORAGE_KEY,
       SELLING_POINT_REVIEW_STORAGE_KEY, SOURCE_FILES_STORAGE_KEY,
-      SOURCE_TEXT_STORAGE_KEY, MANUAL_REFERENCES_STORAGE_KEY];
+      SOURCE_TEXT_STORAGE_KEY, COMPETITOR_BINDING_STORAGE_KEY,
+      MANUAL_REFERENCES_STORAGE_KEY];
     await Promise.all(keys.map((key) => new Promise((resolve) => {
       const request = durableDb.transaction("records", "readonly")
         .objectStore("records").get(durableWorkspaceKey(key));
@@ -377,7 +380,7 @@ function storeWorkflowSourceEndpoint(kind) {
 // Keep workflow-provided files in memory as the source of truth and only mirror
 // them into the native input when that browser permits it.
 const storePrefilledSourceFiles = new Map();
-const SOURCE_INPUT_IDS = ["amazonTemplateFile", "supplierFile", "competitorFile"];
+const SOURCE_INPUT_IDS = ["amazonTemplateFile", "supplierFile", "competitorFile", "competitorAnalysisFile"];
 
 function sourceInputFiles(inputId) {
   const selected = Array.from(byId(inputId)?.files || []);
@@ -419,7 +422,9 @@ function restoreSourceInputs() {
     } catch {
       // The stored File objects remain available through sourceInputFiles.
     }
-    if (id !== "competitorFile") showPrefilledSource(id, files.map((file) => file.name).join("、"));
+    if (id === "amazonTemplateFile" || id === "supplierFile") {
+      showPrefilledSource(id, files.map((file) => file.name).join("、"));
+    }
   }
   const imageList = byId("supplierImageListText");
   if (imageList) {
@@ -527,6 +532,7 @@ let referenceImagesBySku = {};
 let referenceImageMetaBySku = {};
 let promptLanguageByCard = {};
 let extractedProducts = [];
+let routeWorkspaces = {};
 let hasUserSourceAttempt = false;
 const emptyExtractedProduct = {
   id: "EXTRACTED-NONE",
@@ -554,18 +560,16 @@ let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
 let sellingPointInputRevision = 0;
 let sellingPointResearchAttemptedBySku = new Set();
-let competitorSellingPointCandidates = [];
-let competitorSellingPointSourceNames = [];
-let competitorDimensionList = "";
-let competitorDimensionSourceNames = [];
-let competitorProductWeight = "";
-let competitorCapacity = "";
 let sceneInputRevision = 0;
 let selectedExtractionRoute = "web";
 let selectedProductStructureRoute = "single";
 let productStructureRouteManuallySelected = false;
 let supplierBindingProducts = [];
 let selectedSupplierBindingMode = "child";
+let competitorBindingProducts = [];
+let selectedCompetitorBindingMode = "child";
+let competitorBindingPreferredValue = "";
+let previewReturnSkuId = "";
 let extractionGeneration = 0;
 const OCR_IMAGE_LIMIT = 32;
 const OCR_FALLBACK_IMAGE_LIMIT = 6;
@@ -575,6 +579,7 @@ const COLLECTOR_DETAIL_TAIL_LIMIT = 12;
 const MAX_REFERENCE_CANDIDATES = 256;
 const MAX_REFERENCE_CLASSIFIER_CANDIDATES = 200;
 const MAX_COMPETITOR_REFERENCE_IMAGES = 5;
+const MAX_PRODUCT_ANALYSIS_IMAGE_URLS = 200;
 const MAX_SELECTED_REFERENCES = 6;
 const MAX_REQUIRED_REFERENCES = 2;
 const REFERENCE_CLASSIFIER_BATCH_SIZE = 12;
@@ -586,7 +591,6 @@ const DETAIL_FETCH_TIMEOUT_MS = 15000;
 const IMAGE_LOAD_TIMEOUT_MS = 15000;
 const OCR_RECOGNIZE_TIMEOUT_MS = 45000;
 const PURCHASE_IMAGE_OCR_TIMEOUT_MS = 45000;
-const GENERIC_SUPPLIER_SKU_MODEL = "SUPPLIER-SKU";
 const scriptLoadPromises = {};
 
 function byId(id) {
@@ -673,13 +677,16 @@ async function confirmParameterOutputs() {
       const plan = visualPlanForPoints(points, latestFacts);
       if (plan?.status === "ready") {
         const conciseScenePlan = template.id === "scene" && ["5", "6"].includes(String(type.id));
-        const readablePrompt = item.promptEn.replace(/[【】]/g, "");
+        // Parameter highlighting adds brackets and padding inside quoted copy.
+        // Compare content independently of that display-only formatting.
+        const readablePrompt = item.promptEn.replace(/[【】\s]/g, "");
+        const includesPlanText = (text) => readablePrompt.includes(String(text).replace(/\s/g, ""));
         const planIncluded = conciseScenePlan
-          ? readablePrompt.includes(plan?.route === "product_proof"
+          ? includesPlanText(plan?.route === "product_proof"
             ? "TASK: Present only this source-verified selling point:"
             : "TASK: Visually prove only this current selling point:")
-            && readablePrompt.includes(`"${sellingPointHeadlineForClaim(points[0], plan?.label)}"`)
-            && readablePrompt.includes(`"${sellingPointBodyCopy(points[0])}"`)
+            && includesPlanText(`"${sellingPointHeadlineForClaim(points[0], plan?.label)}"`)
+            && includesPlanText(`"${sellingPointBodyCopy(points[0])}"`)
             && (plan?.route === "scene_use"
               ? item.promptEn.includes("OPERATION:")
               : item.promptEn.includes("VISUAL PLAN:"))
@@ -801,10 +808,15 @@ function supplierParentGroups(products = []) {
   return groups;
 }
 
-function supplierBindingModeFromValue(value = "") {
-  if (String(value).startsWith("parent:")) return "parent";
-  if (String(value).startsWith("sku:")) return "child";
-  return "child";
+function soleAmazonParentBinding(products = []) {
+  if (!products.length) return null;
+  const parentGroups = supplierParentGroups(products);
+  if (parentGroups.size > 1) return null;
+  const groupKeys = [...new Set(products.map((sku) => cleanFieldDisplayValue(sku.groupKey || "")).filter(Boolean))];
+  const parentSku = parentGroups.size === 1
+    ? parentGroups.keys().next().value
+    : groupKeys.length === 1 && groupKeys[0] !== "amazon-template" ? groupKeys[0] : "";
+  return parentSku ? { parentSku, targets: products } : null;
 }
 
 function updateSupplierBindingModeButtons() {
@@ -815,30 +827,53 @@ function updateSupplierBindingModeButtons() {
   });
 }
 
-function renderSupplierBindingOptions(products = [], mode = "child", preferredValue = "") {
-  const select = byId("supplierSkuBinding");
-  if (!select) return;
-  selectedSupplierBindingMode = ["parent", "child"].includes(mode) ? mode : "child";
-  const parentGroups = supplierParentGroups(products);
-  const parentValues = Array.from(parentGroups.entries())
-    .filter(([, children]) => children.length > 1)
-    .map(([parentSku, children]) => ({
-      value: `parent:${parentSku}`,
-      label: `${parentSku}（${children.length} 个 Child SKU）`,
-    }));
+function skuBindingChoices(products = [], mode = "child") {
+  const parent = soleAmazonParentBinding(products);
+  const parentValues = parent ? [{ value: `parent:${parent.parentSku}`, label: parent.parentSku }] : [];
   const childValues = products.map((sku) => ({
     value: `sku:${sku.id}`,
     label: sku.label || sku.displayLabel || sku.model || sku.id,
   }));
-  const values = selectedSupplierBindingMode === "parent" ? parentValues : childValues;
-  const placeholder = selectedSupplierBindingMode === "parent" ? "请选择父体" : "请选择 Child SKU";
+  return mode === "parent" ? parentValues : childValues;
+}
+
+function fillSkuBindingSelect(select, products = [], mode = "child", preferredValue = "") {
+  if (!select) return;
+  const values = skuBindingChoices(products, mode);
+  const placeholder = mode === "parent" ? "请选择父体" : "请选择 Child SKU";
   select.innerHTML = `<option value="">${placeholder}</option>${values.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("")}`;
   const normalizedPreferred = products.some((sku) => sku.id === preferredValue) ? `sku:${preferredValue}` : preferredValue;
   const validPreferred = values.some((item) => item.value === normalizedPreferred);
-  select.value = validPreferred ? normalizedPreferred : "";
-  select.hidden = !products.length;
-  select.disabled = !values.length;
+  select.value = mode === "parent" && values.length === 1 ? values[0].value : validPreferred ? normalizedPreferred : "";
+  select.hidden = mode === "parent" || !products.length;
+  select.disabled = mode === "parent" || !values.length;
+  const label = document.querySelector(`label[for="${select.id}"]`);
+  if (label) label.hidden = select.hidden;
+}
+
+function renderSupplierBindingOptions(products = [], mode = "child", preferredValue = "") {
+  selectedSupplierBindingMode = ["parent", "child"].includes(mode) ? mode : "child";
+  fillSkuBindingSelect(byId("supplierSkuBinding"), products, selectedSupplierBindingMode, preferredValue);
   updateSupplierBindingModeButtons();
+}
+
+function renderCompetitorBindingOptions(products = [], mode = "child", preferredValue = "") {
+  selectedCompetitorBindingMode = ["parent", "child"].includes(mode) ? mode : "child";
+  fillSkuBindingSelect(byId("competitorSkuBinding"), products, selectedCompetitorBindingMode, preferredValue);
+  document.querySelectorAll("[data-competitor-binding-mode]").forEach((button) => {
+    const active = button.dataset.competitorBindingMode === selectedCompetitorBindingMode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function populateCompetitorSkuBinding(products = []) {
+  const previous = selectedCompetitorBindingMode === "child"
+    ? byId("competitorSkuBinding")?.value || competitorBindingPreferredValue
+    : "";
+  competitorBindingProducts = products;
+  renderCompetitorBindingOptions(products, selectedCompetitorBindingMode, previous);
+  if (products.length) competitorBindingPreferredValue = byId("competitorSkuBinding")?.value || "";
 }
 
 function populateSupplierSkuBinding(products = []) {
@@ -846,9 +881,7 @@ function populateSupplierSkuBinding(products = []) {
   if (!select) return;
   const previous = select.value;
   supplierBindingProducts = products;
-  let mode = previous ? supplierBindingModeFromValue(previous) : selectedSupplierBindingMode;
-  if (!products.length) mode = selectedSupplierBindingMode;
-  renderSupplierBindingOptions(products, mode, previous);
+  renderSupplierBindingOptions(products, selectedSupplierBindingMode, previous);
   syncProductStructureRouteFromBinding();
 }
 
@@ -859,15 +892,14 @@ function boundSupplierSku(products = []) {
 }
 
 function supplierBindingScope(products = []) {
+  if (selectedSupplierBindingMode === "parent") {
+    const parent = soleAmazonParentBinding(products);
+    return parent
+      ? { kind: "parent", value: `parent:${parent.parentSku}`, ...parent }
+      : { kind: "invalid", value: "", targets: [] };
+  }
   const rawValue = byId("supplierSkuBinding")?.value || "";
   if (!rawValue) return { kind: "invalid", value: "", targets: [] };
-  if (rawValue.startsWith("parent:")) {
-    const parentSku = rawValue.slice(7);
-    const targets = products.filter((sku) => cleanFieldDisplayValue(sku.parentSku || "") === parentSku);
-    return targets.length
-      ? { kind: "parent", value: rawValue, parentSku, targets }
-      : { kind: "invalid", value: rawValue, targets: [] };
-  }
   const sku = boundSupplierSku(products);
   return sku
     ? { kind: "child", value: rawValue, targets: [sku], sku }
@@ -883,6 +915,42 @@ function currentProducts() {
 
 function hasExtractedProducts() {
   return extractedProducts.length > 0;
+}
+
+function captureRouteWorkspace() {
+  return {
+    extractedProducts, fieldOverridesBySku, appliedSellingPointOverridesBySku,
+    referenceImagesBySku, referenceImageMetaBySku, availableReferenceImageUrls,
+    sourcePayload, bundleStateBySku,
+    selectedProductStructureRoute, productStructureRouteManuallySelected,
+    supplierSourceFileNames, amazonTemplateSourceFileName,
+    supplierImageSourcePresent,
+    savedReferenceSelectionByCard, savedRequiredReferenceExclusionsByCard,
+    savedImageSettingsByCard, imageGenerationByCard, promptStore,
+    selectedSkuId: byId("skuSelect")?.value || "",
+  };
+}
+
+function loadRouteWorkspace(state = {}) {
+  extractedProducts = Array.isArray(state.extractedProducts) ? state.extractedProducts : [];
+  fieldOverridesBySku = state.fieldOverridesBySku || {};
+  appliedSellingPointOverridesBySku = state.appliedSellingPointOverridesBySku || {};
+  referenceImagesBySku = state.referenceImagesBySku || {};
+  referenceImageMetaBySku = state.referenceImageMetaBySku || {};
+  availableReferenceImageUrls = state.availableReferenceImageUrls || [];
+  sourcePayload = state.sourcePayload || { purchase: "", amazonTemplate: "", supplier: "", competitor: "" };
+  bundleStateBySku = state.bundleStateBySku || {};
+  selectedProductStructureRoute = state.selectedProductStructureRoute || "single";
+  productStructureRouteManuallySelected = state.productStructureRouteManuallySelected === true;
+  supplierSourceFileNames = state.supplierSourceFileNames || [];
+  amazonTemplateSourceFileName = state.amazonTemplateSourceFileName || "";
+  supplierImageSourcePresent = state.supplierImageSourcePresent === true;
+  savedReferenceSelectionByCard = state.savedReferenceSelectionByCard || {};
+  savedRequiredReferenceExclusionsByCard = state.savedRequiredReferenceExclusionsByCard || {};
+  savedImageSettingsByCard = state.savedImageSettingsByCard || {};
+  imageGenerationByCard = state.imageGenerationByCard || {};
+  promptStore = state.promptStore || [];
+  fieldOverrides = {};
 }
 
 function selectedTemplate() {
@@ -901,6 +969,7 @@ function defaultProductName(sku) {
 function dimensionListForSku(sku, group = {}) {
   const existing = sku.dimensionList || ((group.dimensions || []).length ? `[VERIFIED_DIMENSIONS: ${group.dimensions.join("; ")}]` : "");
   if (existing) return existing;
+  if (["web", "competitor"].includes(selectedExtractionRoute)) return "";
   const fallbackText = [
     defaultProductName(sku),
     sku.shape,
@@ -1221,36 +1290,76 @@ function applyProductStructureRoute(products = []) {
 
 const extractionRoutePreviews = {
   local: {
-    kicker: "Route 01 · Local",
+    kicker: "Route 03 · Local",
     title: "本地分析",
     summary: "不调用豆包。优先解析当前 1688 页面文字、结构化属性和本地 OCR 识别结果。",
-    flow: "1688 HTML + 详情图 → 本地规则 / OCR → 左侧参数栏",
-    fills: "商品名、款式，以及页面文字或本地 OCR 可确认的材质、尺寸、工艺和数量",
+    flow: "Amazon SKU + 1688 HTML / 详情图 → 本地规则 / OCR → 参数栏",
+    fills: "Amazon SKU 身份，以及页面文字或本地 OCR 可确认的材质、尺寸、工艺和结构",
     boundary: "未识别到的内容保持为空；不联网、不推测、不使用包装尺寸",
     note: "适合需要快速核对本地规则结果、且明确不调用豆包的情况。",
   },
   web: {
-    kicker: "Route 02 · Doubao",
-    title: "豆包分析",
+    kicker: "Route 01 · 1688",
+    title: "1688分析",
     summary: "优先读取当前 Child SKU 标题与 1688 图文资料，由豆包识图整理商品事实；联网只补充缺失的参考信息。",
     flow: "Amazon Child SKU 标题 + 1688 图文 → 豆包识图 → 已确认事实 → 联网补缺",
     fills: "当前商品的材质、尺寸、工艺、结构、卖点和使用场景；缺少的场景可联网补足",
     boundary: "联网关键词只用于检索，不得覆盖 Amazon Child SKU 确定的商品名；联网阶段也不得猜测精确尺寸、重量、数量、具体材质和当前商品独有配置",
     note: "图片识别事实优先；联网场景只追加缺少的条目，不覆盖已有内容。",
   },
+  competitor: {
+    kicker: "Route 02 · Competitor",
+    title: "竞品分析",
+    summary: "Amazon 模板确定 SKU，竞品图组交给豆包识别，按来源优先级默认展示参数与卖点。",
+    flow: "Amazon Child SKU + 竞品图组 → 豆包识图 → 按优先级填入 → 联网补缺 → 整体确认",
+    fills: "Amazon SKU 身份、竞品图组识别的参数与卖点；场景和卖点可联网补充",
+    boundary: "Amazon 标题明确参数优先，竞品识图补缺；联网只补场景和卖点，人工修改优先",
+    note: "参数按优先级默认展示，核对后统一确认；竞品图片保留来源标记。",
+  },
 };
 
 function renderExtractionRoutePreview(routeId = "web") {
   const nextRoute = extractionRoutePreviews[routeId] ? routeId : "web";
   const route = extractionRoutePreviews[nextRoute];
-  if (selectedExtractionRoute !== nextRoute) extractionGeneration += 1;
+  if (selectedExtractionRoute !== nextRoute) {
+    extractionGeneration += 1;
+    routeWorkspaces[selectedExtractionRoute] = captureRouteWorkspace();
+    loadRouteWorkspace(routeWorkspaces[nextRoute]);
+  }
   selectedExtractionRoute = nextRoute;
+  if (selectedExtractionRoute === "competitor") extractedProducts.forEach((sku) => applyLockedSellingPointReview(sku));
+  renderProductStructureRoute(selectedProductStructureRoute);
   const preview = byId("extractionRoutePreview");
   if (!preview) return;
   document.querySelectorAll("[data-extraction-route]").forEach((button) => {
     const active = button.dataset.extractionRoute === nextRoute;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
+  });
+  const competitorPreview = nextRoute === "competitor";
+  document.querySelectorAll('[data-source-route="supplier"]').forEach((element) => {
+    element.hidden = competitorPreview;
+  });
+  document.querySelectorAll('[data-source-route="competitor"]').forEach((element) => {
+    element.hidden = !competitorPreview;
+  });
+  const clearCompetitor = byId("clearCompetitorAnalysisFile");
+  if (clearCompetitor) clearCompetitor.hidden = !competitorPreview || !sourceInputFiles("competitorAnalysisFile").length;
+  if (byId("competitorSkuBindingGroup")) byId("competitorSkuBindingGroup").hidden = !competitorPreview;
+  const extractButton = byId("extractSources");
+  if (extractButton) {
+    extractButton.disabled = false;
+    extractButton.textContent = competitorPreview ? "解析竞品图组" : "解析资料并提取产品信息";
+  }
+  const parseNote = byId("sourceParseNote");
+  if (parseNote) parseNote.textContent = competitorPreview
+    ? "参数按来源优先级默认展示，核对后统一确认。"
+    : "确认资料与适用范围后，在这里统一开始解析。";
+  const extractStatus = byId("extractStatus");
+  if (extractStatus) extractStatus.textContent = extractedProducts.length
+    ? `已载入 ${route.title}的 ${extractedProducts.length} 个 SKU。` : "";
+  document.querySelectorAll('[data-workflow-page="parameters"], [data-workflow-page="studio"], [data-workflow-next="parameters"]').forEach((button) => {
+    button.disabled = false;
   });
   preview.innerHTML = `
     <p class="route-preview-kicker">${escapeHtml(route.kicker)}</p>
@@ -1276,7 +1385,9 @@ function initExtractionRoutePreview() {
   document.querySelectorAll("[data-extraction-route]").forEach((button) => {
     button.addEventListener("click", () => {
       renderExtractionRoutePreview(button.dataset.extractionRoute);
+      renderProductSelect(routeWorkspaces[selectedExtractionRoute]?.selectedSkuId);
       renderFields(true);
+      renderAll();
     });
   });
 }
@@ -1291,13 +1402,13 @@ function renderFields(reset = false) {
     fieldOverrides = { ...(fieldOverridesBySku[sku?.id] || {}) };
     sellingPointDraftDirty = false;
   }
-  ensureAppliedSellingPointValues(sku);
   if (!hasExtractedProducts()) {
     fieldList.innerHTML = `<p class="empty-state">解析资料后显示可替换参数。</p>`;
     if (sellingPointWorkspace) sellingPointWorkspace.innerHTML = `<p class="empty-state">解析资料后显示卖点候选。</p>`;
     if (manualFieldList) manualFieldList.innerHTML = `<p class="empty-state">解析资料后可手动补充数量、尺寸、重量等参数。</p>`;
     return;
   }
+  ensureAppliedSellingPointValues(sku);
   const sellingPointReview = sellingPointReviewForSku(sku);
   const renderFieldControls = (fieldDefs, useExtractedDefaults) => fieldDefs.map(([key, label, fallback]) => {
     const suppressSharedAssortmentDimension = sku.productStructureRoute === "assortment"
@@ -1333,7 +1444,7 @@ function renderFields(reset = false) {
     const displayValue = baseDisplayValue;
     const fieldControl = key === "scene"
       ? `<textarea id="field-${key}" class="use-scene-input" data-key="${key}" rows="6" placeholder="${NO_REFERENCE_SCENE_MESSAGE}">${escapeHtml(displayValue)}</textarea>
-        ${selectedExtractionRoute === "web"
+        ${["web", "competitor"].includes(selectedExtractionRoute)
           ? '<button id="enrichUseScenes" type="button" class="secondary scene-enrich-button">联网补充缺少的英文场景</button><p id="sceneEnrichStatus" class="scene-enrich-status" role="status" aria-live="polite"></p>'
           : ""}`
       : key === "productDimensions"
@@ -1356,7 +1467,7 @@ function renderFields(reset = false) {
           ${key === "productDimensions" ? '<span class="parameter-field-hint">每行保留“部位名称: 数值 + 单位”；可直接增加或删除尺寸行。</span>' : ""}
         </div>
         ${fieldControl}
-        ${sourceText ? `<p class="parameter-source parameter-field-source">来源：${escapeHtml(sourceText)}</p>` : ""}
+        ${sourceText ? `<p class="parameter-source parameter-field-source">来源：${escapeHtml(displaySourceCategory(sourceText))}</p>` : ""}
       </div>
     `;
   }).join("");
@@ -1430,8 +1541,9 @@ function sellingPointEntriesForText(sku, text) {
 }
 
 function sellingPointReviewKey(sku) {
-  if (boundWorkspace && productMatchesBoundSku(sku)) return boundWorkspace.sku;
-  return String(sku?.model || sku?.id || "");
+  const key = boundWorkspace && productMatchesBoundSku(sku)
+    ? boundWorkspace.sku : String(sku?.model || sku?.id || "");
+  return selectedExtractionRoute === "competitor" && key ? `competitor:${key}` : key;
 }
 
 function normalizeSellingPointEntries(entries) {
@@ -1455,15 +1567,17 @@ function isManualSellingPointSource(source) {
 }
 
 function isSupplementalSellingPointSource(source) {
-  return isManualSellingPointSource(source) || /联网|竞品/.test(source);
+  return isManualSellingPointSource(source) || /联网/.test(source)
+    || selectedExtractionRoute !== "competitor" && /竞品/.test(source);
 }
 
 function sellingPointCandidateGroup(entry) {
   const source = cleanFieldDisplayValue(entry.source);
   if (source === SELLING_POINT_SOURCE_TRANSLATED) return "translated";
   if (source === SELLING_POINT_SOURCE_MANUAL) return "manual";
+  if (/竞品/.test(source)) return selectedExtractionRoute === "competitor" ? "supplier" : "competitor";
   if (/1688|识图/.test(source)) return "supplier";
-  if (/联网|竞品/.test(source)) return "web";
+  if (/联网/.test(source)) return "web";
   return "other";
 }
 
@@ -1592,6 +1706,7 @@ function applyLockedSellingPointReview(sku) {
   const review = sellingPointReviewForSku(sku, false);
   if (!review?.locked || !review.selectedEntries?.length) return false;
   const selected = normalizeSellingPointEntries(review.selectedEntries);
+  review.selectedEntries = selected;
   const text = selected.map((item) => item.claim).join("\n");
   sku.sellingPoints = text;
   sku.sellingPointEntries = selected;
@@ -1613,7 +1728,7 @@ function sellingPointReviewHtml(sku) {
   const candidateHtml = (group) => {
     const rows = candidateRows.filter(({ entry }) => sellingPointCandidateGroup(entry) === group);
     return rows.length
-      ? rows.map(({ entry, index }) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}${entry.meaningZh ? `（${escapeHtml(entry.meaningZh)}）` : ""}</strong><small>来源：${escapeHtml(entry.source)}${entry.evidence ? ` · 依据：${escapeHtml(entry.evidence)}` : ""}</small></span></label>`).join("")
+      ? rows.map(({ entry, index }) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}${entry.meaningZh ? `（${escapeHtml(entry.meaningZh)}）` : ""}</strong><small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small></span></label>`).join("")
       : '<p class="selling-point-group-empty">暂无卖点</p>';
   };
   const groupHtml = (group, title, action = "", addControl = "") => {
@@ -1621,11 +1736,12 @@ function sellingPointReviewHtml(sku) {
     return `<div class="selling-point-group"><div class="selling-point-group-head"><strong>${title}</strong>${review.locked ? "" : action}</div><div class="selling-point-candidate-list">${candidateHtml(group)}</div>${review.locked ? "" : addControl}</div>`;
   };
   const history = (review.history || []).slice().reverse().map((item) => `<div class="selling-point-history-row"><b>V${Number(item.version) || 1} · ${escapeHtml(item.kind || "候选")}</b><small>${escapeHtml(item.at || "")}</small><p>${escapeHtml((item.entries || []).map((entry) => entry.claim).join(" / ") || "未提取到卖点")}</p></div>`).join("");
-  const canRefresh = selectedExtractionRoute === "web" && Boolean(review.visionRequest?.imageUrls?.length);
+  const canRefresh = ["web", "competitor"].includes(selectedExtractionRoute) && Boolean(review.visionRequest?.imageUrls?.length);
   return `<div class="selling-point-review" aria-label="卖点候选与确认">
     <div class="selling-point-review-head"><strong>卖点候选</strong><span>${review.demo ? "演示数据 · " : ""}${review.locked ? "已锁定" : "待确认"}</span></div>
-    ${groupHtml("supplier", "1688 分析卖点", `<button type="button" class="secondary" id="refreshSellingPointChoices"${canRefresh ? "" : " disabled"}>重新识图</button>`)}
-    ${groupHtml("web", "联网补充卖点", `<button type="button" class="secondary" id="supplementSellingPointChoices"${selectedExtractionRoute === "web" ? "" : " disabled"}>联网补充</button>`)}
+    ${groupHtml("supplier", selectedExtractionRoute === "competitor" ? "竞品分析卖点" : "1688 分析卖点", `<button type="button" class="secondary" id="refreshSellingPointChoices"${canRefresh ? "" : " disabled"}>重新识图</button>`)}
+    ${groupHtml("competitor", "竞品图组卖点")}
+    ${groupHtml("web", "联网补充卖点", `<button type="button" class="secondary" id="supplementSellingPointChoices"${["web", "competitor"].includes(selectedExtractionRoute) ? "" : " disabled"}>联网补充</button>`)}
     ${candidateRows.some(({ entry }) => sellingPointCandidateGroup(entry) === "other") ? groupHtml("other", "其他来源") : ""}
     ${groupHtml("manual", "人工输入卖点", "", '<div class="selling-point-add"><input id="manualEnglishSellingPointCandidate" aria-label="新增英文卖点候选" maxlength="300" placeholder="输入英文卖点"><button type="button" class="secondary" id="addManualEnglishSellingPointCandidate">添加</button></div>')}
     ${groupHtml("translated", "中文翻译卖点", "", '<div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增中文卖点候选" maxlength="300" placeholder="输入中文卖点"><button type="button" class="secondary" id="addManualSellingPointCandidate">翻译并添加</button></div>')}
@@ -1768,7 +1884,7 @@ function bindSellingPointReviewControls(sku) {
 }
 
 function queueSellingPointTranslations(sku) {
-  if (selectedExtractionRoute !== "web") return;
+  if (!["web", "competitor"].includes(selectedExtractionRoute)) return;
   const review = sellingPointReviewForSku(sku, false);
   const claims = normalizeSellingPointEntries(review?.candidateEntries)
     .filter((entry) => !entry.meaningZh).map((entry) => entry.claim);
@@ -1806,21 +1922,22 @@ async function refreshSellingPointCandidates() {
     return;
   }
   const button = byId("refreshSellingPointChoices");
+  const requestedGeneration = extractionGeneration;
   if (button) button.disabled = true;
   if (status) status.textContent = "正在对上次解析所用的图片重新识图；已锁定的卖点不会改变…";
   try {
-    const response = await fetch("/api/product-analysis", {
+    const response = await fetch(selectedExtractionRoute === "competitor" ? "/api/competitor-analysis" : "/api/product-analysis", {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({ ...request, forceRefresh: true }),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const result = await response.json();
-    if (selectedSku()?.id !== sku.id) return;
+    if (extractionGeneration !== requestedGeneration || selectedSku()?.id !== sku.id) return;
     if (result?.errors?.length && !(result?.selling_points || []).length) throw new Error(result.errors.slice(0, 1).join("；"));
     const entries = normalizeSellingPointEntries((result?.selling_points || []).map((item) => ({
       claim: item.claim,
-      source: SELLING_POINT_SOURCE_VISION,
+      source: selectedExtractionRoute === "competitor" ? SELLING_POINT_SOURCE_COMPETITOR : SELLING_POINT_SOURCE_VISION,
       evidence: item.evidence,
       imageUrl: item.image_url,
     })));
@@ -1849,7 +1966,7 @@ function sellingPointSourcesHtml(sku, text) {
   return `<div class="selling-point-sources" aria-label="逐条卖点来源">${entries.map((entry) => `
     <div class="selling-point-source-row">
       <span>${escapeHtml(entry.claim)}</span>
-      <small>来源：${escapeHtml(entry.source)}</small>
+      <small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small>
     </div>`).join("")}</div>`;
 }
 
@@ -1977,7 +2094,9 @@ function renderProductParameters() {
   if (!list) return;
 
   if (!hasExtractedProducts()) {
-    list.innerHTML = `<p class="empty-state">解析 Amazon 模板或 1688 资料后显示产品主参数。</p>`;
+    list.innerHTML = `<p class="empty-state">${selectedExtractionRoute === "competitor"
+      ? "竞品图组分析后，在这里按来源优先级展示当前 SKU 的参数。"
+      : "读取 Amazon 模板并解析资料后显示产品主参数。"}</p>`;
     return;
   }
   const sku = selectedSku();
@@ -1995,20 +2114,13 @@ function renderProductParameters() {
       ? `来源冲突，等待人工确认：${conflict}`
       : value ? parameterSourceForData(parameterData, key)
         : ["pack", "applicableRange", "surfaceFinish", "productDimensions", "productWeight", "capacity"].includes(key)
-          ? "当前 SKU 标题与对应 1688 图文未找到可核验参数" : "";
-    const imageEvidence = value && (!/^Amazon/i.test(source) || /1688/.test(source))
-      ? (sku.sourceImageEvidence || []).filter((item) => item.field === key
-          && /^https?:\/\//i.test(item.imageUrl || "")
-          && (key !== "productDimensions" || value.includes(item.value)
-            || (item.value.match(/\d+(?:\.\d+)?\s*(?:mm|cm|in|ft|m)\b/i)?.[0]
-              && value.includes(item.value.match(/\d+(?:\.\d+)?\s*(?:mm|cm|in|ft|m)\b/i)[0]))))
-      : [];
+          ? selectedExtractionRoute === "competitor"
+            ? "Amazon 标题与竞品图组未提取到参数" : "当前 SKU 标题与对应 1688 图文未找到可核验参数" : "";
     return `
       <div class="parameter-review-field">
         <div id="review-label-${key}" class="parameter-review-label">${escapeHtml(label)}</div>
         <div class="parameter-review-value${multilineFieldKeys.has(key) ? " is-multiline" : ""}${value ? "" : " is-empty"}" role="textbox" aria-readonly="true" aria-labelledby="review-label-${key}"${multilineFieldKeys.has(key) ? ' aria-multiline="true"' : ""}>${escapeHtml(value || (scopedToMember ? "不同款需按成员分别取证" : "未提取到"))}</div>
-        ${source ? `<p class="parameter-source">来源：${escapeHtml(source)}</p>` : ""}
-        ${imageEvidence.map((item, index) => `<p class="parameter-source">原图依据：${escapeHtml(item.value)} · <a href="${escapeHtml(item.imageUrl)}" target="_blank" rel="noopener noreferrer">查看详情图 ${index + 1}</a></p>`).join("")}
+        ${source ? `<p class="parameter-source">来源：${escapeHtml(displaySourceCategory(source))}</p>` : ""}
         ${key === "sellingPoints" ? sellingPointSourcesHtml(sku, value) : ""}
       </div>
     `;
@@ -2331,6 +2443,10 @@ function parameterSourceForData(data, key) {
     .join(" + ");
 }
 
+function displaySourceCategory(source) {
+  return cleanFieldDisplayValue(source).replace(/\s*·\s*第\s*\d+\s*行/g, "");
+}
+
 function buildDimensionListFromFields(data) {
   return productDimensionListFromEditor(data.productDimensions, [data.productName, data.structure].filter(Boolean).join(" "));
 }
@@ -2591,124 +2707,156 @@ function normalizeAmazonProductImageUrl(value) {
     .replace(/[?#].*$/, "");
 }
 
-function extractAmazonCompetitorImageCandidates(html) {
+function amazonInitialGalleryItems(source) {
+  // Read the current listing's initial gallery as data. Saved Amazon pages use
+  // either a JSON array or A.$.parseJSON('...'); never execute page scripts.
+  const text = String(source || "");
+  const pattern = /["']colorImages["']\s*:\s*\{\s*["']initial["']\s*:\s*/g;
+  for (const match of text.matchAll(pattern)) {
+    let start = match.index + match[0].length;
+    let json = "";
+    if (text[start] === "[") {
+      let depth = 0;
+      let quoted = false;
+      let escaped = false;
+      for (let index = start; index < text.length; index += 1) {
+        const char = text[index];
+        if (quoted) {
+          if (escaped) escaped = false;
+          else if (char === "\\") escaped = true;
+          else if (char === '"') quoted = false;
+        } else if (char === '"') quoted = true;
+        else if (char === "[") depth += 1;
+        else if (char === "]" && --depth === 0) {
+          json = text.slice(start, index + 1);
+          break;
+        }
+      }
+    } else {
+      const wrapper = text.slice(start).match(/^(?:A\.\$\.parseJSON|JSON\.parse)\s*\(\s*/);
+      if (!wrapper) continue;
+      start += wrapper[0].length;
+      const quote = text[start];
+      if (quote !== '"' && quote !== "'") continue;
+      const escapes = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v" };
+      for (let index = start + 1; index < text.length; index += 1) {
+        const char = text[index];
+        if (char === quote) break;
+        if (char !== "\\") { json += char; continue; }
+        const escaped = text[++index];
+        const digits = escaped === "u" ? 4 : escaped === "x" ? 2 : 0;
+        const hex = text.slice(index + 1, index + 1 + digits);
+        if (digits && new RegExp(`^[0-9a-f]{${digits}}$`, "i").test(hex)) {
+          json += String.fromCharCode(parseInt(hex, 16));
+          index += digits;
+        } else if (escaped === "\n") continue;
+        else if (escaped === "\r") { if (text[index + 1] === "\n") index += 1; }
+        else json += escapes[escaped] ?? escaped ?? "";
+      }
+    }
+    try {
+      const items = JSON.parse(json);
+      if (Array.isArray(items) && items.some((item) => item && typeof item === "object")) return items;
+    } catch { /* An incomplete gallery must not trigger a whole-page scan. */ }
+  }
+  return [];
+}
+
+function extractAmazonCompetitorImageCandidates(html, limit = MAX_COMPETITOR_REFERENCE_IMAGES) {
   const source = String(html || "");
   const candidates = [];
   const seen = new Set();
-  const add = (value, context = "", index = candidates.length) => {
+  const add = (value, context = "") => {
     const url = normalizeAmazonProductImageUrl(value);
     if (!url || seen.has(url)) return;
     seen.add(url);
-    candidates.push({
-      url,
-      source: "competitor",
-      context,
-      index,
-      score: 200 - Math.min(index, 100),
+    const index = candidates.length;
+    candidates.push({ url, source: "competitor", context, index, score: 200 - Math.min(index, 100) });
+  };
+  const doc = new DOMParser().parseFromString(source, "text/html");
+  const readGallery = (root) => {
+    if (!root) return;
+    root.querySelectorAll('img, source, [data-csa-c-media-type="IMAGE"]').forEach((node) => {
+      if (node.closest('.videoThumbnail, .video-thumb, [data-csa-c-media-type="VIDEO"]')) return;
+      const context = [node.getAttribute("alt"), node.getAttribute("title")].filter(Boolean).join(" ");
+      ["data-old-hires", "data-a-hires", "data-large-image", "src", "data-src", "data-thumb"].forEach((attr) => add(node.getAttribute(attr), context));
+      ["srcset", "data-srcset"].forEach((attr) => extractSrcsetUrls(node.getAttribute(attr)).forEach((url) => add(url, context)));
+      try {
+        Object.keys(JSON.parse(node.getAttribute("data-a-dynamic-image") || "{}")).forEach((url) => add(url, context));
+      } catch { /* Ignore malformed image-size metadata. */ }
+      const mediaId = node.getAttribute("data-csa-c-content-id") || "";
+      if (node.getAttribute("data-csa-c-media-type") === "IMAGE" && /^[A-Za-z0-9+-]{8,}$/.test(mediaId))
+        add(`https://m.media-amazon.com/images/I/${mediaId}.jpg`, context);
     });
   };
-
-  const mediaIdPattern = /data-csa-c-content-id=["']([A-Za-z0-9+-]{8,})["'][\s\S]{0,240}?data-csa-c-media-type=["']IMAGE["']/gi;
-  for (const match of source.matchAll(mediaIdPattern)) {
-    add(`https://m.media-amazon.com/images/I/${match[1]}.jpg`, nearbyImageContext(source, match.index || 0), match.index || candidates.length);
+  // Thumbnail order is the visible current-product gallery order. Do not scan
+  // recommendations, related products, reviews, A+ content or other variants.
+  readGallery(doc.querySelector("#altImages"));
+  if (!candidates.length) {
+    for (const item of amazonInitialGalleryItems(source)) {
+      const main = item.main && typeof item.main === "object" ? Object.keys(item.main) : [];
+      const url = [item.hiRes, item.large, ...main, item.thumb].find((value) => typeof value === "string" && normalizeAmazonProductImageUrl(value));
+      if (url) add(url, item.altText || "");
+    }
   }
-
-  const doc = new DOMParser().parseFromString(source, "text/html");
-  doc.querySelectorAll("img, source").forEach((node, index) => {
-    const context = [node.getAttribute("alt"), node.getAttribute("title"), node.getAttribute("data-title")].filter(Boolean).join(" ");
-    ["src", "data-src", "data-old-hires", "data-a-hires", "data-thumb", "data-large-image"].forEach((attr) => {
-      add(node.getAttribute(attr), context, index);
-    });
-    ["srcset", "data-srcset"].forEach((attr) => {
-      extractSrcsetUrls(node.getAttribute(attr)).forEach((url) => add(url, context, index));
-    });
-  });
-
-  const objectImagePattern = /"(?:hiRes|large|main|variant|landingImage|thumb)"\s*:\s*"([^"]+)"/gi;
-  for (const match of source.matchAll(objectImagePattern)) {
-    add(match[1], nearbyImageContext(source, match.index || 0), match.index || candidates.length);
+  if (!candidates.length) {
+    for (const selector of ["#imageBlock", "#imageBlock_feature_div", "#main-image-container", "#dp-image-block"]) {
+      readGallery(doc.querySelector(selector));
+      if (candidates.length) break;
+    }
   }
-  const urlPattern = /https?:\\?\/\\?\/[^"'<>\s]+?\.(?:jpe?g|png|webp)(?:\?[^"'<>\s]*)?/gi;
-  for (const match of source.matchAll(urlPattern)) {
-    add(match[0], nearbyImageContext(source, match.index || 0), match.index || candidates.length);
-  }
-
-  return uniqueByUrl(candidates).slice(0, MAX_COMPETITOR_REFERENCE_IMAGES);
+  return candidates.slice(0, limit);
 }
 
-function extractCompetitorSellingPointCandidates(html) {
-  const source = String(html || "");
-  if (!source.trim()) return [];
-  const doc = new DOMParser().parseFromString(source, "text/html");
-  const selectors = [
-    "#feature-bullets li .a-list-item",
-    "#feature-bullets li",
-    "[data-feature-name='featurebullets'] li",
-    ".feature-bullets li",
-  ];
-  const raw = selectors.flatMap((selector) => Array.from(doc.querySelectorAll(selector)).map((node) => node.textContent || ""));
-  const jsonPatterns = [
-    /"(?:bulletPoint|bullet_point|featureText|feature_text)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/gi,
-  ];
-  jsonPatterns.forEach((pattern) => {
-    for (const match of source.matchAll(pattern)) raw.push(match[1].replace(/\\u0026/g, "&").replace(/\\"/g, '"'));
-  });
-  return uniqueSellingPoints(raw
-    .map((value) => cleanHtmlText(String(value || "")).replace(/^[-•·✓✔\s]+/, "").replace(/\s+/g, " ").trim())
-    .filter((value) => {
-      const wordCount = (value.match(/[A-Za-z]+/g) || []).length;
-      return value.length >= 12
-        && value.length <= 220
-        && wordCount >= 3
-        && wordCount <= 32
-        && !/[\u3400-\u9fff]/.test(value)
-        && !/(?:shipping|delivery|refund|return policy|customer service|click here|see more|amazon)/i.test(value);
-    }), 8);
-}
-
-function extractCompetitorProductDimensionList(html) {
-  const source = cleanHtmlText(String(html || ""));
-  if (!source) return "";
-  const dimensions = semanticDimensionItems(extractDimensions(source), source);
-  return dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
-}
-
-function extractCompetitorProductMeasurements(html) {
-  const source = cleanHtmlText(String(html || ""));
-  if (!source) return { productWeight: "", capacity: "" };
-  const measurements = extractDimensions(source);
+function competitorVisionSupplement(result = {}) {
+  const facts = competitorImageFacts(result);
+  const first = (key, validate = cleanFieldDisplayValue) => facts
+    .filter((item) => item.key === key)
+    .map((item) => validate(item.value))
+    .find(Boolean) || "";
+  const dimensions = semanticDimensionItems(
+    facts.filter((item) => item.key === "productDimensions").map((item) => item.value), "");
+  const scenes = uniquePromptItems(facts.filter((item) => item.key === "scene").map((item) => item.value)).slice(0, 5);
+  const sellingPoints = normalizeSellingPointEntries((Array.isArray(result?.selling_points) ? result.selling_points : [])
+    .filter((item) => item?.evidence && /^https?:\/\//i.test(item?.image_url || ""))
+    .map((item) => ({ claim: item.claim, source: "竞品图组 · 豆包识别", evidence: item.evidence, imageUrl: item.image_url })));
   return {
-    productWeight: cleanFieldDisplayValue(dimensionValueByLabels(measurements.join("; "), ["Weight"])),
-    capacity: cleanFieldDisplayValue(dimensionValueByLabels(measurements.join("; "), ["Capacity", "Volume"])),
+    material: first("material"), structure: first("structure"),
+    color: first("color"), pack: first("pack", skuRelevantPackValue),
+    surfaceFinish: first("surfaceFinish", explicitSurfaceFinishValues),
+    productDimensions: dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "",
+    productWeight: first("productWeight", validProductWeightValue),
+    capacity: first("capacity", validCapacityValue),
+    applicableRange: first("applicableRange", validApplicableRangeValue),
+    scene: scenes.join("\n"), sellingPoints,
   };
 }
 
-function applyCompetitorDimensionFallback(products = []) {
-  if (products.length !== 1 || (!competitorDimensionList && !competitorProductWeight && !competitorCapacity)) return products;
+function applyCompetitorVisionSupplement(products = [], result = {}, targetIds = new Set(), { includeVariantFields = false } = {}) {
+  const values = competitorVisionSupplement(result);
+  const source = "竞品图组 · 豆包识别";
   return products.map((product) => {
-    const needsDimensions = !dimensionListItems(product.dimensionList || "", product.productName || "").length && competitorDimensionList;
-    const productWeight = verifiedSupplierMeasurementValue(product, "productWeight") || competitorProductWeight;
-    const capacity = verifiedProductCapacityValue(product) || competitorCapacity;
-    if (!needsDimensions && productWeight === product.productWeight && capacity === product.capacity) return product;
-    const dimensionFields = needsDimensions ? dimensionFieldsFromDimensionList(competitorDimensionList, product.productName || "") : {};
-    const competitorSource = competitorDimensionSourceNames.length ? ` · ${competitorDimensionSourceNames.join(" | ")}` : "";
-    return {
-      ...product,
-      dimensionList: needsDimensions ? competitorDimensionList : product.dimensionList,
-      productWeight,
-      capacity,
-      dims: {
-        ...(product.dims || {}),
-        ...dimensionFields,
-        source: needsDimensions ? `竞品产品使用状态参数${competitorSource}` : product.dims?.source || "",
-      },
-      fieldSources: {
-        ...(product.fieldSources || {}),
-        productDimensions: needsDimensions ? `竞品产品参数兜底${competitorSource}` : product.fieldSources?.productDimensions || "",
-        productWeight: !verifiedSupplierMeasurementValue(product, "productWeight") && competitorProductWeight ? `竞品产品净重参数兜底${competitorSource}` : product.fieldSources?.productWeight || "",
-        capacity: !verifiedProductCapacityValue(product) && competitorCapacity ? `竞品产品容量参数兜底${competitorSource}` : product.fieldSources?.capacity || "",
-      },
-    };
+    if (!targetIds.has(product.id)) return product;
+    const next = { ...product, fieldSources: { ...(product.fieldSources || {}) } };
+    const keys = ["material", "structure", "surfaceFinish", "productWeight", "capacity", "applicableRange", "scene",
+      ...(includeVariantFields ? ["color", "pack"] : [])];
+    for (const key of keys) {
+      if (cleanFieldDisplayValue(next[key]) || !values[key]) continue;
+      next[key] = values[key];
+      next.fieldSources[key] = source;
+      if (key === "applicableRange") next.applicableRangeSource = source;
+    }
+    if (!dimensionListItems(next.dimensionList || "", next.productName || "").length && values.productDimensions) {
+      next.dimensionList = values.productDimensions;
+      next.dims = { ...(next.dims || {}), ...dimensionFieldsFromDimensionList(values.productDimensions, next.productName || ""), source };
+      next.fieldSources.productDimensions = source;
+    }
+    if (!splitSellingPointText(next.sellingPoints || "").length && values.sellingPoints.length) {
+      next.sellingPoints = values.sellingPoints.slice(0, 4).map((item) => item.claim).join("\n");
+      next.sellingPointEntries = values.sellingPoints.slice(0, 4);
+      next.fieldSources.sellingPoints = source;
+    }
+    return next;
   });
 }
 
@@ -3592,127 +3740,6 @@ function supplierSkuColor(value) {
   return found || extractEnglishColorName(value);
 }
 
-function supplierSkuSize(value) {
-  const source = normalizePurchaseText(value);
-  const dimension = extractFirstMatch(source, [
-    /([1-9]\d{2,4}\s*[*x×]\s*[1-9]\d{1,3}\s*[*x×]\s*[0-9.]+\s*mm)/i,
-    /([1-9]\d{2,4}\s*[*x×]\s*[1-9]\d{1,3}\s*[*x×]\s*[0-9.]+\s*毫米)/i,
-    /([1-9]\d{2,4}\s*[*x×]\s*[1-9]\d{1,3}\s*cm)/i,
-  ]);
-  if (dimension) return dimension.replace(/\s+/g, "");
-  const explicitSize = extractFirstMatch(source, [
-    /(?:尺码|鞋码|size)\s*[:：]?\s*(US\s*Size\s*[0-9]+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?\s*(?:码|号)?|XXL|XL|L|M|S|XS)(?=\s|$|[;；,，/])/i,
-    /(?:^|[\s;；,，/])([0-9]+(?:\.[0-9]+)?\s*(?:码|号))(?=\s|$|[;；,，/])/i,
-  ]);
-  return explicitSize ? explicitSize.replace(/\s+/g, " ").trim() : "";
-}
-
-function dimensionsFromSkuSize(size) {
-  const match = cleanFieldDisplayValue(size).match(/([0-9.]+)\s*[*x×]\s*([0-9.]+)\s*[*x×]\s*([0-9.]+)\s*(mm|毫米|cm|厘米|公分)?/i);
-  if (!match) return {};
-  const unit = /cm|厘米|公分/i.test(match[4] || "") ? "cm" : "mm";
-  return {
-    topWidth: `${match[1]} ${unit}`,
-    sideLength: `${match[2]} ${unit}`,
-    bottomWidth: `${match[3]} ${unit}`,
-    source: "1688 SKU option size",
-  };
-}
-
-function supplierSkuStyle(value) {
-  const compact = compactChineseText(value);
-  const styles = [];
-  if (/加长/.test(compact)) styles.push("加长款");
-  if (/加厚/.test(compact)) styles.push("加厚款");
-  if (!styles.length && /常规/.test(compact)) styles.push("常规款");
-  return styles.join("");
-}
-
-function parseSupplierSkuText(value) {
-  const text = normalizePurchaseText(value);
-  const model = skuModelFromText(text);
-  const parsedModelColor = model ? splitModelColor(text) : {};
-  const color = parsedModelColor.color || supplierSkuColor(text);
-  const size = supplierSkuSize(text);
-  const style = supplierSkuStyle(text);
-  if (!model && !color && !size && !style) return {};
-  const sizeDims = dimensionsFromSkuSize(size);
-  return {
-    model: (parsedModelColor.model || model || GENERIC_SUPPLIER_SKU_MODEL).toUpperCase(),
-    color,
-    colorEnglish: colorName(color),
-    size,
-    variantStyle: style,
-    rawSpec: text,
-    dims: sizeDims,
-  };
-}
-
-function supplierOptionIdentity(option) {
-  return [
-    option.model,
-    canonicalColorKey(option.color || ""),
-    cleanFieldDisplayValue(option.variantStyle || "").toLowerCase(),
-    cleanFieldDisplayValue(option.size || "").toLowerCase(),
-    cleanFieldDisplayValue(option.rawSpec || "").toLowerCase(),
-  ].filter(Boolean).join("-");
-}
-
-function sameSupplierRawSpec(left, right) {
-  const leftSpec = cleanFieldDisplayValue(left?.rawSpec || "").toLowerCase();
-  const rightSpec = cleanFieldDisplayValue(right?.rawSpec || "").toLowerCase();
-  return Boolean(leftSpec && rightSpec && leftSpec === rightSpec);
-}
-
-function moreSpecificSupplierColor(current, next) {
-  const cleanCurrent = cleanFieldDisplayValue(current);
-  const cleanNext = cleanFieldDisplayValue(next);
-  if (!cleanNext) return cleanCurrent;
-  if (!cleanCurrent) return cleanNext;
-  return cleanNext.length > cleanCurrent.length && cleanNext.includes(cleanCurrent) ? cleanNext : cleanCurrent;
-}
-
-function mergeSupplierSkuOption(target, next) {
-  target.color = moreSpecificSupplierColor(target.color, next.color);
-  target.colorEnglish = colorName(target.color) || target.colorEnglish || next.colorEnglish || "";
-  target.size = target.size || next.size || "";
-  target.material = target.material || next.material || "";
-  target.variantStyle = target.variantStyle || next.variantStyle || "";
-  target.rawSpec = target.rawSpec || next.rawSpec || "";
-  target.dims = {
-    topWidth: target.dims?.topWidth || next.dims?.topWidth || "",
-    sideLength: target.dims?.sideLength || next.dims?.sideLength || "",
-    bottomWidth: target.dims?.bottomWidth || next.dims?.bottomWidth || "",
-    weight: target.dims?.weight || next.dims?.weight || "",
-    source: target.dims?.source || next.dims?.source || "",
-  };
-  return target;
-}
-
-function addSupplierSkuOption(options, seen, option) {
-  if (!option.model) return;
-  const existing = options.find((candidate) => (
-    candidate.model === option.model
-    && (
-      sameSupplierRawSpec(candidate, option)
-      || (
-        candidate.color && option.color && isSameColorName(candidate.color, option.color)
-        && cleanFieldDisplayValue(candidate.variantStyle || "") === cleanFieldDisplayValue(option.variantStyle || "")
-        && (!candidate.size || !option.size || cleanFieldDisplayValue(candidate.size) === cleanFieldDisplayValue(option.size))
-      )
-    )
-  ));
-  if (existing) {
-    mergeSupplierSkuOption(existing, option);
-    seen.add(supplierOptionIdentity(existing));
-    return;
-  }
-  const key = supplierOptionIdentity(option);
-  if (seen.has(key)) return;
-  seen.add(key);
-  options.push(option);
-}
-
 function extractSupplierTitles(html) {
   const titles = [];
   const seen = new Set();
@@ -3723,22 +3750,6 @@ function extractSupplierTitles(html) {
     titles.push(title.replace(/\s*-\s*阿里巴巴\s*$/i, ""));
   }
   return titles;
-}
-
-function normalizedSupplierPropValue(value, unit = "") {
-  const clean = cleanFieldDisplayValue(value);
-  if (!clean) return "";
-  const cleanUnit = cleanFieldDisplayValue(unit);
-  if (!cleanUnit || new RegExp(`${cleanUnit}$`, "i").test(clean)) return clean;
-  return `${clean} ${cleanUnit}`;
-}
-
-function supplierPropsMap(propsText) {
-  const props = {};
-  for (const match of String(propsText || "").matchAll(/\{[^{}]*"unit"\s*:\s*"([^"]*)"[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*"value"\s*:\s*"([^"]*)"[^{}]*\}/gi)) {
-    props[match[2]] = normalizedSupplierPropValue(match[3], match[1]);
-  }
-  return props;
 }
 
 function detailValueBetween(source, startPattern, endPatterns) {
@@ -3867,108 +3878,10 @@ function simplifySupplierTitle(title, context = "") {
     || compactEnglishWords(title, 6);
 }
 
-function extractSupplierSkuOptions(text) {
-  const decoded = decodeHtmlEntities(text);
-  const options = [];
-  const seen = new Set();
-
-  const structuredPattern = /SKU_OPTION\s*[:;]+\s*([\s\S]*?)(?=\s+SKU_OPTION\s*[:;]+|\s+PRODUCT_(?:TITLE|ATTRIBUTE)\s*:|\n|$)/gi;
-  for (const match of decoded.matchAll(structuredPattern)) {
-    const optionText = match[1].replace(/\s+(?=(?:model|color|colorEnglish|variantStyle|size|material|rawSpec|length|width|height|weight)=)/gi, "; ");
-    const parts = Object.fromEntries(optionText
-      .split(";")
-      .map((part) => part.trim())
-      .map((part) => {
-        const index = part.indexOf("=");
-        return index > -1 ? [part.slice(0, index).trim(), part.slice(index + 1).trim()] : ["", ""];
-      })
-      .filter(([key]) => key));
-    addSupplierSkuOption(options, seen, {
-      model: parts.model,
-      color: parts.color,
-      colorEnglish: parts.colorEnglish || colorName(parts.color),
-      size: parts.size,
-      material: parts.material || "",
-      variantStyle: parts.variantStyle || "",
-      rawSpec: parts.rawSpec || "",
-      dims: {
-        topWidth: parts.length || "",
-        sideLength: parts.width || "",
-        bottomWidth: parts.height || "",
-        weight: parts.weight || "",
-        source: parts.length || parts.width || parts.height || parts.weight ? "1688 SKU package information" : "",
-      },
-    });
-  }
-
-  for (const match of decoded.matchAll(/"specAttrs"\s*:\s*"([^"]+)"/gi)) {
-    const [skuRaw, sizeRaw] = match[1].split(">");
-    const parsed = parseSupplierSkuText(skuRaw);
-    addSupplierSkuOption(options, seen, {
-      ...parsed,
-      size: sizeRaw || parsed.size || "",
-    });
-  }
-
-  const modelSelectionPattern = /"specId"\s*:\s*"[^"]+"[\s\S]{0,500}?"name"\s*:\s*"([^"]+)"[\s\S]{0,500}?"skuId"\s*:\s*\d+\s*,\s*"props"\s*:\s*\[([\s\S]*?)\]\s*\}/gi;
-  for (const match of decoded.matchAll(modelSelectionPattern)) {
-    const skuRaw = match[1];
-    const props = supplierPropsMap(match[2]);
-    const parsed = parseSupplierSkuText(skuRaw);
-    const color = props["颜色"] || parsed.color || supplierSkuColor(skuRaw);
-    const size = props["尺码"] || parsed.size || "";
-    const length = props["长度"] || "";
-    const material = props["材质"] || "";
-    addSupplierSkuOption(options, seen, {
-      ...parsed,
-      color,
-      colorEnglish: colorName(color),
-      size,
-      rawSpec: parsed.rawSpec || skuRaw,
-      material,
-      dims: {
-        topWidth: parsed.dims?.topWidth || length,
-        sideLength: parsed.dims?.sideLength || "",
-        bottomWidth: parsed.dims?.bottomWidth || "",
-        weight: parsed.dims?.weight || "",
-        source: parsed.dims?.source || (length ? "1688 SKU structured properties" : ""),
-      },
-    });
-  }
-
-  const packInfoPattern = /\{[^{}]*(?:"sku2"\s*:\s*"([^"]*)"[^{}]*)?"sku1"\s*:\s*"([^"]*)"[^{}]*"length"\s*:\s*([0-9.]+)[^{}]*"width"\s*:\s*([0-9.]+)[^{}]*"weight"\s*:\s*([0-9.]+)[^{}]*"height"\s*:\s*([0-9.]+)/gi;
-  for (const match of decoded.matchAll(packInfoPattern)) {
-    const parsed = parseSupplierSkuText(match[2]);
-    addSupplierSkuOption(options, seen, {
-      ...parsed,
-      size: match[1] || parsed.size || "",
-      dims: parsed.dims || {},
-    });
-  }
-
-  return options;
-}
-
 function extractSupplierStructuredText(html) {
   if (!html) return "";
   const decoded = decodeHtmlEntities(html);
   const titleLines = extractSupplierTitles(decoded).map((title) => `PRODUCT_TITLE: ${simplifySupplierTitle(title, decoded)}`);
-  const skuOptions = extractSupplierSkuOptions(decoded);
-  const skuLines = skuOptions.map((option) => [
-    "SKU_OPTION:",
-    `model=${option.model}`,
-    option.color && `color=${option.color}`,
-    option.colorEnglish && `colorEnglish=${option.colorEnglish}`,
-    option.variantStyle && `variantStyle=${option.variantStyle}`,
-    option.size && `size=${option.size}`,
-    option.material && `material=${option.material}`,
-    option.rawSpec && `rawSpec=${option.rawSpec}`,
-    option.dims?.topWidth && `length=${option.dims.topWidth}`,
-    option.dims?.sideLength && `width=${option.dims.sideLength}`,
-    option.dims?.bottomWidth && `height=${option.dims.bottomWidth}`,
-    option.dims?.weight && `weight=${option.dims.weight}`,
-  ].filter(Boolean).join("; "));
-
   const attrPairs = [
     ["功能", "Function"],
     ["材质", "Material"],
@@ -3994,17 +3907,7 @@ function extractSupplierStructuredText(html) {
     const value = directValue || namedValue || uniquePromptItems(arrayValues).join(", ");
     return value ? `PRODUCT_ATTRIBUTE: ${targetLabel}=${value}` : "";
   }).filter(Boolean);
-  const skuMaterial = skuOptions.find((option) => option.material)?.material || "";
-  if (skuMaterial && !attrLines.some((line) => /^PRODUCT_ATTRIBUTE:\s*Material=/i.test(line))) {
-    attrLines.push(`PRODUCT_ATTRIBUTE: Material=${skuMaterial}`);
-  }
-  const skuCapacityValues = uniquePromptItems(Array.from(decoded.matchAll(/"specAttrs"\s*:\s*"([^"]+)"/gi))
-    .map((match) => match[1].match(/(?:^|[>&\s])([1-9]\d*(?:\.\d+)?)\s*(ml|l|毫升|升)(?:$|[^a-z])/i))
-    .filter(Boolean)
-    .map((match) => `${match[1]} ${/^(?:ml|毫升)$/i.test(match[2]) ? "ml" : "L"}`));
-  if (skuCapacityValues.length === 1) attrLines.push(`PRODUCT_ATTRIBUTE: Capacity=${skuCapacityValues[0]}`);
-  if (/"(?:offerUnit|unit)"\s*:\s*"件"/.test(decoded)) attrLines.push("PRODUCT_ATTRIBUTE: SaleUnit=piece");
-  return [...titleLines, ...attrLines, ...skuLines].join("\n");
+  return [...titleLines, ...attrLines].join("\n");
 }
 
 function imageHasEnoughReadableSize(size) {
@@ -4689,7 +4592,7 @@ async function readWorkbook(file) {
   if (!file) return null;
   const xlsx = await loadXlsx();
   if (!xlsx) {
-    throw new Error("Excel 解析库未加载，请刷新页面后重试，或先只用 PDF/HTML 资料测试。");
+    throw new Error("Excel 解析库未加载，请刷新页面后重新读取 Amazon 模板。");
   }
   const buffer = await file.arrayBuffer();
   return xlsx.read(buffer, { type: "array", cellDates: false });
@@ -4757,12 +4660,12 @@ function mergeSupplierSourceResults(results) {
   };
 }
 
-async function extractSupplierSourcesByFile(entries, onProgress, routeId = selectedExtractionRoute) {
+async function extractSupplierSourcesByFile(entries, onProgress, routeId = selectedExtractionRoute, identityHint = {}) {
   const results = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     onProgress?.(`正在解析第 ${index + 1}/${entries.length} 个 1688 文件：${entry.name}`);
-    const source = await extractSupplierSourceText(namedHtmlEntryText(entry), onProgress, routeId, "");
+    const source = await extractSupplierSourceText(namedHtmlEntryText(entry), onProgress, routeId, "", identityHint);
     results.push({
       name: entry.name,
       ...source,
@@ -4773,38 +4676,6 @@ async function extractSupplierSourcesByFile(entries, onProgress, routeId = selec
     fileSources: results,
     merged: mergeSupplierSourceResults(results),
   };
-}
-
-function productsFromSupplierFileSources(fileSources) {
-  return fileSources.map((source, index) => {
-    const products = inferProductsFromSources("", source.text, "");
-    const product = products[0];
-    if (!product) return null;
-    const rawSpecName = readableNameFromRawSpec([
-      product.supplierOption?.rawSpec,
-      product.outputSpec,
-      product.spec,
-      product.label,
-      source.text,
-    ].filter(Boolean).join(" "));
-    const displayName = cleanProductDisplayName(product.productName || product.outputProductName || product.label, rawSpecName || `Product ${index + 1}`);
-    const productName = displayName || rawSpecName || `Product ${index + 1}`;
-    if (!rawSpecName && /^Product\s+\d+$/i.test(productName)) return null;
-    return {
-      ...product,
-      id: `EXTRACTED-SUPPLIER-FILE-${index + 1}`,
-      label: productName,
-      displayLabel: productName,
-      productName,
-      outputProductName: product.outputProductName && !isMachineProductText(product.outputProductName) ? product.outputProductName : productName,
-      baseProductName: product.baseProductName && !isMachineProductText(product.baseProductName) ? product.baseProductName : productName,
-      shape: cleanProductDisplayName(product.shape || product.outputSpec || product.spec, productName),
-      rawSpec: product.supplierOption?.rawSpec || rawSpecName,
-      sourceFile: source.name,
-      sellingPointVisualEvidence: Array.isArray(source.sellingPointVisualEvidence) ? source.sellingPointVisualEvidence : [],
-      useBehavior: source.useBehavior || null,
-    };
-  }).filter(Boolean);
 }
 
 function pdfTextLines(items) {
@@ -5379,17 +5250,6 @@ function thirdDimensionLabel(context) {
   return /thickness|厚|0\.[0-9]+\s*mm|片状|sheet/i.test(String(context || "")) ? "Thickness" : "Height";
 }
 
-function supplierSkuMap(text) {
-  const map = new Map();
-  extractSupplierSkuOptions(text).forEach((option) => {
-    if (!option.model) return;
-    const modelKey = option.model.toUpperCase();
-    if (!map.has(modelKey)) map.set(modelKey, []);
-    map.get(modelKey).push(option);
-  });
-  return map;
-}
-
 function supplierAttributeMap(text) {
   const attrs = {};
   const source = String(text || "");
@@ -5925,7 +5785,7 @@ function extractGenericPurchaseItems(purchaseText, combinedText, options = {}) {
   if (!source) return [];
   const strictPurchaseRowsOnly = Boolean(options.strictPurchaseRowsOnly);
 
-  const suppliers = supplierSkuMap(combinedText);
+  const suppliers = new Map();
   const items = [];
   const seen = new Set();
   const usedSupplierOptions = new Set();
@@ -6985,6 +6845,7 @@ function amazonSharedFacts(row, columns) {
   const unitQuantity = titleUnitQuantity;
   const pack = unitQuantity?.label || "";
   const capacity = amazonTitleCapacityValue(title);
+  const applicableRange = validApplicableRangeValue(amazonListingCompatibleUseText({ title })) || extractExplicitApplicableRange(title);
   const dimensionList = amazonListingDimensionListText(row, columns, productText, title);
 
   return {
@@ -7002,6 +6863,7 @@ function amazonSharedFacts(row, columns) {
     skuUnitQuantity: unitQuantity?.count || 0,
     skuUnitQuantityLabel: unitQuantity?.label || "",
     capacity,
+    applicableRange,
     dimensionList,
   };
 }
@@ -7087,6 +6949,7 @@ function amazonRowsToProducts(rows, skuFilter = "") {
       structuredUnitQuantityCandidate,
       material: childListing.material,
       capacity: childListing.capacity || "",
+      applicableRange: childListing.applicableRange || "",
       structure: listing.structure,
       scene: listing.scene,
       sellingPoints: "",
@@ -7118,6 +6981,7 @@ function amazonRowsToProducts(rows, skuFilter = "") {
         material: childListing.material ? `Amazon Child SKU标题明确材质 · 第 ${rowInfo.excelRowNumber} 行` : "",
         structure: listing.structure ? `Amazon Child SKU明确结构 · 第 ${rowInfo.excelRowNumber} 行` : "",
         capacity: childListing.capacity ? `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行` : "",
+        applicableRange: childListing.applicableRange ? `Amazon Child SKU标题 · 第 ${rowInfo.excelRowNumber} 行` : "",
         productDimensions: childListing.dimensionList ? `Amazon Child SKU标题明确尺寸 · 第 ${rowInfo.excelRowNumber} 行` : "",
       },
     };
@@ -7318,7 +7182,7 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
       || (titleMaterialCodes.length && titleMaterialCodes.every((code) => new RegExp(`\\b${code}\\b`, "i").test(supplierMaterial))));
   const material = compatibleSupplierMaterial && supplierMaterial.length > amazonTitleMaterial.length
     ? supplierMaterial : amazonTitleMaterial || supplierMaterial;
-  const color = amazonProduct.titleColor || supplierProduct.color || amazonProduct.color || "";
+  const color = amazonProduct.titleColor || amazonProduct.color || "";
   const structure = supplierProduct.structure || "";
   const supplierSurfaceFinish = explicitSurfaceFinishValues(supplierProduct.surfaceFinish || "");
   const surfaceFinish = supplierSurfaceFinish;
@@ -7329,6 +7193,10 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     ? validCapacityValue(amazonProduct.capacity || "") : "";
   const supplierCapacity = verifiedSupplierMeasurementValue(supplierProduct, "capacity");
   const capacity = amazonTitleCapacity || supplierCapacity;
+  const amazonTitleApplicableRange = /Amazon Child SKU标题/i.test(amazonProduct.fieldSources?.applicableRange || "")
+    ? validApplicableRangeValue(amazonProduct.applicableRange || "") : "";
+  const supplierApplicableRange = validApplicableRangeValue(supplierProduct.applicableRange || supplierProduct.dims?.applicableRange || "");
+  const applicableRange = amazonTitleApplicableRange || supplierApplicableRange;
   const scene = supplierProduct.scene || "";
   const supplierSellingPoints = uniqueExtractedSellingPoints([
     ...splitSellingPointText(supplierProduct.sellingPoints),
@@ -7341,12 +7209,12 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     return { claim, source: entry?.source || SELLING_POINT_SOURCE_UNKNOWN };
   });
   const hasSupplierPropertyEvidence = Boolean(sellingPoints);
-  const fit = supplierProduct.fit || amazonProduct.fit || "";
+  const fit = amazonProduct.fit || "";
   const titleQuantity = amazonSkuTitleQuantityFacts(amazonProduct);
   const promptSpecs = uniquePromptItems([
     productName,
     amazonOption,
-    amazonProduct.pack || supplierProduct.pack,
+    amazonProduct.pack,
     material,
     structure,
     scene,
@@ -7364,7 +7232,7 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     baseProductName: amazonBaseName || supplierName || productName,
     shape: productName || amazonProduct.shape || supplierProduct.shape,
     amazonTitle: amazonProduct.amazonTitle || "",
-    pack: titleQuantity?.label || supplierProduct.pack || "",
+    pack: titleQuantity?.label || "",
     skuUnitQuantity: titleQuantity?.count || 0,
     skuUnitQuantityLabel: titleQuantity?.label || "",
     material,
@@ -7378,14 +7246,13 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
         ? `${amazonProduct.fieldSources?.material} + ${supplierProduct.fieldSources?.material || "1688详情图材质"}`
         : amazonTitleMaterial ? amazonProduct.fieldSources?.material
         : supplierProduct.fieldSources?.material || supplierProduct.structuredAttributesSource || "1688当前商品资料" : "",
-      color: amazonProduct.titleColor ? amazonProduct.fieldSources?.color || "Amazon Child SKU标题"
-        : supplierProduct.color ? supplierProduct.fieldSources?.color || "1688当前款式颜色"
-          : amazonProduct.fieldSources?.color || "",
+      color: color ? amazonProduct.fieldSources?.color || "Amazon Child SKU颜色字段" : "",
       structure: structure ? supplierProduct.fieldSources?.structure || supplierProduct.structuredAttributesSource || "1688当前商品资料" : "",
       scene: scene ? supplierProduct.fieldSources?.scene || "1688图文详情使用场景" : "",
       sellingPoints: sellingPoints ? supplierProduct.fieldSources?.sellingPoints || SELLING_POINT_SOURCE_UNKNOWN : "",
-      pack: titleQuantity?.label ? "Amazon Child SKU标题" : supplierProduct.pack ? supplierProduct.fieldSources?.pack || "1688当前款式明确数量" : "",
-      applicableRange: supplierProduct.applicableRangeSource || "",
+      pack: titleQuantity?.label ? "Amazon Child SKU标题" : "",
+      applicableRange: amazonTitleApplicableRange ? amazonProduct.fieldSources?.applicableRange
+        : supplierApplicableRange ? supplierProduct.applicableRangeSource || supplierProduct.fieldSources?.applicableRange || "1688详情图 · 豆包识别" : "",
       productDimensions: hasDimensionEvidence
         ? amazonTitleDimensions ? amazonProduct.fieldSources?.productDimensions
           : supplierProduct.fieldSources?.productDimensions || supplierProduct.dims?.source || "1688当前商品使用状态尺寸"
@@ -7426,8 +7293,9 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     },
     dimensionConflicts: dimensionMerge.conflicts,
     dimensionList,
-    applicableRange: supplierProduct.applicableRange || supplierProduct.dims?.applicableRange || "",
-    applicableRangeSource: supplierProduct.applicableRangeSource || "",
+    applicableRange,
+    applicableRangeSource: amazonTitleApplicableRange ? amazonProduct.fieldSources?.applicableRange
+      : supplierApplicableRange ? supplierProduct.applicableRangeSource || "1688详情图 · 豆包识别" : "",
     group: {
       promptName: productName || amazonGroup.promptName || supplierName || supplierGroup.promptName || "",
       promptSpecs,
@@ -7436,116 +7304,26 @@ function mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, su
     },
     singleSpec: `[CURRENT_PRODUCT_OPTION: ${[productName, amazonOption].filter(Boolean).join(", ")}]`,
     specList: `[SPEC_LIST: ${promptSpecs.join(" / ")}]`,
-    variantList: amazonProduct.variantList || supplierProduct.variantList || "",
+    variantList: amazonProduct.variantList || "",
   };
 }
 
-function supplierVariantMatchScore(supplierProduct = {}, amazonProduct = {}) {
-  const amazonText = [
-    amazonProduct.color,
-    amazonProduct.displayColor,
-    amazonProduct.colorEnglish,
-    amazonProduct.size,
-    amazonProduct.sizeCode,
-    amazonProduct.outputSizeCode,
-    amazonProduct.label,
-  ].filter(Boolean).join(" ").toLowerCase();
-  const supplierText = [
-    supplierProduct.color,
-    supplierProduct.displayColor,
-    supplierProduct.colorEnglish,
-    supplierProduct.size,
-    supplierProduct.sizeCode,
-    supplierProduct.outputSizeCode,
-    supplierProduct.label,
-  ].filter(Boolean).join(" ").toLowerCase();
-  if (!supplierText || !amazonText) return 0;
-  let score = promptItemsOverlap(supplierText, amazonText) || promptItemsOverlap(amazonText, supplierText) ? 3 : 0;
-  const amazonColor = cleanFieldDisplayValue(amazonProduct.colorEnglish || amazonProduct.color || amazonProduct.displayColor || "");
-  const supplierColor = cleanFieldDisplayValue(supplierProduct.colorEnglish || supplierProduct.color || supplierProduct.displayColor || "");
-  if (amazonColor && supplierColor) score += isSameColorName(amazonColor, supplierColor) ? 5 : -3;
-  const amazonSize = cleanFieldDisplayValue(amazonProduct.size || amazonProduct.outputSizeCode || amazonProduct.sizeCode || "");
-  const supplierSize = cleanFieldDisplayValue(supplierProduct.size || supplierProduct.outputSizeCode || supplierProduct.sizeCode || "");
-  if (amazonSize && supplierSize && (promptItemsOverlap(amazonSize, supplierSize) || promptItemsOverlap(supplierSize, amazonSize))) score += 3;
-  return score;
-}
-
-function supplierProductForAmazonVariant(supplierProducts, amazonProduct, allowSharedFallback = false) {
-  if (!supplierProducts.length) return null;
-  if (supplierProducts.length === 1) return supplierProducts[0];
-  const ranked = supplierProducts
-    .map((product) => ({ product, score: supplierVariantMatchScore(product, amazonProduct) }))
-    .sort((left, right) => right.score - left.score);
-  if (ranked[0]?.score > 0 && ranked[0].score > (ranked[1]?.score || 0)) return ranked[0].product;
-  return allowSharedFallback ? supplierProducts[0] : null;
-}
-
-function commonSupplierProduct(supplierProducts) {
-  if (!supplierProducts.length) return null;
-  const first = supplierProducts[0];
-  // These fields come from the shared supplier page, but a value is reusable
-  // only when every extracted supplier option agrees. Never borrow an option's
-  // color, size, quantity or picture merely because the operator chose a SKU.
-  const commonFields = [
-    "material", "structure", "scene", "sellingPoints", "surfaceFinish",
-    "dimensionList", "applicableRange", "productWeight", "capacity", "installationSteps",
-  ];
-  const shared = {
-    ...first,
-    color: "", displayColor: "", colorEnglish: "", size: "", pack: "",
-    skuUnitQuantity: 0, skuUnitQuantityLabel: "", productUnitCount: "",
-    fit: "", feature1: "", feature2: "", supplierOption: null,
-    dims: {}, visionEvidence: { ...(first.visionEvidence || {}), dimensions: [] },
-    group: { ...(first.group || {}), dimensions: [], promptSpecs: [] },
-  };
-  const fieldSources = { ...(first.fieldSources || {}) };
-  commonFields.forEach((key) => {
-    if (key === "sellingPoints") {
-      const commonPoints = splitSellingPointText(first.sellingPoints).filter((point) =>
-        supplierProducts.every((product) => splitSellingPointText(product.sellingPoints).includes(point)));
-      shared.sellingPoints = commonPoints.join("\n");
-      if (!commonPoints.length) fieldSources.sellingPoints = "";
-      return;
-    }
-    const value = cleanFieldDisplayValue(first[key] || "");
-    const agrees = value && supplierProducts.every((product) => cleanFieldDisplayValue(product[key] || "") === value);
-    shared[key] = agrees ? first[key] : "";
-    if (!agrees) fieldSources[key] = "";
-  });
-  shared.fieldSources = fieldSources;
-  shared.sellingPointEntries = shared.sellingPoints
-    ? sellingPointEntriesForText(first, shared.sellingPoints)
-    : [];
-  return commonFields.some((key) => Boolean(shared[key])) ? shared : null;
-}
-
-function meaningfulIdentityWords(value) {
-  const ignored = new Set(["the", "and", "for", "with", "set", "pack", "piece", "pieces", "new", "color", "black", "white", "blue", "red", "green", "yellow", "pink", "purple", "gray", "grey", "small", "medium", "large"]);
-  return (String(value || "").toLowerCase().match(/[a-z]{3,}/g) || []).filter((word) => !ignored.has(word));
-}
-
-function hasStrongSupplierIdentityConflict(amazonProduct = {}, supplierProduct = {}) {
-  const amazonName = cleanFieldDisplayValue(amazonProduct.baseProductName || amazonProduct.productName || amazonProduct.amazonTitle || amazonProduct.label || "");
-  const supplierName = cleanFieldDisplayValue(supplierProduct.baseProductName || supplierProduct.productName || supplierProduct.outputProductName || supplierProduct.label || "");
-  if (!amazonName || !supplierName) return false;
-  if (promptItemsOverlap(amazonName, supplierName) || promptItemsOverlap(supplierName, amazonName)) return false;
-  const amazonWords = meaningfulIdentityWords(amazonName);
-  const supplierWords = meaningfulIdentityWords(supplierName);
-  if (amazonWords.length < 2 || supplierWords.length < 2) return false;
-  return !supplierWords.some((word) => amazonWords.includes(word));
-}
-
-function resolveSupplierBindingScope(amazonProducts, supplierProducts) {
+function resolveSupplierBindingScope(amazonProducts) {
   const requested = supplierBindingScope(amazonProducts);
-  if (requested.kind === "invalid") return { ...requested, errors: ["请选择这份 1688 资料对应的父体或 Child SKU。"], warnings: [] };
+  if (requested.kind === "invalid") return {
+    ...requested,
+    errors: [selectedSupplierBindingMode === "parent"
+      ? "Amazon 模板未识别到唯一父体 SKU，无法自动使用父体共享。"
+      : "请选择这份 1688 资料对应的 Child SKU。"],
+    warnings: [],
+  };
   if (requested.kind === "parent" || requested.kind === "child") return { ...requested, errors: [], warnings: [], automatic: false };
-  return { kind: "invalid", targets: [], errors: ["请选择这份 1688 资料对应的父体或 Child SKU。"], warnings: [] };
+  return { kind: "invalid", targets: [], errors: ["请选择这份 1688 资料对应的 Child SKU。"], warnings: [] };
 }
 
-function scopeSupplierFieldSources(product, scope, commonOnly = false) {
-  const prefix = commonOnly
-    ? scope.kind === "parent" ? `1688父体通用字段 · ${scope.parentSku}` : `1688通用字段 · 仅写入 ${product.id}`
-    : scope.kind === "parent" ? `1688父体共享 · ${scope.parentSku}` : `1688子 SKU 专属 · ${product.id}`;
+function scopeSupplierFieldSources(product, scope) {
+  const prefix = scope.kind === "parent"
+    ? "1688资料 · Amazon父体共享" : "1688资料 · 指定Amazon SKU";
   const fieldSources = { ...(product.fieldSources || {}) };
   ["material", "structure", "scene", "sellingPoints", "applicableRange", "productDimensions", "surfaceFinish", "productWeight", "capacity"].forEach((key) => {
     if (fieldSources[key] && !/^(?:人工修改|Amazon|竞品)/i.test(fieldSources[key])) fieldSources[key] = `${prefix} · ${fieldSources[key]}`;
@@ -7559,15 +7337,15 @@ function scopeSupplierFieldSources(product, scope, commonOnly = false) {
   };
 }
 
-function mergeAmazonProductsWithSupplierFacts(amazonProducts, supplierProducts, scope) {
-  if (!amazonProducts.length || !supplierProducts.length || !scope?.targets?.length) {
+function mergeAmazonProductsWithSupplierFacts(amazonProducts, supplierFacts, scope) {
+  if (!amazonProducts.length || !supplierFacts || !scope?.targets?.length) {
     return { products: amazonProducts, mergedIds: [], skippedIds: scope?.targets?.map((item) => item.id) || [], warnings: scope?.warnings || [] };
   }
   const supplierBaseName = cleanFieldDisplayValue(
-    supplierProducts[0].outputProductName
-      || supplierProducts[0].baseProductName
-      || supplierProducts[0].productName
-      || defaultProductName(supplierProducts[0])
+    supplierFacts.outputProductName
+      || supplierFacts.baseProductName
+      || supplierFacts.productName
+      || defaultProductName(supplierFacts)
   );
   const targetIds = new Set(scope.targets.map((item) => item.id));
   const mergedIds = [];
@@ -7575,28 +7353,13 @@ function mergeAmazonProductsWithSupplierFacts(amazonProducts, supplierProducts, 
   const warnings = [...(scope.warnings || [])];
   const products = amazonProducts.map((amazonProduct) => {
     if (!targetIds.has(amazonProduct.id)) return amazonProduct;
-    // Parent sharing distributes page-level facts, not one supplier option's
-    // color/count/size. A child binding may additionally use a unique option.
-    const matchedSupplierProduct = scope.kind === "parent"
-      ? null
-      : supplierProductForAmazonVariant(supplierProducts, amazonProduct);
-    const supplierProduct = matchedSupplierProduct || commonSupplierProduct(supplierProducts);
-    if (!supplierProduct) {
-      skippedIds.push(amazonProduct.id);
-      warnings.push(`${amazonProduct.id} 未找到唯一对应的1688款式，也没有所有款式一致的通用参数，未写入供应商参数。`);
-      return amazonProduct;
-    }
-    if (hasStrongSupplierIdentityConflict(amazonProduct, supplierProduct)) {
-      skippedIds.push(amazonProduct.id);
-      warnings.push(`${amazonProduct.id} 与1688商品名称存在明显身份冲突，未写入供应商参数。`);
-      return amazonProduct;
-    }
+    // The operator binds this source to Amazon SKUs. Supplier variants never
+    // create SKU identities or participate in automatic matching.
+    const supplierProduct = supplierFacts;
     mergedIds.push(amazonProduct.id);
-    if (!matchedSupplierProduct) warnings.push(`${amazonProduct.id} 仅写入1688通用参数；颜色、数量和款式图片仍须按子体核对。`);
     return scopeSupplierFieldSources(
       mergedAmazonProductWithSupplierFacts(amazonProduct, supplierProduct, supplierBaseName),
       scope,
-      !matchedSupplierProduct,
     );
   });
   return { products, mergedIds, skippedIds, warnings: uniquePromptItems(warnings) };
@@ -7606,274 +7369,243 @@ function amazonSkuTitleQuantityFacts(product) {
   return amazonTitleUnitQuantity(product?.amazonTitle || "");
 }
 
-function amazonVariantForSupplierQuantity(supplierProduct, amazonProducts, index, supplierCount) {
-  if (!amazonProducts.length) return null;
-  if (amazonProducts.length === 1) return amazonProducts[0];
-  const supplierText = [
-    supplierProduct?.model,
-    supplierProduct?.color,
-    supplierProduct?.displayColor,
-    supplierProduct?.size,
-    supplierProduct?.sizeCode,
-    supplierProduct?.label,
-  ].filter(Boolean).join(" ");
-  const matched = amazonProducts.find((product) => {
-    const amazonText = [
-      product?.model,
-      product?.color,
-      product?.displayColor,
-      product?.size,
-      product?.sizeCode,
-      product?.label,
-    ].filter(Boolean).join(" ");
-    return supplierText && amazonText && promptItemsOverlap(supplierText, amazonText);
-  });
-  return matched || (supplierCount === amazonProducts.length ? amazonProducts[index] : null);
-}
-
-function applyAmazonSkuTitleQuantities(supplierProducts, amazonProducts) {
-  return (supplierProducts || []).map((product, index) => {
-    const amazonProduct = amazonVariantForSupplierQuantity(product, amazonProducts || [], index, supplierProducts.length);
-    const quantity = amazonSkuTitleQuantityFacts(amazonProduct);
-    if (!quantity) return product;
-    return {
-      ...product,
-      amazonTitle: amazonProduct?.amazonTitle || "",
-      pack: quantity?.label || product.pack || amazonProduct?.pack || "",
-      skuUnitQuantity: quantity?.count || 0,
-      skuUnitQuantityLabel: quantity?.label || "",
-      singleSpec: `[CURRENT_PRODUCT_OPTION: ${[
-        cleanTokenValue(product.singleSpec) || product.productName || product.label,
-        quantity?.label || product.pack || amazonProduct?.pack || "",
-      ].filter(Boolean).join(", ")}]`,
-    };
-  });
-}
-
-function inferProductsFromSources(purchaseText, supplierText, competitorText) {
+function inferSupplierFactsFromSource(supplierText, routeId = selectedExtractionRoute) {
   const visionEvidence = doubaoVisionEvidenceProfile(supplierText);
   const visionVerified = visionEvidence.verified;
-  const primaryText = productIdentitySourceText(purchaseText, supplierText);
+  const visionOnlyFields = routeId === "web";
+  const primaryText = productIdentitySourceText("", supplierText);
   const attributeText = [primaryText, supplierText].filter(Boolean).join(" ");
-  const combined = [attributeText, competitorText].join(" ");
+  const combined = attributeText;
   const identityAttrs = supplierAttributeMap(primaryText);
   const productName = inferProductName(primaryText);
   const detailAttributes = {
     ...supplierAttributeMap(supplierText),
     ...visionEvidence.attributeValues,
   };
-  const material = cleanFieldDisplayValue(detailAttributes.Material || "");
-  const color = cleanFieldDisplayValue(detailAttributes.Color || "");
-  const detailTechnology = explicitSurfaceFinishValues(identityAttrs.Technology || detailAttributes.Technology || "");
-  const detailSpecialCraft = explicitSurfaceFinishValues(identityAttrs.SpecialCraft || detailAttributes.SpecialCraft || "");
-  const surfaceFinish = compactPromptItems([detailTechnology, detailSpecialCraft], "", 3);
-  const structure = cleanFieldDisplayValue(detailAttributes.Structure || "");
-  const scene = inferUseScene(attributeText || primaryText || combined);
+  const material = cleanFieldDisplayValue((visionOnlyFields ? visionEvidence.attributeValues.Material : detailAttributes.Material) || "");
+  const pageTechnology = explicitSurfaceFinishValues(identityAttrs.Technology || "");
+  const pageSpecialCraft = explicitSurfaceFinishValues(identityAttrs.SpecialCraft || "");
+  const detailTechnology = explicitSurfaceFinishValues(detailAttributes.Technology || "");
+  const detailSpecialCraft = explicitSurfaceFinishValues(detailAttributes.SpecialCraft || "");
+  const pageSurfaceFinish = compactPromptItems([pageTechnology, pageSpecialCraft], "", 3);
+  const surfaceFinish = visionOnlyFields
+    ? pageSurfaceFinish || compactPromptItems([
+      explicitSurfaceFinishValues(visionEvidence.attributeValues.Technology || ""),
+      explicitSurfaceFinishValues(visionEvidence.attributeValues.SpecialCraft || ""),
+    ], "", 3)
+    : compactPromptItems([detailTechnology, detailSpecialCraft], "", 3);
+  const structure = cleanFieldDisplayValue((visionOnlyFields
+    ? visionEvidence.attributeValues.Structure || identityAttrs.Structure
+    : detailAttributes.Structure) || "");
+  const visionScenes = Array.from(String(supplierText || "").matchAll(/DOUBAO_VISION_USE_SCENE:\s*([^\n]+)/gi))
+    .map((match) => cleanFieldDisplayValue(match[1])).filter(Boolean);
+  const scene = visionOnlyFields ? visionScenes.slice(0, 5).join("\n") : inferUseScene(attributeText || primaryText || combined);
   const installationSteps = detailAttributes.InstallationSteps || inferInstallationSteps(attributeText || primaryText);
   // Local OCR and raw HTML never manufacture selling points. Only evidence-backed
   // markers returned by the product-specific vision analysis are accepted here.
   const sellingPoints = verifiedSellingPointsFromSource(supplierText, 6);
   const extractedSellingPointSet = uniqueExtractedSellingPoints(sellingPoints.points || [], 6);
-  const dimensions = semanticDimensionItems(extractDimensions(attributeText), attributeText);
-  const applicableRange = validApplicableRangeValue(detailAttributes.ApplicableRange || extractExplicitApplicableRange(attributeText));
-  const productWeight = validProductWeightValue(detailAttributes.ProductWeight || detailAttributes.Weight || "");
-  const capacity = validCapacityValue(detailAttributes.Capacity || "");
-  const productUnitCount = skuRelevantPackValue(detailAttributes.ProductCount || extractProductUnitCount(supplierText));
+  const dimensions = visionOnlyFields
+    ? semanticDimensionItems(visionEvidence.dimensions, supplierText)
+    : semanticDimensionItems(extractDimensions(attributeText), attributeText);
+  const applicableRange = validApplicableRangeValue(visionOnlyFields
+    ? visionEvidence.attributeValues.ApplicableRange || ""
+    : detailAttributes.ApplicableRange || extractExplicitApplicableRange(attributeText));
+  const productWeight = validProductWeightValue(visionOnlyFields
+    ? visionEvidence.attributeValues.ProductWeight || ""
+    : detailAttributes.ProductWeight || detailAttributes.Weight || "");
+  const capacity = validCapacityValue(visionOnlyFields
+    ? visionEvidence.attributeValues.Capacity || ""
+    : detailAttributes.Capacity || "");
   const cleanProductName = toCrossBorderProductName(productName, "");
   const displayName = displayProductName(cleanProductName || productName, combined) || cleanProductName;
   const outputName = crossBorderProductName(cleanProductName || productName, combined) || cleanProductName || displayName;
-  const batchBaseName = shortCrossBorderBaseName(outputName || productName || displayName, combined) || "product";
-  const purchaseItems = extractPurchaseItems(purchaseText, combined);
-  const supplierOnlyOptions = extractSupplierSkuOptions(supplierText)
-    .filter((option) => option.model && (option.rawSpec || option.color || option.size || option.dims?.topWidth || option.dims?.weight));
-  const variants = [];
-
-  if (purchaseItems.length) {
-    variants.push(...purchaseItems.map((item, index) => {
-      const itemUnitCount = skuRelevantPackValue(productUnitCountForItem(item, supplierText));
-      const itemDisplayColor = displayColorName(item.displayColor || item.color, item.colorEnglish);
-      const itemForOutput = { ...item, productUnitCount: itemUnitCount };
-      const itemDisplayName = displayProductName(item.productName || displayName, combined) || item.productName || displayName;
-      const itemOutputBaseName = item.outputProductName || crossBorderProductName(item.productName || outputName, combined) || outputName;
-      const shortBaseName = batchBaseName || shortCrossBorderBaseName(itemOutputBaseName || itemDisplayName || outputName, combined);
-      const shortOptionLabel = comparisonOptionLabel(itemForOutput, shortCrossBorderOptionLabel(shortBaseName, itemForOutput, `product ${index + 1}`));
-      return {
-        id: `EXTRACTED-${index + 1}-${[item.colorEnglish || item.color, item.size, itemUnitCount].filter(Boolean).join("-").replace(/[^A-Z0-9]+/gi, "-") || "ITEM"}`,
-        label: productVariantLabel(itemDisplayName, { ...item, displayColor: itemDisplayColor, productUnitCount: itemUnitCount }, `Product ${index + 1}`),
-        outputLabel: shortOptionLabel,
-        key: item.key,
-        purchaseRowKey: item.purchaseRowKey || item.rowKey,
-        model: item.model,
-        productName: itemDisplayName,
-        outputProductName: itemOutputBaseName,
-        color: item.color,
-        displayColor: itemDisplayColor,
-        colorEnglish: item.colorEnglish,
-        size: item.size,
-        variantStyle: item.variantStyle,
-        productUnitCount: itemUnitCount,
-        spec: item.spec || productVariantName(itemDisplayName, { ...item, displayColor: itemDisplayColor, productUnitCount: itemUnitCount }, `Product ${index + 1}`),
-        outputSpec: item.outputSpec || crossBorderVariantName(itemOutputBaseName, itemForOutput, `Product ${index + 1}`),
-        sizeCode: item.sizeCode || variantAttributeParts(item, itemUnitCount).join(" / "),
-        outputSizeCode: [crossBorderColorName(itemForOutput), /^(?:均码|one size)$/i.test(cleanFieldDisplayValue(item.size || "")) ? "" : cleanFieldDisplayValue(item.size || "")].filter(Boolean).join(" / "),
-        applicableRange: item.applicableRange,
-        pack: itemUnitCount,
-        quantity: item.quantity,
-        dims: item.dims,
-        fit: item.fit,
-        supplierOption: item.supplierOption,
-      };
-    }));
-  } else {
-    const supplierOnlyVariants = supplierOnlyOptions.map((option, index) => {
-      const itemDisplayColor = displayColorName(option.color, option.colorEnglish);
-      const itemForOutput = {
-        ...option,
-        displayColor: itemDisplayColor,
-        productUnitCount: "",
-        pack: "",
-      };
-      const optionBaseName = displayName || productName || `Product ${index + 1}`;
-      const optionOutputName = outputName || crossBorderProductName(optionBaseName, combined) || optionBaseName;
-      return {
-        id: `EXTRACTED-SUPPLIER-${index + 1}-${[option.colorEnglish || option.color, option.size].filter(Boolean).join("-").replace(/[^A-Z0-9]+/gi, "-") || "SKU"}`,
-        label: productVariantLabel(optionBaseName, itemForOutput, `Product ${index + 1}`),
-        outputLabel: shortCrossBorderOptionLabel(batchBaseName, itemForOutput, `product ${index + 1}`),
-        key: supplierOptionIdentity(option) || `supplier-sku-${index + 1}`,
-        model: option.model,
-        productName: optionBaseName,
-        outputProductName: optionOutputName,
-        color: option.color,
-        displayColor: itemDisplayColor,
-        colorEnglish: option.colorEnglish || colorName(option.color),
-        size: option.size,
-        material: option.material,
-        variantStyle: option.variantStyle,
-        spec: [optionBaseName, itemDisplayColor, option.size].filter(Boolean).join(" - "),
-        outputSpec: crossBorderVariantName(optionOutputName, itemForOutput, `Product ${index + 1}`),
-        sizeCode: variantAttributeParts(itemForOutput).join(" / "),
-        outputSizeCode: [crossBorderColorName(itemForOutput), /^(?:均码|one size)$/i.test(cleanFieldDisplayValue(option.size || "")) ? "" : cleanFieldDisplayValue(option.size || "")].filter(Boolean).join(" / "),
-        pack: "",
-        productUnitCount: "",
-        dims: option.dims,
-        fit: "",
-        supplierOption: option,
-      };
-    });
-    variants.push(...supplierOnlyVariants);
-  }
-
-  const colorScopedVariants = normalizedColorVariantItems(variants, purchaseText, combined);
-  const normalizedVariants = colorScopedVariants.length ? disambiguateDuplicateLabels(dedupeExtractedVariants(colorScopedVariants)) : [{
-    id: "EXTRACTED-PRODUCT-1",
-    label: displayName || "Product 1",
-    outputLabel: outputName || "Product 1",
-    spec: "",
-    outputSpec: "",
-    sizeCode: "",
-    outputSizeCode: "",
-    pack: productUnitCount || "",
-    fit: "",
-  }];
-
-  return normalizedVariants.map((item) => {
-    const itemApplicableRange = validApplicableRangeValue(applicableRange || item.applicableRange || "");
-    const hasUseStateItemDimensions = !/(?:package|packaging|shipping|carton|包装|物流|外箱|箱规)/i.test(String(item.dims?.source || ""));
-    const itemDimensions = [
-      hasUseStateItemDimensions && item.dims?.topWidth && `Length: ${item.dims.topWidth}`,
-      hasUseStateItemDimensions && item.dims?.sideLength && `Width: ${item.dims.sideLength}`,
-      hasUseStateItemDimensions && item.dims?.bottomWidth && `${thirdDimensionLabel([combined, item.spec, item.sizeCode].filter(Boolean).join(" "))}: ${item.dims.bottomWidth}`,
-    ].filter(Boolean);
-    const dimensionList = dimensions.length
-      ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]`
-      : itemDimensions.length
-        ? `[VERIFIED_DIMENSIONS: ${itemDimensions.join("; ")}]`
-        : "";
-    const itemDisplayColor = displayColorName(item.displayColor || item.color, item.colorEnglish);
-    const itemColor = item.colorEnglish || colorName(item.color) || color;
-    const itemMaterial = translateAttributeValue("Material", item.material || "") || material;
-    const itemStructure = structure;
-    const itemProductName = item.productName || displayProductName(cleanProductName || productName, combined) || toCrossBorderProductName(productName, item.spec);
-    const itemOutputName = item.outputProductName || crossBorderProductName(cleanProductName || productName, combined) || toCrossBorderProductName(productName, item.outputSpec || item.spec);
-    const variantProductName = displayVariantText(item.outputSpec || outputVariantNameFromParts(itemOutputName, item)) || itemOutputName;
-    const itemShortBaseName = batchBaseName || shortCrossBorderBaseName(itemOutputName || itemProductName, combined);
-    const safePack = skuRelevantPackValue(item.productUnitCount || item.pack || productUnitCount);
-    const itemForDisplay = { ...item, displayColor: itemDisplayColor, productUnitCount: safePack, pack: safePack };
-    const itemForOutput = { ...item, productUnitCount: safePack, pack: safePack };
-    const displaySpec = displayVariantText(item.spec || productVariantName(itemProductName, itemForDisplay, itemProductName || "selected product"));
-    const outputSpec = skuCurrentOptionText(
-      { ...itemForOutput, outputSpec: item.outputLabel || shortCrossBorderOptionLabel(itemShortBaseName, itemForOutput, itemOutputName || "selected product") },
-      itemOutputName || "selected product"
-    );
-    const variantList = normalizedVariants
-      .map((variant) => displayVariantText(comparisonOptionLabel({ ...variant, productUnitCount: skuRelevantPackValue(variant.productUnitCount || variant.pack || productUnitCount), pack: skuRelevantPackValue(variant.productUnitCount || variant.pack || productUnitCount) }, variant.outputLabel || itemOutputName || "product option")))
-      .filter(Boolean)
-      .join(" | ");
-    const displaySizeCode = displayVariantText(item.outputSizeCode || outputSpec || item.sizeCode || item.spec || displaySpec);
-    return {
+  const dimensionList = dimensions.length ? `[VERIFIED_DIMENSIONS: ${dimensions.join("; ")}]` : "";
+  return {
     visionVerified,
     visionEvidence,
-    id: item.id,
-    label: variantProductName || itemOutputName || outputSpec || displayVariantText(item.outputLabel || item.label),
-    displayLabel: variantProductName || itemOutputName || outputSpec || displayVariantText(item.outputLabel || item.label),
-    productName: itemOutputName || outputName || variantProductName,
-    baseProductName: itemOutputName,
-    shape: variantProductName || outputSpec || displaySpec || item.spec,
-    pack: safePack,
-    sizeCode: displaySizeCode,
-    groupKey: "",
-    group: {
-      promptName: variantProductName || outputSpec || displaySpec || displayVariantText(item.spec),
-      promptSpecs: [variantProductName || outputSpec || displaySpec || displayVariantText(item.spec), itemApplicableRange, safePack, itemMaterial, itemStructure].filter(Boolean),
-      dimensions: dimensions.length ? dimensions : itemDimensions,
-    },
-    dims: {
-      topWidth: dimensionValueByLabels(dimensions.join("; "), ["Base Diameter", "Diameter", "Top Width", "Length"]) || item.dims?.topWidth || "",
-      sideLength: dimensionValueByLabels(dimensions.join("; "), ["Front Diameter", "Knob Diameter", "Open Diameter", "Side Length", "Width"]) || item.dims?.sideLength || "",
-      bottomWidth: dimensionValueByLabels(dimensions.join("; "), ["Projection Depth", "Depth", "Overall Projection", "Open Height", "Bottom Width", "Thickness", "Height"]) || item.dims?.bottomWidth || "",
-      productWeight,
-      capacity,
-      applicableRange: itemApplicableRange,
-      source: dimensions.length ? "Extracted from uploaded source files" : item.dims?.source || "No verified dimensions extracted",
-    },
-    quantity: item.quantity,
-    productWeight,
-    capacity,
-    material: itemMaterial,
-    color: itemColor,
-    structure: itemStructure,
-    structuredAttributesSource: "1688 HTML 结构化商品属性（当前商品）",
-    applicableRangeSource: itemApplicableRange ? "1688图文详情明确适用范围（当前商品）" : "",
-    fieldSources: {
-      productName: "1688当前商品标题或图文身份",
-      material: itemMaterial ? "1688当前商品图文或结构化材质" : "",
-      color: itemColor ? "1688当前款式颜色" : "",
-      structure: itemStructure ? "1688当前商品图文结构" : "",
-      scene: scene ? "1688图文详情使用场景" : "",
-      sellingPoints: extractedSellingPointSet.length || sellingPoints.sellingPoints ? SELLING_POINT_SOURCE_VISION : "",
-      pack: safePack ? "1688当前款式明确数量" : "",
-      applicableRange: itemApplicableRange ? (visionEvidence.attributes.includes("applicablerange") ? "豆包识别 · 1688详情图明确适用范围" : "1688图文详情明确适用范围（当前商品）") : "",
-      surfaceFinish: surfaceFinish ? (visionEvidence.attributes.includes("technology") ? "豆包识别 · 1688详情图表面工艺" : "1688当前商品明确表面工艺") : "",
-      productDimensions: dimensionList ? (visionEvidence.dimensions.length ? "豆包识别 · 1688详情图产品尺寸" : "1688当前商品使用状态尺寸") : "",
-      productWeight: productWeight ? (visionEvidence.attributes.includes("productweight") ? "豆包识别 · 1688详情图产品净重" : "1688当前商品明确产品净重") : "",
-      capacity: capacity ? (visionEvidence.attributes.includes("capacity") ? "豆包识别 · 1688详情图容量" : "1688当前商品明确容量") : "",
-    },
+    productName: outputName || displayName,
+    baseProductName: outputName || displayName,
+    material,
+    color: "",
+    pack: "",
+    structure,
     scene,
     installationSteps,
+    surfaceFinish,
+    productWeight,
+    capacity,
+    applicableRange,
+    applicableRangeSource: applicableRange ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+    dimensionList,
+    dims: {
+      ...dimensionFieldsFromDimensionList(dimensionList, outputName),
+      productWeight, capacity, applicableRange,
+      source: dimensionList ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+    },
+    group: { dimensions },
     sellingPoints: extractedSellingPointSet.slice(0, 4).join("\n") || sellingPoints.sellingPoints,
     sellingPointEntries: (extractedSellingPointSet.slice(0, 4).length ? extractedSellingPointSet.slice(0, 4) : sellingPoints.points)
       .map((claim) => ({ claim, source: SELLING_POINT_SOURCE_VISION })),
-    surfaceFinish,
-    fit: item.fit || "",
-    singleSpec: `[CURRENT_PRODUCT_OPTION: ${[variantProductName || outputSpec, safePack].filter(Boolean).join(", ")}]`,
-    specList: `[SPEC_LIST: ${[variantProductName || outputSpec, itemApplicableRange, safePack, itemMaterial, itemStructure].filter(Boolean).join(" / ")}]`,
-    variantList: variantList ? `[VARIANT_LIST: ${variantList}]` : "",
-    dimensionList,
+    structuredAttributesSource: "1688页面文字",
+    fieldSources: {
+      productName: "1688页面文字",
+      material: material ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+      structure: structure ? (visionOnlyFields
+        ? visionEvidence.attributes.includes("structure") ? "1688详情图 · 豆包识别" : "1688页面文字"
+        : "1688页面文字或详情图") : "",
+      scene: scene ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+      sellingPoints: extractedSellingPointSet.length || sellingPoints.sellingPoints ? SELLING_POINT_SOURCE_VISION : "",
+      applicableRange: applicableRange ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+      surfaceFinish: surfaceFinish ? (visionOnlyFields
+        ? pageSurfaceFinish ? "1688页面文字" : "1688详情图 · 豆包识别"
+        : "1688页面文字或详情图") : "",
+      productDimensions: dimensionList ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+      productWeight: productWeight ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+      capacity: capacity ? (visionOnlyFields ? "1688详情图 · 豆包识别" : "1688页面文字或详情图") : "",
+    },
   };
-  });
+}
+
+function competitorAnalysisScope(products) {
+  if (selectedCompetitorBindingMode === "parent") {
+    const parent = soleAmazonParentBinding(products);
+    if (!parent) throw new Error("Amazon 模板中没有可确定的唯一父体。");
+    return { kind: "parent", targets: parent.targets, parentSku: parent.parentSku };
+  }
+  const value = byId("competitorSkuBinding")?.value || competitorBindingPreferredValue;
+  const id = value.startsWith("sku:") ? value.slice(4) : value;
+  const target = products.find((product) => product.id === id);
+  if (!target) throw new Error("请选择竞品图组对应的 Child SKU。");
+  return { kind: "child", targets: [target], parentSku: target.parentSku || "" };
+}
+
+function competitorImageFacts(result) {
+  const fieldMap = {
+    material: "material", color: "color", technology: "surfaceFinish",
+    structure: "structure", fit: "fit", productcount: "pack",
+    capacity: "capacity", productweight: "productWeight",
+    applicablerange: "applicableRange", installationsteps: "installationSteps",
+  };
+  const attributes = (result?.attributes || []).map((item) => ({
+    key: fieldMap[String(item.field || "").toLowerCase()] || "",
+    value: cleanFieldDisplayValue(item.value), evidence: cleanFieldDisplayValue(item.evidence),
+    imageUrl: cleanFieldDisplayValue(item.image_url),
+  }));
+  const dimensions = (result?.dimension_evidence || []).map((item) => ({
+    key: "productDimensions", value: cleanFieldDisplayValue(item.dimension),
+    evidence: cleanFieldDisplayValue(item.evidence), imageUrl: cleanFieldDisplayValue(item.image_url),
+  }));
+  const scenes = (result?.use_scenes || []).map((item) => ({
+    key: "scene", value: cleanFieldDisplayValue(item.scene),
+    evidence: cleanFieldDisplayValue(item.evidence), imageUrl: cleanFieldDisplayValue(item.image_url),
+  }));
+  return [...attributes, ...dimensions, ...scenes].filter((item) =>
+    item.key && item.value && item.evidence && /^https?:\/\//i.test(item.imageUrl));
+}
+
+async function extractCompetitorSources() {
+  hasUserSourceAttempt = true;
+  const requestedGeneration = ++extractionGeneration;
+  const button = byId("extractSources");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  document.querySelectorAll("[data-extraction-route], [data-product-structure-route]").forEach((item) => { item.disabled = true; });
+  try {
+    const amazonFile = sourceInputFiles("amazonTemplateFile")[0];
+    const competitorFiles = sourceInputFiles("competitorAnalysisFile");
+    if (!amazonFile) throw new Error("请先选择 Amazon 模板。");
+    if (!competitorFiles.length) throw new Error("请先选择竞品图组 HTML。");
+    byId("extractStatus").textContent = "正在读取 Amazon 模板与竞品图组…";
+    const amazonTemplate = await extractAmazonTemplateProducts(amazonFile);
+    if (!amazonTemplate.products.length) throw new Error("Amazon 模板中未找到 Child SKU。");
+    populateCompetitorSkuBinding(amazonTemplate.products);
+    const scope = competitorAnalysisScope(amazonTemplate.products);
+    const entries = await readNamedTextFiles(competitorFiles, (message) => {
+      byId("extractStatus").textContent = message;
+    }, "竞品图组");
+    const candidates = uniqueByUrl(entries.flatMap((entry) =>
+      extractAmazonCompetitorImageCandidates(entry.text, MAX_PRODUCT_ANALYSIS_IMAGE_URLS)
+        .map((candidate, position) => ({ ...candidate, sourceFile: entry.name, sourcePosition: position + 1 })))).slice(0, MAX_PRODUCT_ANALYSIS_IMAGE_URLS);
+    const imageUrls = candidates.map(imageCandidateUrl);
+    if (!imageUrls.length) throw new Error("未识别到当前竞品的主图组，请重新保存完整商品页 HTML。");
+    const amazonChildTitle = scope.targets.map((item) => item.amazonTitle || item.label || item.id).join(" | ").slice(0, 500);
+    byId("extractStatus").textContent = `正在用豆包分析 ${imageUrls.length} 张竞品图…`;
+    const response = await fetch("/api/competitor-analysis", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ amazonChildTitle, imageUrls }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result?.message || result?.errors?.[0] || `HTTP ${response.status}`);
+    if (result?.errors?.length && !result?.selected_images?.length && !result?.selling_points?.length)
+      throw new Error(result.errors[0]);
+    if (extractionGeneration !== requestedGeneration || selectedExtractionRoute !== "competitor") return;
+    const targetIds = new Set(scope.targets.map((item) => item.id));
+    const points = competitorVisionSupplement(result).sellingPoints;
+    extractedProducts = amazonTemplate.products.map((item) => ({
+      ...item, feature1: "", feature2: "", sellingPoints: "", sellingPointEntries: [],
+      sellingPointVisualEvidence: [], competitorAnalysisScope: targetIds.has(item.id) ? scope.kind : "none",
+    }));
+    extractedProducts = applyCompetitorVisionSupplement(extractedProducts, result, targetIds, { includeVariantFields: true });
+    supplierSourceFileNames = [];
+    supplierImageSourcePresent = false;
+    fieldOverridesBySku = {};
+    appliedSellingPointOverridesBySku = {};
+    sellingPointResearchAttemptedBySku = new Set();
+    sellingPointDraftDirty = false;
+    const decisions = new Map((result?.selected_images || []).map((item) => [item.url, item]));
+    const evidenceUrls = new Set((result?.evidence_urls || []).filter(Boolean));
+    const selectedUrls = Array.isArray(result?.selected_images)
+      ? new Set(result.selected_images.map((item) => item?.url).filter(Boolean))
+      : new Set(imageUrls);
+    const selectedCandidates = candidates.filter((candidate) => selectedUrls.has(candidate.url));
+    const candidateMeta = selectedCandidates.map((candidate, index) => {
+      const decision = decisions.get(candidate.url) || {};
+      return {
+        url: candidate.url,
+        image_type: "amazon_competitor_reference",
+        detail_type: decision.image_type || "other",
+        review_status: evidenceUrls.has(candidate.url) ? "evidence" : decision.review_status || "pending",
+        sku_match: "visual_reference", reference_value: "unverified", confidence: "unverified",
+        source_file: candidate.sourceFile, source_position: candidate.sourcePosition || index + 1,
+        best_for: [], reason: decision.reason || "竞品图，需人工核对后选为参考图",
+      };
+    });
+    availableReferenceImageUrls = selectedCandidates.map(imageCandidateUrl);
+    referenceImagesBySku = Object.fromEntries(extractedProducts.map((item) => [item.id, targetIds.has(item.id) ? availableReferenceImageUrls : []]));
+    referenceImageMetaBySku = Object.fromEntries(extractedProducts.map((item) => [item.id, targetIds.has(item.id) ? candidateMeta : []]));
+    sourcePayload = { purchase: "", amazonTemplate: amazonTemplate.sourceText, supplier: "", competitor: `COMPETITOR_IMAGE_GROUP: ${entries.map((entry) => entry.name).join(" | ")}\nIMAGE_COUNT: ${imageUrls.length}` };
+    for (const sku of extractedProducts) {
+      if (!targetIds.has(sku.id)) continue;
+      const review = sellingPointReviewForSku(sku);
+      review.visionRequest = { amazonChildTitle, imageUrls };
+      if (review.locked) applyLockedSellingPointReview(sku);
+      else if (points.length) addSellingPointCandidates(sku, points);
+      else {
+        review.candidateEntries = normalizeSellingPointEntries(review.candidateEntries)
+          .filter((entry) => isSupplementalSellingPointSource(entry.source));
+        const visible = new Set(review.candidateEntries.map((entry) => entry.claim));
+        review.checkedClaims = (review.checkedClaims || []).filter((claim) => visible.has(claim));
+      }
+    }
+    persistSellingPointReviews();
+    amazonTemplateSourceFileName = amazonFile.name;
+    renderProductSelect(scope.targets[0]?.id);
+    renderFields(true);
+    renderAll();
+    byId("extractStatus").textContent = `竞品图组分析完成：${imageUrls.length} 张送检，${availableReferenceImageUrls.length} 张候选图；已按来源优先级展示参数与卖点，请核对后统一确认。`;
+    autoEnrichSellingPointsIfNeeded();
+    autoEnrichUseScenesIfNeeded();
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    document.querySelectorAll("[data-extraction-route], [data-product-structure-route]").forEach((item) => { item.disabled = false; });
+  }
 }
 
 async function extractSources() {
+  if (selectedExtractionRoute === "competitor") return extractCompetitorSources();
   hasUserSourceAttempt = true;
   extractionGeneration += 1;
   const requestedGeneration = extractionGeneration;
@@ -7892,12 +7624,18 @@ async function extractSources() {
   byId("extractStatus").textContent = `正在按“${structureRouteName} / ${routeName}”解析资料...`;
 
   try {
-    amazonTemplateSourceFileName = amazonTemplateFile?.name || "";
+    if (!amazonTemplateFile) throw new Error("请先选择 Amazon 模板；SKU 以 Amazon 模板为准。");
+    amazonTemplateSourceFileName = amazonTemplateFile.name;
     supplierSourceFileNames = supplierFiles.map((file) => file.name).filter(Boolean);
     const amazonTemplate = await extractAmazonTemplateProducts(amazonTemplateFile);
+    if (!amazonTemplate.products.length) throw new Error("Amazon 模板中未找到 Child SKU。");
     populateSupplierSkuBinding(amazonTemplate.products);
     const hasSupplierInputs = Boolean(supplierFiles.length || pastedSupplierImageListText);
     const requestedBindingScope = supplierBindingScope(amazonTemplate.products);
+    const resolvedBindingScope = hasSupplierInputs
+      ? resolveSupplierBindingScope(amazonTemplate.products)
+      : { kind: "none", targets: [], errors: [], warnings: [] };
+    if (resolvedBindingScope.errors?.length) throw new Error(resolvedBindingScope.errors.join("；"));
     const supplierEntries = await readNamedTextFiles(supplierFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
@@ -7906,15 +7644,11 @@ async function extractSources() {
     const competitorHtml = await readTextFiles(competitorFiles, (message) => {
       byId("extractStatus").textContent = message;
     });
-    competitorSellingPointCandidates = extractCompetitorSellingPointCandidates(competitorHtml);
-    competitorSellingPointSourceNames = competitorFiles.map((file) => file.name).filter(Boolean);
-    competitorDimensionList = extractCompetitorProductDimensionList(competitorHtml);
-    competitorDimensionSourceNames = competitorFiles.map((file) => file.name).filter(Boolean);
-    const competitorMeasurements = extractCompetitorProductMeasurements(competitorHtml);
-    competitorProductWeight = competitorMeasurements.productWeight;
-    competitorCapacity = competitorMeasurements.capacity;
     const competitorReferenceImageCandidates = extractAmazonCompetitorImageCandidates(competitorHtml);
     const competitorReferenceImageUrls = uniqueReferenceImageUrls(competitorReferenceImageCandidates.map(imageCandidateUrl), MAX_COMPETITOR_REFERENCE_IMAGES);
+    const competitorVisionImageUrls = routeId === "web"
+      ? uniqueReferenceImageUrls(extractAmazonCompetitorImageCandidates(competitorHtml, MAX_PRODUCT_ANALYSIS_IMAGE_URLS).map(imageCandidateUrl), MAX_PRODUCT_ANALYSIS_IMAGE_URLS)
+      : [];
     const competitorReferenceMeta = competitorReferenceImageUrls.map((url) => ({
       url,
       image_type: "amazon_competitor_reference",
@@ -7922,14 +7656,14 @@ async function extractSources() {
       confidence: "high",
       sku_match: "visual_reference",
       best_for: ["main_product", "human_use", "multi_scene", "multi_angle", "selling_point", "summary"],
-      reason: "Amazon competitor image used only as composition/style reference; current SKU facts stay from Amazon flat file and 1688 supplier evidence.",
+      reason: "竞品图作为候选参考；竞品补充的参数和卖点会单独标明来源，需人工核对。",
     }));
     const supplierIdentityHint = requestedBindingScope.targets[0]
       || (amazonTemplate.products.length === 1 ? amazonTemplate.products[0] : {});
     const supplierFileExtraction = supplierEntries.length > 1
       ? await extractSupplierSourcesByFile(supplierEntries, (message) => {
         byId("extractStatus").textContent = message;
-      }, routeId)
+      }, routeId, supplierIdentityHint)
       : null;
     const sharedImageListExtraction = supplierFileExtraction && supplierImageListText
       ? await extractSupplierSourceText("", (message) => {
@@ -7945,62 +7679,34 @@ async function extractSources() {
     // late result from the previous product commit into the new product state.
     if (extractionGeneration !== requestedGeneration) return;
     supplierImageSourcePresent = supplierSource.imageCount > 0;
-    const supplierFileProducts = supplierFileExtraction?.fileSources?.length > 1
-      ? productsFromSupplierFileSources(supplierFileExtraction.fileSources)
-      : [];
-    const useSupplierFileProducts = supplierFileProducts.length > 1 && !amazonTemplate.products.length;
     sourcePayload = {
       purchase: "",
-      amazonTemplate: useSupplierFileProducts ? "" : amazonTemplate.sourceText,
+      amazonTemplate: amazonTemplate.sourceText,
       supplier: supplierSource.text,
-      // Keep a compact presence marker instead of the raw competitor HTML so
-      // reference material cannot leak product facts into current-SKU fields.
+      // Keep only the reference file marker here; explicit competitor fallbacks
+      // carry their own provenance in the editable parameter fields.
       competitor: competitorFiles.length
         ? `COMPETITOR_REFERENCE_FILES: ${competitorFiles.map((file) => file.name).join(" | ")}\nCOMPETITOR_REFERENCE_IMAGES: ${competitorReferenceImageUrls.length}`
         : "",
     };
-    fieldOverrides = {};
+
     fieldOverridesBySku = {};
     appliedSellingPointOverridesBySku = {};
     sellingPointResearchAttemptedBySku = new Set();
     sellingPointDraftDirty = false;
-    const inferredSourceProducts = inferProductsFromSources(sourcePayload.purchase, sourcePayload.supplier, sourcePayload.competitor);
-    const resolvedBindingScope = amazonTemplate.products.length && hasSupplierInputs
-      ? resolveSupplierBindingScope(amazonTemplate.products, inferredSourceProducts)
-      : { kind: "none", targets: [], errors: [], warnings: [] };
-    if (resolvedBindingScope.errors?.length) throw new Error(resolvedBindingScope.errors.join("；"));
-    const mergeResult = amazonTemplate.products.length && inferredSourceProducts.length && resolvedBindingScope.targets.length
-      ? mergeAmazonProductsWithSupplierFacts(amazonTemplate.products, inferredSourceProducts, resolvedBindingScope)
+    const supplierFacts = inferSupplierFactsFromSource(sourcePayload.supplier, routeId);
+    const mergeResult = resolvedBindingScope.targets.length
+      ? mergeAmazonProductsWithSupplierFacts(amazonTemplate.products, supplierFacts, resolvedBindingScope)
       : { products: amazonTemplate.products, mergedIds: [], skippedIds: [], warnings: [] };
-    if (useSupplierFileProducts) {
-      extractedProducts = applyAmazonSkuTitleQuantities(supplierFileProducts, amazonTemplate.products);
-    } else if (amazonTemplate.products.length) {
-      extractedProducts = mergeResult.products;
-    } else {
-      extractedProducts = inferredSourceProducts;
-    }
-    if (selectedProductStructureRoute === "single" && /PRODUCT_ATTRIBUTE:\s*SaleUnit=piece/i.test(supplierSource.text || "")) {
-      const boundIds = new Set(mergeResult.mergedIds);
-      extractedProducts = extractedProducts.map((product) => {
-        const candidate = product.structuredUnitQuantityCandidate;
-        if (!boundIds.has(product.id) || product.skuUnitQuantity || candidate?.count !== 1
-          || /\b(?:multi\s*pack|bundle|set\s+of|[2-9]\s*(?:pcs?|pieces?|pack))\b|套装|组合装/i.test(product.amazonTitle || "")) return product;
-        return {
-          ...product,
-          pack: "1 Pc", skuUnitQuantity: 1, skuUnitQuantityLabel: "1 Pc",
-          fieldSources: { ...(product.fieldSources || {}), pack: "1688 当前款式按件售卖；Amazon 当前 Child SKU 数量字段一致" },
-        };
-      });
-    }
+    extractedProducts = mergeResult.products;
     if (supplierEntries.length <= 1 && Array.isArray(supplierSource.fieldVisualEvidence)) {
       const boundIds = new Set(mergeResult.mergedIds);
       extractedProducts = extractedProducts.map((product) => (
-        !amazonTemplate.products.length || boundIds.has(product.id)
+        boundIds.has(product.id)
           ? { ...product, sourceImageEvidence: supplierSource.fieldVisualEvidence }
           : product
       ));
     }
-    extractedProducts = applyCompetitorDimensionFallback(extractedProducts);
     extractedProducts.forEach((product) => {
       const review = sellingPointReviewForSku(product, false);
       if (review?.locked) {
@@ -8010,7 +7716,7 @@ async function extractSources() {
     const targetIdSet = new Set(mergeResult.mergedIds);
     if (supplierEntries.length <= 1 || targetIdSet.size) {
       const evidence = Array.isArray(supplierSource.sellingPointVisualEvidence) ? supplierSource.sellingPointVisualEvidence : [];
-      extractedProducts = extractedProducts.map((product) => (supplierEntries.length <= 1 || targetIdSet.has(product.id))
+      extractedProducts = extractedProducts.map((product) => targetIdSet.has(product.id)
         ? (() => {
           if (sellingPointReviewForSku(product, false)?.locked) return product;
           const visionClaims = evidence.map((item) => item.claim).filter(Boolean);
@@ -8029,31 +7735,54 @@ async function extractSources() {
         })()
         : { ...product, sellingPointVisualEvidence: [] });
     }
-    // A single uploaded 1688 page is the current product's explicit source.
-    // Preserve its Doubao-confirmed selling-point image links on that SKU so
-    // downstream selling-point prompts can cite the exact evidence image.
-    // With multiple pages we intentionally do not broadcast evidence across
-    // SKUs; those mappings must remain component/source-specific.
-    if (!amazonTemplate.products.length && inferredSourceProducts.length === 1 && supplierEntries.length === 1 && Array.isArray(supplierSource.sellingPointVisualEvidence)) {
-      extractedProducts = extractedProducts.map((product) => ({
-        ...product,
-        sellingPointVisualEvidence: supplierSource.sellingPointVisualEvidence,
-      }));
-    }
     if (supplierEntries.length <= 1 && supplierSource.useBehavior) {
       extractedProducts = extractedProducts.map((product) => (
-        !amazonTemplate.products.length || targetIdSet.has(product.id)
+        targetIdSet.has(product.id)
           ? { ...product, useBehavior: supplierSource.useBehavior }
           : product
       ));
     }
+    const competitorTargets = requestedBindingScope.kind !== "invalid"
+      ? requestedBindingScope.targets
+      : extractedProducts.length === 1 ? extractedProducts : [];
+    const competitorTargetIds = new Set(competitorTargets.map((product) => product.id));
+    let competitorVisionResult = null;
+    let competitorVisionStatus = "";
+    if (routeId === "web" && competitorVisionImageUrls.length && competitorTargetIds.size) {
+      const title = extractedProducts.filter((product) => competitorTargetIds.has(product.id))
+        .map((product) => product.amazonTitle || product.productName || product.label)
+        .filter(Boolean).slice(0, 3).join(" | ").slice(0, 500);
+      byId("extractStatus").textContent = `正在用豆包识别 ${competitorVisionImageUrls.length} 张竞品图…`;
+      try {
+        const response = await fetch("/api/competitor-analysis", {
+          method: "POST",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ amazonChildTitle: title, imageUrls: competitorVisionImageUrls, analysisPurpose: "route01_supplement" }),
+        });
+        const result = await response.json();
+        if (!response.ok || result?.errors?.length && !result?.selected_images?.length)
+          throw new Error(result?.message || result?.errors?.[0] || `HTTP ${response.status}`);
+        if (extractionGeneration !== requestedGeneration || selectedExtractionRoute !== routeId) return;
+        competitorVisionResult = result;
+        extractedProducts = applyCompetitorVisionSupplement(extractedProducts, result, competitorTargetIds);
+        competitorVisionStatus = `竞品图识别：送检 ${competitorVisionImageUrls.length} 张。`;
+      } catch (error) {
+        competitorVisionStatus = `竞品图识别未完成：${error?.message || "请求失败"}。`;
+      }
+      if (extractionGeneration !== requestedGeneration || selectedExtractionRoute !== routeId) return;
+    } else if (routeId === "web" && competitorVisionImageUrls.length) {
+      competitorVisionStatus = "竞品图未绑定明确 SKU，仅保留候选图。";
+    }
+    const competitorVisionEntries = competitorVisionResult ? competitorVisionSupplement(competitorVisionResult).sellingPoints : [];
     extractedProducts.forEach((product) => {
       if (sellingPointReviewForSku(product, false)?.locked) return;
       const entries = currentSellingPointReviewEntries(product);
       if (entries.length) addSellingPointCandidates(product, entries);
+      if (competitorTargetIds.has(product.id) && competitorVisionEntries.length)
+        addSellingPointCandidates(product, competitorVisionEntries, { append: true });
     });
     if (!extractedProducts.length) {
-      throw new Error("没有从当前资料中提取到产品 / 款式，请确认 Amazon 模板或 1688 HTML 是否已选择。");
+      throw new Error("Amazon 模板中未找到可用的 Child SKU。");
     }
     applyProductStructureRoute(extractedProducts);
     const supplierReferenceImageUrls = Array.from(new Set([
@@ -8074,8 +7803,8 @@ async function extractSources() {
     availableReferenceImageUrls = uniqueReferenceImageUrls([
       ...competitorReferenceImageUrls, ...supplierReferenceImageUrls,
     ], MAX_REFERENCE_CANDIDATES);
-    // One Doubao-selected source pool is visible for every SKU. SKU matching
-    // still applies to extracted parameter values, never to candidate display.
+    // Candidate images share one pool; parameter writes follow only the
+    // operator's explicit Amazon child/parent binding.
     referenceImagesBySku = Object.fromEntries(extractedProducts.map((sku) => [
       sku.id, availableReferenceImageUrls,
     ]));
@@ -8103,7 +7832,7 @@ async function extractSources() {
     const imageStatus = routeId === "web"
       ? `送豆包图片：${supplierSource.visionSentCount || 0} 张。`
       : `本地图片：${supplierSource.imageCount || 0} 张。`;
-    byId("extractStatus").textContent = `资料解析完成。${imageStatus}${visionStatus}${referenceMappingStatus}`;
+    byId("extractStatus").textContent = `资料解析完成。${imageStatus}${visionStatus}${competitorVisionStatus}${referenceMappingStatus}`;
     if (routeId === "web") {
       autoEnrichSellingPointsIfNeeded();
       autoEnrichUseScenesIfNeeded();
@@ -8606,8 +8335,10 @@ async function fetchLocalSellingPointProxy(facts, timeoutMs = 55000) {
 }
 
 async function supplementSellingPointCandidatesOnline() {
+  if (!["web", "competitor"].includes(selectedExtractionRoute)) return;
   const sku = selectedSku();
   if (!sku || !hasExtractedProducts()) return;
+  if (sellingPointReviewForSku(sku, false)?.locked) return;
   const button = byId("supplementSellingPointChoices");
   const status = byId("sellingPointReviewStatus");
   const requestedGeneration = extractionGeneration;
@@ -8645,6 +8376,7 @@ async function enrichSellingPointsOnline() {
   if (sellingPointReviewForSku(sku, false)?.locked) return;
   const requestedRevision = sellingPointInputRevision;
   const requestedGeneration = extractionGeneration;
+  const requestedConfirmation = sku.confirmedSellingPointPlanInput;
   const status = byId("extractStatus");
   const statusPrefix = status?.textContent || "";
   if (status) status.textContent = `${statusPrefix} 联网卖点：处理中。`;
@@ -8652,18 +8384,17 @@ async function enrichSellingPointsOnline() {
     const facts = currentSceneResearchFacts();
     const data = await fetchLocalSellingPointProxy(facts);
     if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== skuId || sellingPointInputRevision !== requestedRevision) return;
+    if (sku.confirmedSellingPointPlanInput && sku.confirmedSellingPointPlanInput !== requestedConfirmation) return;
+    const currentInput = byId("field-sellingPoints");
+    if (!currentInput || splitSellingPointText(currentInput.value).length || sellingPointReviewForSku(sku, false)?.locked) return;
     applyOnlineProductKeyword(skuId, data?.english_product_keyword);
     const webPoints = uniqueSellingPoints((Array.isArray(data?.selling_points) ? data.selling_points : [])
       .map((point) => String(point || "").replace(/\s+/g, " ").trim())
       .filter(isUsableEnglishSellingPoint), 4);
-    const points = webPoints.length ? webPoints : competitorSellingPointCandidates.slice(0, 4);
-    const sourceName = webPoints.length
-      ? SELLING_POINT_SOURCE_WEB
-      : points.length
-        ? `竞品分析${competitorSellingPointSourceNames.length ? ` · ${competitorSellingPointSourceNames.join(" | ")}` : ""}`
-        : "";
+    const points = webPoints;
+    const sourceName = points.length ? SELLING_POINT_SOURCE_WEB : "";
     const sellingPointsText = points.join("\n");
-    sellingPointsInput.value = sellingPointsText;
+    currentInput.value = sellingPointsText;
     fieldOverrides.sellingPoints = sellingPointsText;
     fieldOverridesBySku[skuId] = {
       ...(fieldOverridesBySku[skuId] || {}),
@@ -8678,39 +8409,21 @@ async function enrichSellingPointsOnline() {
     renderFields(true);
     renderAll();
     if (status) {
-      status.textContent = webPoints.length
-        ? `${statusPrefix} 联网卖点：成功，补充 ${webPoints.length} 条。`
-        : points.length
-          ? `${statusPrefix} 联网卖点：未找到；竞品候选 ${points.length} 条。`
-          : `${statusPrefix} 联网卖点：未找到。`;
+      status.textContent = points.length
+        ? `${statusPrefix} 联网卖点：成功，补充 ${points.length} 条。`
+        : `${statusPrefix} 联网卖点：未找到。`;
     }
   } catch {
     if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== skuId || sellingPointInputRevision !== requestedRevision) return;
-    const points = competitorSellingPointCandidates.slice(0, 4);
-    const sellingPointsText = points.join("\n");
-    const sourceName = points.length
-      ? `竞品分析${competitorSellingPointSourceNames.length ? ` · ${competitorSellingPointSourceNames.join(" | ")}` : ""}`
-      : "";
-    sellingPointsInput.value = sellingPointsText;
-    fieldOverrides.sellingPoints = sellingPointsText;
-    fieldOverridesBySku[skuId] = { ...(fieldOverridesBySku[skuId] || {}), sellingPoints: sellingPointsText };
-    appliedSellingPointOverridesBySku[skuId] = { sellingPoints: sellingPointsText };
-    sku.sellingPointSource = sourceName || NO_REFERENCE_SELLING_POINT_MESSAGE;
-    recordSellingPointEntries(sku, sellingPointsText, sourceName || SELLING_POINT_SOURCE_UNKNOWN);
-    sellingPointDraftDirty = false;
-    captureFieldOverrides();
-    fieldSnapshot = currentFieldSignature();
-    renderFields(true);
-    renderAll();
-    if (status) status.textContent = points.length
-      ? `${statusPrefix} 联网卖点：失败；竞品候选 ${points.length} 条。`
-      : `${statusPrefix} 联网卖点：失败。`;
+    if (status) status.textContent = `${statusPrefix} 联网卖点：失败。`;
   }
 }
 
 function autoEnrichSellingPointsIfNeeded() {
+  if (!["web", "competitor"].includes(selectedExtractionRoute)) return;
   const skuId = selectedSku()?.id || "";
-  if (!skuId || sellingPointResearchAttemptedBySku.has(skuId)) return;
+  const researchKey = `${selectedExtractionRoute}:${skuId}`;
+  if (!skuId || sellingPointResearchAttemptedBySku.has(researchKey)) return;
   if (sellingPointReviewForSku(selectedSku(), false)?.locked) return;
   // The existence of supplier images does not mean vision extracted a claim.
   // Web research fills only an empty current-SKU field and never replaces
@@ -8718,7 +8431,7 @@ function autoEnrichSellingPointsIfNeeded() {
   // Presence alone never proves a point came from 1688. Keep the provenance
   // assigned by extraction, online fallback or the operator's own edit.
   if (splitSellingPointText(byId("field-sellingPoints")?.value || "").length) return;
-  sellingPointResearchAttemptedBySku.add(skuId);
+  sellingPointResearchAttemptedBySku.add(researchKey);
   enrichSellingPointsOnline();
 }
 
@@ -8788,10 +8501,10 @@ function missingOnlineUseScenes(existingText, researchedScenes, limit = 5) {
 }
 
 async function enrichUseScenesOnline() {
-  if (selectedExtractionRoute !== "web") return;
-  const button = byId("enrichUseScenes");
-  const status = byId("sceneEnrichStatus");
-  const input = byId("field-scene");
+  if (!["web", "competitor"].includes(selectedExtractionRoute)) return;
+  let button = byId("enrichUseScenes");
+  let status = byId("sceneEnrichStatus");
+  let input = byId("field-scene");
   if (!button || !status || !input || !hasExtractedProducts()) return;
   const existingCount = splitUseSceneText(input.value).length;
   if (existingCount >= 3) {
@@ -8801,6 +8514,7 @@ async function enrichUseScenesOnline() {
   const requestedSkuId = selectedSku()?.id || "";
   const requestedSceneRevision = sceneInputRevision;
   const requestedGeneration = extractionGeneration;
+  const requestedConfirmation = selectedSku()?.confirmedSellingPointPlanInput;
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   status.textContent = `已保留 ${existingCount} 条原有场景，正在联网查找缺少的场景…`;
@@ -8808,6 +8522,17 @@ async function enrichUseScenesOnline() {
     const facts = currentSceneResearchFacts();
     const research = await fetchOnlineUseSceneResearch(facts);
     if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== requestedSkuId) return;
+    // A simultaneous selling-point response can re-render the fields. Apply
+    // to the current controls and never change a set just confirmed by hand.
+    button = byId("enrichUseScenes");
+    status = byId("sceneEnrichStatus");
+    input = byId("field-scene");
+    if (!button || !status || !input) return;
+    const currentConfirmation = selectedSku()?.confirmedSellingPointPlanInput;
+    if (currentConfirmation && currentConfirmation !== requestedConfirmation) {
+      status.textContent = "参数已整体确认，未写入本次联网补充。";
+      return;
+    }
     if (sceneInputRevision !== requestedSceneRevision) {
       status.textContent = "场景已手动修改，已保留当前输入，未覆盖。";
       return;
@@ -8853,8 +8578,10 @@ async function enrichUseScenesOnline() {
       ? "联网补充失败；已保留原有场景。"
       : NO_REFERENCE_SCENE_MESSAGE;
   } finally {
-    button.disabled = false;
-    button.removeAttribute("aria-busy");
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
   }
 }
 
@@ -9251,7 +8978,8 @@ function ensurePromptPeriod(value) {
 }
 
 function promptCardKey(sku, template, type) {
-  return [sku?.id || "sku", template?.id || "template", type?.id || "type"].join("::");
+  const key = [sku?.id || "sku", template?.id || "template", type?.id || "type"].join("::");
+  return selectedExtractionRoute === "competitor" ? `competitor::${key}` : key;
 }
 
 function promptTextForLanguage(englishPrompt, language) {
@@ -10110,6 +9838,9 @@ function sellingPointMatchedEvidenceText(points, facts = {}) {
   const details = matches.map((item, index) => (
     `Point ${index + 1} “${item.point}”: source evidence “${item.evidence}”; reference image URL: ${item.imageUrl}`
   )).join(" / ");
+  if (selectedExtractionRoute === "competitor") {
+    return `MATCHED COMPETITOR SELLING-POINT REFERENCES — these are competitor examples, not current-SKU identity images: ${details}. Use only the confirmed selling-point meaning and optional composition idea. Do not copy the competitor product's shape, color, quantity, material, operation, branding or exact layout into the current SKU.`;
+  }
   return `MATCHED 1688 SELLING-POINT VISUAL EVIDENCE — these exact reference images must be supplied to the image generator as visual inputs, not treated as text-only links: ${details}. Reuse the matched image's demonstrated product state, action, and composition only for its matched point; retain the current SKU's verified color and included components.`;
 }
 
@@ -10121,7 +9852,9 @@ function sellingPointReferenceSceneRule(points, facts = {}) {
     "SELLING-POINT SOURCE DIRECTION: the listed selling points have already been extracted through the approved source hierarchy. Do not re-derive, reject, or replace them from product parameters.",
     matchedEvidence,
     `Create an original Amazon-ready visual demonstration that clearly communicates the source-derived meaning (${labelText}) while preserving the current SKU's exact product identity, color, structure, and included components.`,
-    "Use 1688 detail imagery as the preferred visual direction for product state, action, comparison, or close-up. When the point came from web or competitor fallback, design the demonstration only from the current SKU identity, the approved selling-point meaning, and available product evidence; do not infer a category-based structure, scene, prop, function, mechanism, or claim, and do not add unsupported exact numbers, certifications, or materials.",
+    selectedExtractionRoute === "competitor"
+      ? "Use competitor imagery only as inspiration for display structure after checking the confirmed current-SKU facts. Do not infer the current product's physical form, operation, scene, material or claims from those references."
+      : "Use 1688 detail imagery as the preferred visual direction for product state, action, comparison, or close-up. When the point came from web or competitor fallback, design the demonstration only from the current SKU identity, the approved selling-point meaning, and available product evidence; do not infer a category-based structure, scene, prop, function, mechanism, or claim, and do not add unsupported exact numbers, certifications, or materials.",
     "One selling point per image is preferred. Two points may share one image whenever one unified evidence/display scene can naturally and clearly communicate both; otherwise keep them in separate visual zones or images.",
     "Never copy Chinese text, supplier or competitor branding, watermarks, exact source layout, or an incorrect product variant.",
   ].join(" ");
@@ -10210,7 +9943,7 @@ function visualPlanContext(facts) {
   const groups = sellingPointDisplayGroups(facts);
   const routes = groups.map((points, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length, points, facts, groups));
   const evidence = facts.sellingPointVisualEvidence || [];
-  return { product, groups, routes, evidence, template: selectedTemplate().id, plannerVersion: 13 };
+  return { product, groups, routes, evidence, sourceRoute: selectedExtractionRoute === "competitor" ? "competitor" : "supplier", template: selectedTemplate().id, plannerVersion: 13 };
 }
 
 function seedDemoVisualPlanPreview() {
@@ -11392,6 +11125,9 @@ function conciseSceneModulePrompt(typeId, facts) {
     } else {
       blocks.push("ROUTE: Choose only a source-supported product state or detail that visibly proves the claim; invent no test or performance effect.");
       blocks.push(sellingPointClaimVisualRule(claims, facts, route));
+      if (plan?.status === "ready" && plan.visual_prompt) {
+        blocks.push(`VISUAL PLAN: ${plan.visual_prompt}`);
+      }
     }
     blocks.push(route === "product_proof"
       ? `TEXT/LAYOUT: Set "${headline}" as a refined 3–4-word English headline, one or two lines in a product-appropriate editorial typeface; keep it smaller than the product's visual mass. Set "${bodyCopy}" below in a clear lighter-weight size. Align both to the product geometry with generous open space and a subtle color echo. No centered block, banner, box, sticker, extra label or other words.`
@@ -11821,7 +11557,13 @@ function promptFor(templateId, typeId, sku, data) {
   else if (templateId === "reference") prompt = referenceLinkTemplatePrompt(typeId, sku, data);
   else if (templateId === "plantTie") prompt = plantTieTemplatePrompt(typeId, sku, data);
   else prompt = featureTemplatePrompt(typeId, sku, data);
-  return prompt;
+  if (selectedExtractionRoute !== "competitor") return prompt;
+  const sourceBoundary = "HIGHEST-PRIORITY COMPETITOR SOURCE RULE: Attached images are competitor examples, not verified photos of this Amazon Child SKU. Use only the Amazon Child title and human-confirmed editable fields for current-product facts. Competitor images may guide an original composition, but never establish current-SKU shape, color, material, count, dimensions, operation, branding, text or claims. If a physical detail is unconfirmed, omit it rather than copying the reference.";
+  return `${sourceBoundary}\n\n${prompt
+    .replaceAll("Use the attached current-product images as the authority for actual shape, color, structure and, where relevant, operation.", "The attached competitor images are composition references only; the confirmed current-SKU fields define physical identity and operation.")
+    .replaceAll("A supplier operation image is identity evidence only for this slot; do not copy its action.", "A competitor operation is not evidence of the current SKU; do not copy its action.")
+    .replaceAll("Use matched 1688 imagery as direction for the correct product state and operation", "Use confirmed current-SKU facts for product state and operation")
+    .replaceAll("Use matched 1688 imagery as visual direction when available", "Use competitor imagery as optional layout inspiration only")}`;
 }
 
 function sellingPointGroupForImageTitle(templateId, typeId, facts) {
@@ -13523,7 +13265,7 @@ function renderTaskParameterPanel(data, facts) {
         <label>
           <span>${escapeHtml(taskManualParameterLabel(key, label, data))}</span>
           ${taskControl}
-          ${sourceText ? `<small class="parameter-source">来源：${escapeHtml(sourceText)}</small>` : ""}
+          ${sourceText ? `<small class="parameter-source">来源：${escapeHtml(displaySourceCategory(sourceText))}</small>` : ""}
         </label>
       `;}).join("")}</div>
     </section>
@@ -13603,7 +13345,9 @@ function renderProductPromptGrid() {
   const template = selectedTemplate();
   if (!hasExtractedProducts()) {
     promptStore = [];
-    grid.innerHTML = `<p class="empty-state">请选择 Amazon 模板、1688 HTML 或参考链接资料后点击解析。</p>`;
+    grid.innerHTML = `<p class="empty-state">${selectedExtractionRoute === "competitor"
+      ? "竞品图组分析完成后，这里按当前 SKU 展示图组任务与生图提示词。"
+      : "请选择 Amazon 模板，并接入 1688 或竞品资料后点击解析。"}</p>`;
     return;
   }
   const data = currentPromptData(sku);
@@ -13748,6 +13492,10 @@ function renderPrompt() {
   refreshPromptSurfaces();
 }
 
+function setCompetitorPreviewActions() {
+  // Route 02 uses the same downstream parameter, planning and generation controls.
+}
+
 function renderAll() {
   if (!byId("confirmParameterOutputs")?.disabled && byId("parameterConfirmationStatus")) {
     byId("parameterConfirmationStatus").textContent = "";
@@ -13758,15 +13506,18 @@ function renderAll() {
   const productLabel = hasExtractedProducts() ? skuDisplayLabel(selectedSku()) : "新产品";
   document.title = `${productLabel} · 提示词工具`;
   fieldSnapshot = currentFieldSignature();
+  setCompetitorPreviewActions();
   persistWorkspaceSnapshot();
 }
 
 function persistWorkspaceSnapshot() {
-  if (!hasExtractedProducts()) return;
+  if (!hasExtractedProducts() && !Object.values(routeWorkspaces).some((state) => state?.extractedProducts?.length)) return;
+  routeWorkspaces[selectedExtractionRoute] = captureRouteWorkspace();
   const snapshot = {
     savedAt: new Date().toISOString(),
     workspaceBinding: boundWorkspace ? {...boundWorkspace} : null,
     extractedProducts,
+    routeWorkspaces,
     fieldOverridesBySku,
     appliedSellingPointOverridesBySku,
     referenceImagesBySku,
@@ -13791,12 +13542,6 @@ function persistWorkspaceSnapshot() {
     bundleStateBySku,
     supplierSourceFileNames,
     amazonTemplateSourceFileName,
-    competitorSellingPointCandidates,
-    competitorSellingPointSourceNames,
-    competitorDimensionList,
-    competitorDimensionSourceNames,
-    competitorProductWeight,
-    competitorCapacity,
     selectedExtractionRoute,
     selectedProductStructureRoute,
     selectedSkuId: byId("skuSelect")?.value || extractedProducts[0]?.id || "",
@@ -13811,7 +13556,10 @@ function persistWorkspaceSnapshot() {
 function restoreWorkspaceSnapshot() {
   try {
     const snapshot = JSON.parse(readTabStorage(WORKSPACE_STORAGE_KEY) || "null");
-    if (!snapshot || !Array.isArray(snapshot.extractedProducts) || !snapshot.extractedProducts.length) return null;
+    if (!snapshot || (!Array.isArray(snapshot.extractedProducts)
+      && !Object.values(snapshot.routeWorkspaces || {}).some((state) => state?.extractedProducts?.length))) return null;
+    if (!snapshot.extractedProducts?.length
+      && !Object.values(snapshot.routeWorkspaces || {}).some((state) => state?.extractedProducts?.length)) return null;
     if (!snapshotMatchesWorkspace(snapshot)) return null;
     extractedProducts = snapshot.extractedProducts;
     fieldOverridesBySku = snapshot.fieldOverridesBySku && typeof snapshot.fieldOverridesBySku === "object" ? snapshot.fieldOverridesBySku : {};
@@ -13866,13 +13614,10 @@ function restoreWorkspaceSnapshot() {
     bundleStateBySku = snapshot.bundleStateBySku && typeof snapshot.bundleStateBySku === "object" ? snapshot.bundleStateBySku : {};
     supplierSourceFileNames = Array.isArray(snapshot.supplierSourceFileNames) ? snapshot.supplierSourceFileNames : [];
     amazonTemplateSourceFileName = String(snapshot.amazonTemplateSourceFileName || "");
-    competitorSellingPointCandidates = Array.isArray(snapshot.competitorSellingPointCandidates) ? snapshot.competitorSellingPointCandidates : [];
-    competitorSellingPointSourceNames = Array.isArray(snapshot.competitorSellingPointSourceNames) ? snapshot.competitorSellingPointSourceNames : [];
-    competitorDimensionList = String(snapshot.competitorDimensionList || "");
-    competitorDimensionSourceNames = Array.isArray(snapshot.competitorDimensionSourceNames) ? snapshot.competitorDimensionSourceNames : [];
-    competitorProductWeight = String(snapshot.competitorProductWeight || "");
-    competitorCapacity = String(snapshot.competitorCapacity || "");
-    // Opening the tool starts a new parsing choice, even when product data is restored.
+    routeWorkspaces = snapshot.routeWorkspaces && typeof snapshot.routeWorkspaces === "object"
+      ? snapshot.routeWorkspaces : { [snapshot.selectedExtractionRoute || "web"]: captureRouteWorkspace() };
+    loadRouteWorkspace(routeWorkspaces.web || {});
+    // Opening the tool starts on the default 1688 route.
     selectedExtractionRoute = "web";
     selectedProductStructureRoute = "single";
     productStructureRouteManuallySelected = false;
@@ -13887,9 +13632,9 @@ function restoreWorkspaceSnapshot() {
     const legacyBinding = extractedProducts.some((sku) => sku.id === snapshot.supplierSkuBinding)
       ? `sku:${snapshot.supplierSkuBinding}`
       : snapshot.supplierSkuBinding || "";
-    selectedSupplierBindingMode = "child";
+    selectedSupplierBindingMode = snapshot.supplierBindingMode === "parent" || legacyBinding.startsWith("parent:") ? "parent" : "child";
     supplierBindingProducts = extractedProducts;
-    renderSupplierBindingOptions(extractedProducts, "child", legacyBinding.startsWith("sku:") ? legacyBinding : "");
+    renderSupplierBindingOptions(extractedProducts, selectedSupplierBindingMode, legacyBinding);
     if (templates.some((template) => template.id === snapshot.templateId && !template.disabled)) {
       byId("templateSelect").value = snapshot.templateId;
     }
@@ -13950,13 +13695,9 @@ function clearExtractedSourceState({ render = true } = {}) {
   bundleStateBySku = {};
   supplierSourceFileNames = [];
   amazonTemplateSourceFileName = "";
-  competitorSellingPointCandidates = [];
-  competitorSellingPointSourceNames = [];
-  competitorDimensionList = "";
-  competitorDimensionSourceNames = [];
-  competitorProductWeight = "";
-  competitorCapacity = "";
-  clearPersistedWorkspace();
+  routeWorkspaces[selectedExtractionRoute] = {};
+  if (Object.values(routeWorkspaces).some((state) => state?.extractedProducts?.length)) persistWorkspaceSnapshot();
+  else clearPersistedWorkspace();
   if (!render) return;
   renderProductSelect();
   renderFields(true);
@@ -14080,6 +13821,14 @@ async function init() {
   initWorkflowNavigation();
   fillSelects();
   await initializeDurableStorage();
+  try {
+    const savedCompetitorBinding = JSON.parse(readTabStorage(COMPETITOR_BINDING_STORAGE_KEY) || "null");
+    selectedCompetitorBindingMode = savedCompetitorBinding?.mode === "parent" ? "parent" : "child";
+    competitorBindingPreferredValue = String(savedCompetitorBinding?.value || "");
+  } catch {
+    selectedCompetitorBindingMode = "child";
+    competitorBindingPreferredValue = "";
+  }
   restoreSourceInputs();
   const storedManualReferences = durableStorageCache.get(MANUAL_REFERENCES_STORAGE_KEY);
   savedManualReferencesByCard = storedManualReferences && typeof storedManualReferences === "object"
@@ -14094,6 +13843,7 @@ async function init() {
   });
   initProductStructureRoute();
   initExtractionRoutePreview();
+  renderCompetitorBindingOptions([], selectedCompetitorBindingMode, competitorBindingPreferredValue);
   seedDemoSellingPointPreview();
   renderFields(true);
   renderAll();
@@ -14112,7 +13862,7 @@ async function init() {
   byId("skuSelect").addEventListener("change", () => {
     renderFields(true);
     renderAll();
-    if (selectedExtractionRoute === "web") {
+    if (["web", "competitor"].includes(selectedExtractionRoute)) {
       autoEnrichSellingPointsIfNeeded();
       autoEnrichUseScenesIfNeeded();
     }
@@ -14129,12 +13879,13 @@ async function init() {
       byId("extractStatus").textContent = `解析失败：${error.message || "请检查文件格式"}`;
     });
   });
-  ["amazonTemplateFile", "supplierFile", "supplierImageListText", "competitorFile"].forEach((id) => {
+  ["amazonTemplateFile", "supplierFile", "supplierImageListText", "competitorFile", "competitorAnalysisFile"].forEach((id) => {
     const input = byId(id);
     const updateStatus = () => {
       if (input.type === "file") {
         storePrefilledSourceFiles.delete(id);
-        const prefill = byId(id === "amazonTemplateFile" ? "amazonTemplatePrefill" : id === "supplierFile" ? "supplierFilePrefill" : "");
+        const prefill = ["amazonTemplateFile", "supplierFile"].includes(id)
+          ? byId(id === "amazonTemplateFile" ? "amazonTemplatePrefill" : "supplierFilePrefill") : null;
         if (prefill) prefill.hidden = true;
       }
       if (input.type === "file") {
@@ -14143,23 +13894,65 @@ async function init() {
         writeTabStorage(SOURCE_TEXT_STORAGE_KEY, input.value);
         scheduleSourceInputsSave();
       }
-      clearExtractedSourceState({ render: false });
-      byId("extractStatus").textContent = "文件或筛选条件已更新，点击解析资料并提取产品信息。";
+      if (id === "amazonTemplateFile") {
+        routeWorkspaces = {};
+        competitorBindingPreferredValue = "";
+        if (byId("competitorSkuBinding")) byId("competitorSkuBinding").value = "";
+        writeTabStorage(COMPETITOR_BINDING_STORAGE_KEY, JSON.stringify({
+          mode: selectedCompetitorBindingMode, value: "",
+        }));
+      }
+      if (id !== "competitorAnalysisFile") {
+        clearExtractedSourceState({ render: false });
+      }
+      if (id === "competitorAnalysisFile") {
+        byId("clearCompetitorAnalysisFile").hidden = !sourceInputFiles("competitorAnalysisFile").length;
+        routeWorkspaces.competitor = {};
+        if (selectedExtractionRoute === "competitor") {
+          loadRouteWorkspace({});
+          renderProductSelect();
+          renderFields(true);
+          renderAll();
+        }
+        persistWorkspaceSnapshot();
+      }
+      byId("extractStatus").textContent = selectedExtractionRoute === "competitor"
+        ? "竞品图组已更新，点击解析竞品图组。"
+        : "文件或筛选条件已更新，点击解析资料并提取产品信息。";
     };
     input.addEventListener("change", updateStatus);
     if (input.type === "text" || input.tagName === "TEXTAREA") input.addEventListener("input", updateStatus);
+  });
+  byId("clearCompetitorAnalysisFile")?.addEventListener("click", () => {
+    const input = byId("competitorAnalysisFile");
+    input.value = "";
+    storePrefilledSourceFiles.delete("competitorAnalysisFile");
+    persistSourceInputs();
+    byId("clearCompetitorAnalysisFile").hidden = true;
+    routeWorkspaces.competitor = {};
+    if (selectedExtractionRoute === "competitor") {
+      loadRouteWorkspace({});
+      renderProductSelect();
+      renderFields(true);
+      renderAll();
+    }
+    persistWorkspaceSnapshot();
+    byId("extractStatus").textContent = "已清除竞品图组。";
   });
   const refreshSupplierBindingOptions = async () => {
     const file = sourceInputFiles("amazonTemplateFile")[0];
     if (!file) {
       populateSupplierSkuBinding([]);
+      populateCompetitorSkuBinding([]);
       return;
     }
     try {
       const result = await extractAmazonTemplateProducts(file);
       populateSupplierSkuBinding(result.products);
+      populateCompetitorSkuBinding(result.products);
     } catch {
       populateSupplierSkuBinding([]);
+      populateCompetitorSkuBinding([]);
     }
   };
   byId("amazonTemplateFile")?.addEventListener("change", refreshSupplierBindingOptions);
@@ -14184,6 +13977,29 @@ async function init() {
       const mode = button.dataset.supplierBindingMode || "child";
       renderSupplierBindingOptions(supplierBindingProducts, mode);
       handleSupplierBindingChange();
+    });
+  });
+  const handleCompetitorBindingChange = () => {
+    competitorBindingPreferredValue = byId("competitorSkuBinding")?.value || "";
+    writeTabStorage(COMPETITOR_BINDING_STORAGE_KEY, JSON.stringify({
+      mode: selectedCompetitorBindingMode,
+      value: competitorBindingPreferredValue,
+    }));
+    routeWorkspaces.competitor = {};
+    if (selectedExtractionRoute === "competitor") {
+      loadRouteWorkspace({});
+      renderProductSelect();
+      renderFields(true);
+      renderAll();
+    }
+    persistWorkspaceSnapshot();
+    byId("extractStatus").textContent = "竞品图组匹配方式已更新，请重新解析竞品图组。";
+  };
+  byId("competitorSkuBinding")?.addEventListener("change", handleCompetitorBindingChange);
+  document.querySelectorAll("[data-competitor-binding-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      renderCompetitorBindingOptions(competitorBindingProducts, button.dataset.competitorBindingMode || "child");
+      handleCompetitorBindingChange();
     });
   });
   byId("resetFields").addEventListener("click", () => {

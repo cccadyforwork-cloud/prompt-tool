@@ -13,7 +13,7 @@
         document.documentElement.dataset.theme = "dark";
       }
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20261025-image-zoom-47">
+    <link rel="stylesheet" href="./styles.css?v=20261026-plan-confirmation-19">
   </head>
   <body>
     <header class="workflow-app-header">
@@ -71,10 +71,13 @@
           <p class="route-intro">先选择路线，再在资料输入完成后统一开始解析。</p>
           <div class="extraction-route-tabs" role="tablist" aria-label="信息提取路线">
             <button id="route-web" class="route-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="extractionRoutePreview" data-extraction-route="web">
-              <span>01</span> 豆包分析
+              <span>01</span> 1688分析
+            </button>
+            <button id="route-competitor" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="competitor">
+              <span>02</span> 竞品分析
             </button>
             <button id="route-local" class="route-tab" type="button" role="tab" aria-selected="false" aria-controls="extractionRoutePreview" data-extraction-route="local">
-              <span>02</span> 本地分析
+              <span>03</span> 本地分析
             </button>
           </div>
           <article id="extractionRoutePreview" class="extraction-route-preview" role="tabpanel" aria-live="polite"></article>
@@ -90,13 +93,13 @@
           <input id="amazonTemplateFile" class="source-file" type="file" accept=".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
           <p id="amazonTemplatePrefill" class="source-prefill-status" hidden></p>
 
-          <label for="supplierFile">1688 HTML 文件（可多选）</label>
-          <input id="supplierFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
-          <p id="supplierFilePrefill" class="source-prefill-status" hidden></p>
+          <label for="supplierFile" data-source-route="supplier">1688 HTML 文件（可多选）</label>
+          <input id="supplierFile" class="source-file" type="file" accept=".html,.htm,text/html" data-source-route="supplier" multiple>
+          <p id="supplierFilePrefill" class="source-prefill-status" data-source-route="supplier" hidden></p>
 
-          <div class="source-field-group source-sku-binding-group">
-            <div class="source-binding-heading"><strong>1688资料匹配方式</strong></div>
-            <div class="supplier-binding-mode-tabs" role="group" aria-label="1688资料匹配方式">
+          <div class="source-field-group source-sku-binding-group" data-source-route="supplier">
+            <div class="source-binding-heading"><strong>1688资料适用范围</strong></div>
+            <div class="supplier-binding-mode-tabs" role="group" aria-label="1688资料适用范围">
               <button type="button" class="supplier-binding-mode" data-supplier-binding-mode="child" aria-pressed="false"><strong>指定 SKU</strong></button>
               <button type="button" class="supplier-binding-mode" data-supplier-binding-mode="parent" aria-pressed="false"><strong>父体共享</strong></button>
             </div>
@@ -106,14 +109,30 @@
             </select>
           </div>
 
-          <label for="supplierImageListText" class="source-link-label">1688 采集助手图片链接</label>
-          <textarea id="supplierImageListText" class="image-list-paste" rows="2"></textarea>
+          <label for="supplierImageListText" class="source-link-label" data-source-route="supplier">1688 采集助手图片链接</label>
+          <textarea id="supplierImageListText" class="image-list-paste" data-source-route="supplier" rows="2"></textarea>
 
-          <label for="competitorFile">参考链接 HTML 文件</label>
-          <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" multiple>
+          <label for="competitorFile" data-source-route="supplier">参考链接 HTML 文件</label>
+          <input id="competitorFile" class="source-file" type="file" accept=".html,.htm,text/html" data-source-route="supplier" multiple>
+
+          <label for="competitorAnalysisFile" data-source-route="competitor" hidden>竞品图组 HTML（豆包分析与候选图）</label>
+          <input id="competitorAnalysisFile" class="source-file" type="file" accept=".html,.htm,text/html" data-source-route="competitor" multiple hidden>
+          <button id="clearCompetitorAnalysisFile" type="button" class="secondary" data-source-route="competitor" hidden>清除竞品图组</button>
+
+          <div id="competitorSkuBindingGroup" class="source-field-group source-sku-binding-group" hidden>
+            <div class="source-binding-heading"><strong>竞品图组匹配方式</strong></div>
+            <div class="supplier-binding-mode-tabs" role="group" aria-label="竞品图组匹配方式">
+              <button type="button" class="supplier-binding-mode" data-competitor-binding-mode="child" aria-pressed="false"><strong>指定 SKU</strong></button>
+              <button type="button" class="supplier-binding-mode" data-competitor-binding-mode="parent" aria-pressed="false"><strong>父体共享</strong></button>
+            </div>
+            <label class="visually-hidden" for="competitorSkuBinding">竞品图组具体归属</label>
+            <select id="competitorSkuBinding" aria-label="竞品图组具体归属" hidden disabled>
+              <option value="">请选择资料归属</option>
+            </select>
+          </div>
 
           <button id="extractSources" type="button" class="source-parse-action">解析资料并提取产品信息</button>
-          <p class="source-parse-note">确认资料与匹配方式后，在这里统一开始解析。</p>
+          <p id="sourceParseNote" class="source-parse-note">确认资料与适用范围后，在这里统一开始解析。</p>
           <p id="extractStatus" class="status" role="status" aria-live="polite"></p>
             </section>
           </div>
@@ -147,6 +166,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20261025-reference-counter-55"></script>
+    <script src="./app.js?v=20261026-plan-confirmation-19"></script>
   </body>
 </html>

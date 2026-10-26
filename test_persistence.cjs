@@ -120,6 +120,8 @@ async function main() {
     supplierSourceFileNames: [], amazonTemplateSourceFileName: '', competitorSellingPointCandidates: [],
     competitorSellingPointSourceNames: [], competitorDimensionList: '', competitorDimensionSourceNames: [], competitorProductWeight: '',
     competitorCapacity: '', selectedExtractionRoute: 'local', selectedProductStructureRoute: 'single',
+    routeWorkspaces: {},
+    captureRouteWorkspace: () => ({extractedProducts: first.sandbox.extractedProducts}),
     selectedSupplierBindingMode: 'auto', activeWorkflowPage: 'studio', DEFAULT_TEMPLATE_ID: 'scene',
     MAX_SELECTED_REFERENCES: 6,
   });
@@ -142,6 +144,7 @@ async function main() {
   const snapshot = JSON.parse(vm.runInContext('readTabStorage(WORKSPACE_STORAGE_KEY)', refreshed.sandbox));
   assert.equal(snapshot.extractedProducts[0].id, 'EXTRACTED-PRODUCT-1');
   assert.equal(snapshot.extractedProducts[0].sellingPointVisualPlan.plans[0].humanDecision, 'show');
+  assert.equal(snapshot.routeWorkspaces.local.extractedProducts[0].id, 'EXTRACTED-PRODUCT-1');
   assert.equal(snapshot.workspaceBinding.sku, 'SKU-A');
   assert.equal(snapshot.supplierImageSourcePresent, true);
   assert.equal(vm.runInContext('snapshotMatchesWorkspace(JSON.parse(readTabStorage(WORKSPACE_STORAGE_KEY)))', refreshed.sandbox), true);

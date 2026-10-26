@@ -29,6 +29,39 @@ def _ark_response(value):
 
 
 class ProductAnalysisTests(unittest.TestCase):
+    @mock.patch.object(server, "fetch_ark_image_selling_points", return_value=([], []))
+    @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
+    @mock.patch.object(server.urllib.request, "urlopen")
+    def test_competitor_uses_separate_vision_instructions(self, urlopen, _vision, _focused):
+        urlopen.return_value = _Response(_ark_response({"image_selection": [
+            {"image_ref": "Image 1", "keep": True, "image_type": "feature", "reason": "Relevant"},
+        ]}))
+        url = "https://m.media-amazon.com/images/I/example.jpg"
+        result = server.fetch_ark_product_analysis("Amazon Child title", "", [url], "ark-test", "doubao-test", "competitor")
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        instruction = request_body["input"][0]["content"][0]["text"]
+        self.assertIn("competitor images", instruction)
+        self.assertIn("NOT verified photos of the current SKU", instruction)
+        self.assertNotIn("1688 supplier images", instruction)
+        self.assertEqual(url, result["selected_images"][0]["url"])
+
+    @mock.patch.object(server, "fetch_ark_product_analysis_batches")
+    def test_competitor_handler_uses_separate_cache_and_source(self, analyze):
+        url = "https://m.media-amazon.com/images/I/example.jpg"
+        analyze.return_value = {"product_name": {"value": "Competitor name"}, "attributes": [],
+                                "dimensions": [], "selling_points": [{"claim": "Visible benefit"}],
+                                "use_scenes": [], "use_behavior": {}, "selected_images": [{"url": url}], "errors": []}
+        handler = object.__new__(server.PromptToolHandler)
+        responses = []
+        handler._send_json = lambda payload, status=200: responses.append((payload, status))
+        with mock.patch.dict(server.os.environ, {"ARK_API_KEY": "ark-test"}):
+            handler._handle_competitor_analysis({"amazonChildTitle": "Amazon Child title", "imageUrls": [url]})
+        self.assertEqual("competitor", analyze.call_args.args[-1])
+        self.assertEqual({}, responses[0][0]["product_name"])
+        self.assertTrue(responses[0][0]["requires_human_confirmation"])
+        self.assertEqual(["Doubao Competitor Vision"], responses[0][0]["sources"])
+        self.assertFalse(server.PRODUCT_ANALYSIS_CACHE)
+
     @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
     @mock.patch.object(server.urllib.request, "urlopen")
     def test_use_behavior_requires_supplier_image_and_keeps_it(self, urlopen, _vision):

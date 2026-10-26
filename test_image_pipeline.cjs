@@ -318,7 +318,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     const supplierTextEnd = source.indexOf('function imageHasEnoughReadableSize(', supplierTextStart);
     const supplierFacts = vm.createContext({
       decodeHtmlEntities: (text) => text.replaceAll('&gt;', '>'),
-      extractSupplierTitles: () => [], extractSupplierSkuOptions: () => [],
+      extractSupplierTitles: () => [],
       extractFirstMatch: (text, patterns) => patterns.map((pattern) => text.match(pattern)?.[1] || '').find(Boolean) || '',
       uniquePromptItems: (items) => [...new Set(items)],
     });
@@ -326,12 +326,12 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     const sharedVolume = vm.runInContext('extractSupplierStructuredText(input)', vm.createContext({
       ...supplierFacts, input: '<script>{"specAttrs":"绿色&gt;100ml","specAttrs":"白色&gt;100ml","unit":"件"}</script>',
     }));
-    assert.match(sharedVolume, /PRODUCT_ATTRIBUTE: Capacity=100 ml/);
-    assert.match(sharedVolume, /PRODUCT_ATTRIBUTE: SaleUnit=piece/);
+    assert.doesNotMatch(sharedVolume, /SKU_OPTION|PRODUCT_ATTRIBUTE: (?:Capacity|Material)=/, "1688 SKU options are not a parameter source");
+    assert.doesNotMatch(sharedVolume, /PRODUCT_ATTRIBUTE: SaleUnit=/, "supplier sale units cannot supply Amazon product count");
     const mixedVolumes = vm.runInContext('extractSupplierStructuredText(input)', vm.createContext({
       ...supplierFacts, input: '<script>{"specAttrs":"绿色&gt;100ml","specAttrs":"白色&gt;200ml"}</script>',
     }));
-    assert.doesNotMatch(mixedVolumes, /PRODUCT_ATTRIBUTE: Capacity=/, 'different SKU volumes cannot be broadcast');
+    assert.doesNotMatch(mixedVolumes, /PRODUCT_ATTRIBUTE: Capacity=/, '1688 SKU volumes must not enter extracted parameters');
     const titleStart = source.indexOf('function amazonTitleCapacityValue(');
     const titleEnd = source.indexOf('function amazonTitleDimensionList(', titleStart);
     const titleFacts = vm.createContext({validCapacityValue: (value) => value});
@@ -505,6 +505,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
     assert.ok(pointFallbackStart >= 0 && pointFallbackEnd > pointFallbackStart);
     let webRequests = 0;
     const pointFallback = vm.createContext({
+      selectedExtractionRoute: 'web',
       supplierImageSourcePresent: true,
       sellingPointResearchAttemptedBySku: new Set(),
       selectedSku: () => ({id: 'grow-bag'}),

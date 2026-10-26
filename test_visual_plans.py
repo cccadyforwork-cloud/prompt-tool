@@ -69,6 +69,22 @@ class VisualPlanTests(unittest.TestCase):
     def test_invalid_groups_rejected_without_api(self):
         self.assertEqual(server.create_visual_plans({"groups": []})[1], 400)
 
+    def test_competitor_planner_keeps_reference_images_separate_from_sku_facts(self):
+        response = io.BytesIO(json.dumps({"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": json.dumps({"plans": [self.plan()]})}]}]}).encode())
+        with patch.dict(server.os.environ, {"ARK_API_KEY": "ark-test"}), patch.object(
+            server.urllib.request, "urlopen", return_value=response
+        ) as urlopen:
+            result, status = server.create_visual_plans({
+                "groups": [["claim 0"]], "sourceRoute": "competitor", "evidence": [],
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(result["plans"][0]["status"], "ready")
+        body = json.loads(urlopen.call_args.args[0].data)
+        instruction = body["input"][0]["content"][0]["text"]
+        self.assertIn("Amazon COMPETITOR references", instruction)
+        self.assertIn('"sourceRoute": "competitor"', instruction)
+
 
 if __name__ == "__main__":
     unittest.main()
