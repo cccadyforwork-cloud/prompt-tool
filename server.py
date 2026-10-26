@@ -44,7 +44,7 @@ REFERENCE_IMAGE_MAP_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 # Coding Plan has its own OpenAI-compatible base URL. Using /api/v3 here
 # bypasses the plan quota and bills the regular Ark account instead.
 ARK_RESPONSES_URL = "https://ark.cn-beijing.volces.com/api/coding/v3/responses"
-DEFAULT_ARK_MODEL = "doubao-seed-2.0-lite"
+DEFAULT_ARK_MODEL = "doubao-seed-2.1-lite"
 DEFAULT_GRSAI_BASE_URL = "https://grsai.dakka.com.cn"
 GRSAI_MODELS = {"gpt-image-2", "gpt-image-2-vip", "nano-banana-pro"}
 GRSAI_SQUARE_SIZES = {
@@ -816,6 +816,9 @@ Rules:
     request_payload = {
         "model": model,
         "input": [{"role": "user", "content": content}],
+        # Fact extraction needs the grounded JSON answer, not the model's
+        # default deep-thinking pass before every image batch.
+        "thinking": {"type": "disabled"},
     }
     request = urllib.request.Request(
         ARK_RESPONSES_URL,
@@ -1161,7 +1164,8 @@ Each claim must be directly supported by its image and be relevant to the target
     content.extend(image_content)
     request = urllib.request.Request(
         ARK_RESPONSES_URL,
-        data=json.dumps({"model": model, "input": [{"role": "user", "content": content}]}, ensure_ascii=False).encode("utf-8"),
+        data=json.dumps({"model": model, "input": [{"role": "user", "content": content}],
+                         "thinking": {"type": "disabled"}}, ensure_ascii=False).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",

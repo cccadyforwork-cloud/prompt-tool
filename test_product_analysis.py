@@ -39,6 +39,7 @@ class ProductAnalysisTests(unittest.TestCase):
         url = "https://m.media-amazon.com/images/I/example.jpg"
         result = server.fetch_ark_product_analysis("Amazon Child title", "", [url], "ark-test", "doubao-test", "competitor")
         request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual({"type": "disabled"}, request_body["thinking"])
         instruction = request_body["input"][0]["content"][0]["text"]
         self.assertIn("competitor images", instruction)
         self.assertIn("NOT verified photos of the current SKU", instruction)
@@ -84,6 +85,9 @@ class ProductAnalysisTests(unittest.TestCase):
         self.assertEqual("bottom nozzle", result["use_behavior"]["output_origin"])
         self.assertEqual(3, result["use_behavior"]["operation_clarity"])
         self.assertEqual(urls, [item["url"] for item in result["selected_images"]])
+        self.assertEqual(2, len(urlopen.call_args_list))
+        for call in urlopen.call_args_list:
+            self.assertEqual({"type": "disabled"}, json.loads(call.args[0].data)["thinking"])
 
     @mock.patch.object(server, "fetch_ark_product_analysis")
     def test_clearest_operation_image_wins_across_batches(self, analyze):
