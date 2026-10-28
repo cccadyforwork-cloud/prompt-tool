@@ -26,6 +26,7 @@ const context = vm.createContext({
   extractedProducts: [], sourcePayload: {}, fieldOverrides: {}, fieldOverridesBySku: {},
   sellingPointInputRevision: 0, sceneInputRevision: 0,
   sellingPointResearchAttemptedBySku: new Set(),
+  sellingPointOnlineStateBySku: new Map(),
   MAX_PRODUCT_ANALYSIS_IMAGE_URLS: 200,
   SELLING_POINT_SOURCE_UNKNOWN: "unknown", SELLING_POINT_SOURCE_MANUAL: "manual",
   SELLING_POINT_SOURCE_TRANSLATED: "translated", NO_REFERENCE_SCENE_MESSAGE: "No scenes",
@@ -119,6 +120,9 @@ async function main() {
   context.enrichSellingPointsOnline = () => { researchCalls += 1; };
   context.selectedExtractionRoute = "web";
   context.autoEnrichSellingPointsIfNeeded();
+  assert.equal(researchCalls, 0, "existing image candidates do not trigger needless web research");
+  reviews.A.candidateEntries = [];
+  context.autoEnrichSellingPointsIfNeeded();
   context.selectedExtractionRoute = "competitor";
   context.autoEnrichSellingPointsIfNeeded();
   assert.equal(researchCalls, 2, "the same Amazon SKU has independent web attempts in routes 01 and 02");
@@ -127,7 +131,8 @@ async function main() {
   context.autoEnrichSellingPointsIfNeeded();
   assert.equal(researchCalls, 2);
 
-  vm.runInContext(section("async function enrichSellingPointsOnline(", "function autoEnrichSellingPointsIfNeeded("), context);
+  vm.runInContext(section("function setSellingPointOnlineState(", "async function fetchLocalSellingPointProxy(")
+    + section("async function enrichSellingPointsOnline(", "function autoEnrichSellingPointsIfNeeded("), context);
   let resolvePoints;
   context.fetchLocalSellingPointProxy = () => new Promise((resolve) => { resolvePoints = resolve; });
   controls["field-sellingPoints"].value = "";

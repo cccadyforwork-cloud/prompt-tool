@@ -33,6 +33,7 @@ const collected = [
 let visionInput = [];
 const sandbox = vm.createContext({
   selectedExtractionRoute: 'vision', boundWorkspace: null,
+  sellingPointReviewKey: () => '',
   MAX_REFERENCE_CLASSIFIER_CANDIDATES: 80, OCR_IMAGE_LIMIT: 32,
   cleanHtmlText: () => '', extractSupplierStructuredText: () => '',
   extractDetailUrlsFromHtml: () => [], fetchDetailHtml: async () => '',
@@ -510,6 +511,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       sellingPointResearchAttemptedBySku: new Set(),
       selectedSku: () => ({id: 'grow-bag'}),
       sellingPointReviewForSku: () => ({locked: false}),
+      normalizeSellingPointEntries: (entries) => entries || [],
       byId: () => ({value: ''}),
       splitSellingPointText: (value) => value ? [value] : [],
       enrichSellingPointsOnline: () => {webRequests += 1;},

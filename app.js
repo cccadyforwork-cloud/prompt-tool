@@ -560,6 +560,8 @@ let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
 let sellingPointInputRevision = 0;
 let sellingPointResearchAttemptedBySku = new Set();
+const sellingPointResearchRequests = new Map();
+const sellingPointOnlineStateBySku = new Map();
 let sceneInputRevision = 0;
 let selectedExtractionRoute = "web";
 let selectedProductStructureRoute = "single";
@@ -790,11 +792,13 @@ async function loadXlsx() {
 
 function selectedSku() {
   const allProducts = currentProducts();
-  if (boundWorkspace) {
-    const boundSku = allProducts.find((sku) => productMatchesBoundSku(sku));
-    if (boundSku) return boundSku;
-  }
-  return allProducts.find((sku) => sku.id === byId("skuSelect").value) || allProducts[0];
+  const selectedId = byId("skuSelect")?.value || "";
+  const manuallySelected = allProducts.find((sku) => sku.id === selectedId);
+  if (manuallySelected) return manuallySelected;
+  const workspaceDefault = boundWorkspace
+    ? allProducts.find((sku) => productMatchesBoundSku(sku))
+    : null;
+  return workspaceDefault || allProducts[0];
 }
 
 function supplierParentGroups(products = []) {
@@ -1147,17 +1151,16 @@ function renderProductSelect(selectedId = byId("skuSelect")?.value) {
     return;
   }
   select.innerHTML = products.map((sku) => `<option value="${sku.id}">${escapeHtml(skuDisplayLabel(sku))}</option>`).join("");
-  const boundProduct = boundWorkspace && products.find((sku) => productMatchesBoundSku(sku));
-  if (boundProduct) {
-    select.value = boundProduct.id;
-    select.disabled = true;
-    select.title = `运营系统当前子体 SKU：${boundWorkspace.sku}`;
-    return;
-  }
   select.disabled = false;
   if (selectedId && products.some((sku) => sku.id === selectedId)) {
     select.value = selectedId;
+  } else {
+    const workspaceDefault = boundWorkspace && products.find((sku) => productMatchesBoundSku(sku));
+    if (workspaceDefault) select.value = workspaceDefault.id;
   }
+  select.title = boundWorkspace
+    ? `运营系统默认子体 SKU：${boundWorkspace.sku}；可按当前资料人工切换`
+    : "";
 }
 
 function hasBundleIdentityMarker(value = "") {
@@ -1737,11 +1740,13 @@ function sellingPointReviewHtml(sku) {
   };
   const history = (review.history || []).slice().reverse().map((item) => `<div class="selling-point-history-row"><b>V${Number(item.version) || 1} · ${escapeHtml(item.kind || "候选")}</b><small>${escapeHtml(item.at || "")}</small><p>${escapeHtml((item.entries || []).map((entry) => entry.claim).join(" / ") || "未提取到卖点")}</p></div>`).join("");
   const canRefresh = ["web", "competitor"].includes(selectedExtractionRoute) && Boolean(review.visionRequest?.imageUrls?.length);
+  const onlineState = sellingPointOnlineStateBySku.get(sku.id) || {};
+  const onlineButtonDisabled = !["web", "competitor"].includes(selectedExtractionRoute) || onlineState.busy;
   return `<div class="selling-point-review" aria-label="卖点候选与确认">
     <div class="selling-point-review-head"><strong>卖点候选</strong><span>${review.demo ? "演示数据 · " : ""}${review.locked ? "已锁定" : "待确认"}</span></div>
     ${groupHtml("supplier", selectedExtractionRoute === "competitor" ? "竞品分析卖点" : "1688 分析卖点", `<button type="button" class="secondary" id="refreshSellingPointChoices"${canRefresh ? "" : " disabled"}>重新识图</button>`)}
     ${groupHtml("competitor", "竞品图组卖点")}
-    ${groupHtml("web", "联网补充卖点", `<button type="button" class="secondary" id="supplementSellingPointChoices"${["web", "competitor"].includes(selectedExtractionRoute) ? "" : " disabled"}>联网补充</button>`)}
+    ${groupHtml("web", "联网补充卖点", `<button type="button" class="secondary" id="supplementSellingPointChoices"${onlineButtonDisabled ? " disabled" : ""}>${onlineState.busy ? "联网搜索中…" : "联网补充"}</button>`, `<p id="sellingPointOnlineStatus" class="selling-point-online-status" role="status" aria-live="polite">${escapeHtml(onlineState.message || "")}</p>`)}
     ${candidateRows.some(({ entry }) => sellingPointCandidateGroup(entry) === "other") ? groupHtml("other", "其他来源") : ""}
     ${groupHtml("manual", "人工输入卖点", "", '<div class="selling-point-add"><input id="manualEnglishSellingPointCandidate" aria-label="新增英文卖点候选" maxlength="300" placeholder="输入英文卖点"><button type="button" class="secondary" id="addManualEnglishSellingPointCandidate">添加</button></div>')}
     ${groupHtml("translated", "中文翻译卖点", "", '<div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增中文卖点候选" maxlength="300" placeholder="输入中文卖点"><button type="button" class="secondary" id="addManualSellingPointCandidate">翻译并添加</button></div>')}
@@ -4510,19 +4515,19 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
     structure: extractProductDetailAttributes(attributeSource).Structure || identityHint.structure || "",
     localEvidence: [detailAttrLines.join("\n"), attributeSource].filter(Boolean).join("\n").slice(0, 12000),
   };
-  if (boundWorkspace && routeId === "web") {
-    const key = boundWorkspace.sku;
-    const review = sellingPointReviewsBySku[key] || {
+  const visionReviewKey = sellingPointReviewKey(identityHint) || boundWorkspace?.sku || "";
+  if (visionReviewKey && routeId === "web") {
+    const review = sellingPointReviewsBySku[visionReviewKey] || {
       locked: false, selectedEntries: [], candidateEntries: [], checkedClaims: [], history: [], nextVersion: 0,
     };
     review.visionRequest = {
       ...analysisFacts,
       imageUrls: uniqueByUrl(visionImageCandidates).map(imageCandidateUrl).filter(Boolean),
     };
-    sellingPointReviewsBySku[key] = review;
+    sellingPointReviewsBySku[visionReviewKey] = review;
     persistSellingPointReviews();
   }
-  const skipLockedVision = Boolean(boundWorkspace && sellingPointReviewsBySku[boundWorkspace.sku]?.locked);
+  const skipLockedVision = Boolean(visionReviewKey && sellingPointReviewsBySku[visionReviewKey]?.locked);
   const analysisResult = routeId === "web" && !skipLockedVision
     ? await fetchLocalProductAnalysisProxy(analysisFacts, visionImageCandidates, onProgress)
     : null;
@@ -7507,6 +7512,7 @@ function competitorImageFacts(result) {
 async function extractCompetitorSources() {
   hasUserSourceAttempt = true;
   const requestedGeneration = ++extractionGeneration;
+  sellingPointOnlineStateBySku.clear();
   const button = byId("extractSources");
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
@@ -7608,6 +7614,7 @@ async function extractSources() {
   if (selectedExtractionRoute === "competitor") return extractCompetitorSources();
   hasUserSourceAttempt = true;
   extractionGeneration += 1;
+  sellingPointOnlineStateBySku.clear();
   const requestedGeneration = extractionGeneration;
   const routeId = selectedExtractionRoute;
   const routeName = extractionRoutePreviews[routeId]?.title || extractionRoutePreviews.local.title;
@@ -8308,29 +8315,93 @@ function isUsableEnglishSellingPoint(value) {
     && wordCount <= 12;
 }
 
-async function fetchLocalSellingPointProxy(facts, timeoutMs = 55000) {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+async function readBackgroundVisionResult(response, signal, onProgress, restartRequest = null, taskLabel = "识图") {
+  let restartCount = 0;
+  while (true) {
+    if (!response.ok && response.status !== 202) {
+      const failure = await response.json().catch(() => ({}));
+      throw new Error(failure.error || failure.errors?.[0] || `${taskLabel}请求失败（HTTP ${response.status}）`);
+    }
+    let result = await response.json();
+    if (response.status !== 202) return result;
+    if (!result.job_id) throw new Error(`${taskLabel}任务未能启动`);
+    const jobId = result.job_id;
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+      if (signal.aborted) throw new DOMException(`${taskLabel}超时`, "AbortError");
+      onProgress?.(`服务器正在${taskLabel}，等待结果…`);
+      const poll = await fetch(`/api/background-jobs/${encodeURIComponent(jobId)}`, {
+        cache: "no-store", signal,
+      });
+      result = await poll.json();
+      if (poll.status === 202) continue;
+      if (poll.status === 404 && restartRequest && restartCount < 2) {
+        restartCount += 1;
+        onProgress?.(`${taskLabel}任务记录已丢失，正在重新提交（${restartCount}/2）...`);
+        response = await restartRequest();
+        break;
+      }
+      if (!poll.ok) throw new Error(result.error || `${taskLabel}任务失败（HTTP ${poll.status}）`);
+      return result;
+    }
+  }
+}
+
+function setSellingPointOnlineState(skuId, message, busy = false) {
+  if (!skuId) return;
+  sellingPointOnlineStateBySku.set(skuId, { message, busy });
+  if (selectedSku()?.id !== skuId) return;
+  const status = byId("sellingPointOnlineStatus");
+  if (status) status.textContent = message;
+  const button = byId("supplementSellingPointChoices");
+  if (button) {
+    button.disabled = busy || !["web", "competitor"].includes(selectedExtractionRoute);
+    button.textContent = busy ? "联网搜索中…" : "联网补充";
+    button.setAttribute("aria-busy", busy ? "true" : "false");
+  }
+}
+
+async function fetchLocalSellingPointProxy(facts, onProgress, timeoutMs = 90000) {
+  const requestBody = {
+    productName: facts.productName || "",
+    selectedSpec: facts.selectedSpec || "",
+    material: facts.material || "",
+    structure: facts.structure || "",
+    sourceFingerprint: currentSourceFingerprint(),
+    async: true,
+  };
+  const requestKey = JSON.stringify(requestBody);
+  const inFlight = sellingPointResearchRequests.get(requestKey);
+  if (inFlight) return inFlight;
+  const request = (async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch("/api/selling-points", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: requestKey,
+        signal: controller.signal,
+      });
+      const data = await readBackgroundVisionResult(response, controller.signal, onProgress, null, "联网搜索");
+      const errors = Array.isArray(data?.errors) ? data.errors : [];
+      if (!data?.selling_points?.length && errors.length
+          && !errors.every((error) => /No fully evidenced selling points found/i.test(String(error)))) {
+        throw new Error(String(errors[0]).slice(0, 160));
+      }
+      return data;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("联网搜索超时，请稍后重试");
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  })();
+  sellingPointResearchRequests.set(requestKey, request);
   try {
-    const response = await fetch("/api/selling-points", {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        productName: facts.productName || "",
-        selectedSpec: facts.selectedSpec || "",
-        material: facts.material || "",
-        structure: facts.structure || "",
-        sourceFingerprint: currentSourceFingerprint(),
-      }),
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
+    return await request;
   } finally {
-    window.clearTimeout(timeoutId);
+    if (sellingPointResearchRequests.get(requestKey) === request) sellingPointResearchRequests.delete(requestKey);
   }
 }
 
@@ -8339,19 +8410,18 @@ async function supplementSellingPointCandidatesOnline() {
   const sku = selectedSku();
   if (!sku || !hasExtractedProducts()) return;
   if (sellingPointReviewForSku(sku, false)?.locked) return;
-  const button = byId("supplementSellingPointChoices");
-  const status = byId("sellingPointReviewStatus");
   const requestedGeneration = extractionGeneration;
-  if (button) button.disabled = true;
-  if (status) status.textContent = "正在联网补充卖点…";
+  setSellingPointOnlineState(sku.id, "正在联网查证当前款式；结果返回后会显示在这里。", true);
   try {
-    const data = await fetchLocalSellingPointProxy(currentSceneResearchFacts());
+    const data = await fetchLocalSellingPointProxy(currentSceneResearchFacts(), (message) => {
+      if (extractionGeneration === requestedGeneration) setSellingPointOnlineState(sku.id, message, true);
+    });
     if (extractionGeneration !== requestedGeneration || selectedSku()?.id !== sku.id) return;
     const claims = uniqueSellingPoints((Array.isArray(data?.selling_points) ? data.selling_points : [])
       .map((point) => String(point || "").replace(/\s+/g, " ").trim())
       .filter(isUsableEnglishSellingPoint), 4);
     if (!claims.length) {
-      if (status) status.textContent = "联网未找到可补充的卖点。";
+      setSellingPointOnlineState(sku.id, "联网已完成，但没有找到带网页证据的可用卖点。");
       return;
     }
     const review = sellingPointReviewForSku(sku);
@@ -8359,12 +8429,16 @@ async function supplementSellingPointCandidatesOnline() {
     addSellingPointCandidates(sku, claims.map((claim) => ({ claim, source: SELLING_POINT_SOURCE_WEB })), { append: true });
     const added = normalizeSellingPointEntries(review.candidateEntries).length - before;
     renderFields(true);
-    const nextStatus = byId("sellingPointReviewStatus");
-    if (nextStatus) nextStatus.textContent = added ? `已补充 ${added} 条联网卖点，请勾选确认。` : "联网卖点已在候选中。";
+    setSellingPointOnlineState(sku.id, added ? `已补充 ${added} 条联网卖点，请勾选确认。` : "联网卖点已在候选中。");
   } catch (error) {
-    if (status?.isConnected) status.textContent = `联网补充失败：${error?.message || "请求失败"}`;
+    if (extractionGeneration === requestedGeneration) {
+      setSellingPointOnlineState(sku.id, `联网补充失败：${error?.message || "请求失败"}`);
+    }
   } finally {
-    if (button?.isConnected) button.disabled = false;
+    const state = sellingPointOnlineStateBySku.get(sku.id);
+    if (extractionGeneration === requestedGeneration && state?.busy) {
+      setSellingPointOnlineState(sku.id, "联网补充已结束，请检查当前款式或重新尝试。");
+    }
   }
 }
 
@@ -8380,9 +8454,12 @@ async function enrichSellingPointsOnline() {
   const status = byId("extractStatus");
   const statusPrefix = status?.textContent || "";
   if (status) status.textContent = `${statusPrefix} 联网卖点：处理中。`;
+  setSellingPointOnlineState(skuId, "正在自动联网查证当前款式…", true);
   try {
     const facts = currentSceneResearchFacts();
-    const data = await fetchLocalSellingPointProxy(facts);
+    const data = await fetchLocalSellingPointProxy(facts, (message) => {
+      if (extractionGeneration === requestedGeneration) setSellingPointOnlineState(skuId, message, true);
+    });
     if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== skuId || sellingPointInputRevision !== requestedRevision) return;
     if (sku.confirmedSellingPointPlanInput && sku.confirmedSellingPointPlanInput !== requestedConfirmation) return;
     const currentInput = byId("field-sellingPoints");
@@ -8413,9 +8490,18 @@ async function enrichSellingPointsOnline() {
         ? `${statusPrefix} 联网卖点：成功，补充 ${points.length} 条。`
         : `${statusPrefix} 联网卖点：未找到。`;
     }
-  } catch {
+    setSellingPointOnlineState(skuId, points.length
+      ? `自动联网找到 ${points.length} 条卖点，请核对后确认。`
+      : "联网已完成，但没有找到带网页证据的可用卖点。");
+  } catch (error) {
     if (extractionGeneration !== requestedGeneration || (selectedSku()?.id || "") !== skuId || sellingPointInputRevision !== requestedRevision) return;
-    if (status) status.textContent = `${statusPrefix} 联网卖点：失败。`;
+    if (status) status.textContent = `${statusPrefix} 联网卖点：失败（${error?.message || "请求失败"}）。`;
+    setSellingPointOnlineState(skuId, `联网补充失败：${error?.message || "请求失败"}`);
+  } finally {
+    const onlineState = sellingPointOnlineStateBySku.get(skuId);
+    if (extractionGeneration === requestedGeneration && onlineState?.busy) {
+      setSellingPointOnlineState(skuId, "联网查询已结束，请检查当前款式或重新尝试。");
+    }
   }
 }
 
@@ -8425,9 +8511,9 @@ function autoEnrichSellingPointsIfNeeded() {
   const researchKey = `${selectedExtractionRoute}:${skuId}`;
   if (!skuId || sellingPointResearchAttemptedBySku.has(researchKey)) return;
   if (sellingPointReviewForSku(selectedSku(), false)?.locked) return;
-  // The existence of supplier images does not mean vision extracted a claim.
-  // Web research fills only an empty current-SKU field and never replaces
-  // image-backed or operator-locked selling points.
+  if (normalizeSellingPointEntries(sellingPointReviewForSku(selectedSku(), false)?.candidateEntries).length) return;
+  // Supplier image presence does not prove that vision returned a claim.
+  // Research fills an empty field only and never replaces reviewed evidence.
   // Presence alone never proves a point came from 1688. Keep the provenance
   // assigned by extraction, online fallback or the operator's own edit.
   if (splitSellingPointText(byId("field-sellingPoints")?.value || "").length) return;
@@ -13668,6 +13754,7 @@ function allPromptsForSku() {
 
 function clearExtractedSourceState({ render = true } = {}) {
   extractionGeneration += 1;
+  sellingPointOnlineStateBySku.clear();
   sourcePayload = {
     purchase: "",
     amazonTemplate: "",
@@ -13965,6 +14052,13 @@ async function init() {
     savedImageSettingsByCard = {};
     productStructureRouteManuallySelected = false;
     syncProductStructureRouteFromBinding(true);
+    const manuallyBoundSku = selectedSupplierBindingMode === "child"
+      ? boundSupplierSku(supplierBindingProducts)
+      : null;
+    if (manuallyBoundSku && currentProducts().some((sku) => sku.id === manuallyBoundSku.id)) {
+      renderProductSelect(manuallyBoundSku.id);
+      renderFields(true);
+    }
     renderAll();
     byId("extractStatus").textContent = "1688资料的 SKU 归属已更新，请重新解析资料。";
   };

@@ -7,12 +7,15 @@ import base64
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import getpass
+import http.client
 import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -41,6 +44,41 @@ PRODUCT_DIMENSION_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 PRODUCT_ANALYSIS_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 COMPETITOR_ANALYSIS_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 REFERENCE_IMAGE_MAP_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
+# Local jobs stay in memory: API keys and product facts are never written to disk.
+BACKGROUND_JOBS: dict[str, tuple[float, object]] = {}
+BACKGROUND_JOBS_LOCK = threading.Lock()
+BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="prompt-web-search")
+BACKGROUND_JOB_TTL_SECONDS = 15 * 60
+BACKGROUND_JOB_LIMIT = 32
+
+
+def start_background_job(task) -> tuple[dict, int]:
+    now = time.monotonic()
+    with BACKGROUND_JOBS_LOCK:
+        for job_id, (created, future) in list(BACKGROUND_JOBS.items()):
+            if future.done() and now - created > BACKGROUND_JOB_TTL_SECONDS:
+                del BACKGROUND_JOBS[job_id]
+        if len(BACKGROUND_JOBS) >= BACKGROUND_JOB_LIMIT:
+            return {"error": "联网搜索任务较多，请稍后重试"}, 429
+        job_id = secrets.token_urlsafe(24)
+        BACKGROUND_JOBS[job_id] = (now, BACKGROUND_EXECUTOR.submit(task))
+    return {"job_id": job_id, "status": "pending"}, 202
+
+
+def background_job_result(job_id: str) -> tuple[dict, int]:
+    with BACKGROUND_JOBS_LOCK:
+        job = BACKGROUND_JOBS.get(job_id)
+    if not job:
+        return {"error": "联网搜索任务不存在或已过期；本地服务重启后请重新搜索"}, 404
+    _, future = job
+    if not future.done():
+        return {"status": "pending"}, 202
+    try:
+        return future.result(), 200
+    except Exception:
+        return {"error": "联网搜索任务失败，请重试"}, 502
+
+
 # Coding Plan has its own OpenAI-compatible base URL. Using /api/v3 here
 # bypasses the plan quota and bills the regular Ark account instead.
 ARK_RESPONSES_URL = "https://ark.cn-beijing.volces.com/api/coding/v3/responses"
@@ -551,6 +589,56 @@ Rules:
     return scenes, list(dict.fromkeys(evidence_urls)), [], english_product_keyword, search_queries
 
 
+def _read_ark_search_response(request: urllib.request.Request, timeout: int = 60) -> dict:
+    """Consume the completed response without waiting for the stream socket to close."""
+    deadline = time.monotonic() + timeout
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        content_type = response.headers.get("Content-Type", "").lower() if response.headers else ""
+        if "text/event-stream" not in content_type:
+            result = json.loads(response.read(2_000_000).decode("utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("豆包联网搜索返回了无效响应")
+            return result
+        received = 0
+        for raw_line in response:
+            received += len(raw_line)
+            if time.monotonic() > deadline:
+                raise TimeoutError("豆包联网搜索超时，请稍后重试")
+            if received > 2_000_000:
+                raise ValueError("豆包联网搜索响应过大，请重试")
+            line = raw_line.decode("utf-8").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            event = json.loads(data)
+            if not isinstance(event, dict):
+                continue
+            kind = event.get("type")
+            if kind == "response.completed" and isinstance(event.get("response"), dict):
+                return event["response"]
+            if kind in {"response.failed", "response.incomplete", "error"}:
+                failed_response = event.get("response")
+                failure = event.get("error") or (failed_response.get("error")
+                    if isinstance(failed_response, dict) else None)
+                detail = failure.get("message") if isinstance(failure, dict) else failure
+                raise ValueError("豆包联网搜索未完成：" + clean_text(detail or kind, 240))
+    raise http.client.RemoteDisconnected("豆包联网搜索连接提前中断，请重试")
+
+
+def _response_used_web_search(payload: dict) -> bool:
+    output = payload.get("output")
+    calls = [item for item in output if isinstance(item, dict) and item.get("type") == "web_search_call"] \
+        if isinstance(output, list) else []
+    if calls:
+        return any(item.get("status") == "completed" for item in calls)
+    usage = payload.get("usage") or {}
+    tool_usage = (usage.get("tool_usage") or {}) if isinstance(usage, dict) else {}
+    count = tool_usage.get("web_search") if isinstance(tool_usage, dict) else None
+    return isinstance(count, (int, float)) and count > 0
+
+
 def fetch_ark_selling_points(
     identity: str,
     api_key: str,
@@ -579,11 +667,17 @@ Rules:
 - The URL and quote must directly support that claim.
 - Exclude price, shipping, promotions, generic praise, unverifiable superlatives, and unsupported safety claims.
 - If reliable evidence is absent, return "selling_points":[].
+- Put source URLs and quotes in their separate fields; do not append citation markers to claim strings.
 """
     request_payload = {
         "model": model,
         "input": prompt,
-        "tools": [{"type": "web_search"}],
+        "tools": [{"type": "web_search", "sources": ["doubao"]}],
+        "tool_choice": "required",
+        "thinking": {"type": "disabled"},
+        "max_tool_calls": 1,
+        "max_output_tokens": 3000,
+        "stream": True,
     }
     request = urllib.request.Request(
         ARK_RESPONSES_URL,
@@ -591,23 +685,26 @@ Rules:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream",
         },
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            response_payload = json.loads(response.read(2_000_000).decode("utf-8"))
+        response_payload = _read_ark_search_response(request)
     except urllib.error.HTTPError as error:
         detail = ""
         try:
             error_payload = json.loads(error.read(200_000).decode("utf-8", errors="replace"))
-            detail = clean_text(error_payload.get("error", {}).get("message", ""), 240)
+            detail = clean_text(error_payload.get("error", {}).get("message", ""), 240).replace(api_key, "[redacted]")
         except (json.JSONDecodeError, AttributeError):
             detail = ""
         return [], [], [f"Doubao API HTTP {error.code}{': ' + detail if detail else ''}"], "", []
-    except (urllib.error.URLError, TimeoutError, socket.timeout, json.JSONDecodeError) as error:
-        return [], [], [f"Doubao API: {error}"], "", []
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, UnicodeError) as error:
+        detail = clean_text(str(error).replace(api_key, "[redacted]"), 240)
+        return [], [], [f"豆包联网搜索失败（{type(error).__name__}）：{detail}"], "", []
+
+    if not _response_used_web_search(response_payload):
+        return [], [], ["豆包未实际执行网页搜索，请检查豆包搜索 Custom 版服务状态或稍后重试"], "", []
 
     parsed = parse_json_object(response_output_text(response_payload))
     english_product_keyword = clean_text(parsed.get("english_product_keyword"), 120)
@@ -652,6 +749,23 @@ Rules:
         if len(points) >= 4:
             break
     return points, list(dict.fromkeys(evidence_urls)), ([] if points else ["No fully evidenced selling points found"]), english_product_keyword, search_queries
+
+
+def _selling_point_research_result(identity: str, cache_key: str, api_key: str, model: str) -> dict:
+    points, evidence_urls, errors, english_keyword, search_queries = fetch_ark_selling_points(identity, api_key, model)
+    result = {
+        "english_product_keyword": english_keyword,
+        "search_queries": search_queries,
+        "sources": ["Doubao Web Search"] if points else [],
+        "selling_points": points,
+        "evidence_urls": evidence_urls,
+        "message": "" if points else "没有参考卖点信息",
+        "errors": errors,
+        "provider": "doubao",
+    }
+    if points:
+        SELLING_POINT_CACHE[cache_key] = (time.time(), result)
+    return result
 
 
 def fetch_ark_product_dimensions(
@@ -1355,6 +1469,11 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path.startswith("/api/background-jobs/"):
+            job_id = parsed.path.removeprefix("/api/background-jobs/")
+            result, status = background_job_result(job_id)
+            self._send_json(result, status)
+            return
         if parsed.path == "/api/image-task":
             values = urllib.parse.parse_qs(parsed.query)
             self._handle_image_task((values.get("id") or [""])[0])
@@ -1585,31 +1704,22 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
             self._send_json({"selling_points": [], "message": "没有参考卖点信息"})
             return
         source_fingerprint = clean_text(payload.get("sourceFingerprint"), 200)
-        cache_key = json.dumps({"identity": identity, "sourceFingerprint": source_fingerprint}, ensure_ascii=False).casefold()
+        model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
+        cache_key = json.dumps({"model": model, "searchSource": "doubao", "identity": identity,
+                                "sourceFingerprint": source_fingerprint}, ensure_ascii=False).casefold()
         cached = SELLING_POINT_CACHE.get(cache_key)
         if cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
             self._send_json(cached[1])
             return
         api_key = os.environ.get("ARK_API_KEY", "").strip()
-        model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
         if not api_key.startswith("ark-"):
             result = {"selling_points": [], "sources": [], "message": "没有参考卖点信息", "errors": ["ARK_API_KEY unavailable or invalid"]}
             self._send_json(result)
             return
-        points, evidence_urls, errors, english_keyword, search_queries = fetch_ark_selling_points(identity, api_key, model)
-        result = {
-            "english_product_keyword": english_keyword,
-            "search_queries": search_queries,
-            "sources": ["Doubao Web Search"] if points else [],
-            "selling_points": points,
-            "evidence_urls": evidence_urls,
-            "message": "" if points else "没有参考卖点信息",
-            "errors": errors,
-            "provider": "doubao",
-        }
-        if points:
-            SELLING_POINT_CACHE[cache_key] = (time.time(), result)
-        self._send_json(result)
+        run_research = lambda: _selling_point_research_result(identity, cache_key, api_key, model)
+        result, status = (start_background_job(run_research)
+                          if payload.get("async") is True else (run_research(), 200))
+        self._send_json(result, status)
 
     def _handle_product_dimensions(self, payload: dict[str, object]) -> None:
         raw_urls = payload.get("imageUrls", [])
