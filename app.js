@@ -1752,7 +1752,9 @@ function sellingPointReviewHtml(sku) {
     return rows.length
       ? rows.map(({ entry, index }) => {
         const chinese = sellingPointChineseContext(entry);
-        return `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}</strong><em class="selling-point-meaning ${chinese.text ? "" : "is-pending"}">${chinese.text ? `${chinese.label}${escapeHtml(chinese.text)}` : "中文依据：正在补充…"}</em><small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small></span></label>`;
+        const source = group === "supplier" && selectedExtractionRoute !== "competitor"
+          ? "" : `<small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small>`;
+        return `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}</strong><em class="selling-point-meaning ${chinese.text ? "" : "is-pending"}">${chinese.text ? `${chinese.label}${escapeHtml(chinese.text)}` : "中文依据：正在补充…"}</em>${source}</span></label>`;
       }).join("")
       : '<p class="selling-point-group-empty">暂无卖点</p>';
   };
