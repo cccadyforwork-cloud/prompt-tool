@@ -556,6 +556,7 @@ let fieldOverridesBySku = {};
 let appliedSellingPointOverridesBySku = {};
 let sellingPointReviewsBySku = {};
 const sellingPointTranslationRequests = new Set();
+const sellingPointTranslationStateBySku = new Map();
 let fieldSnapshot = "";
 let sellingPointDraftDirty = false;
 let sellingPointInputRevision = 0;
@@ -1728,10 +1729,11 @@ function sellingPointReviewHtml(sku) {
   const visibleCandidates = review.locked ? normalizeSellingPointEntries(review.selectedEntries) : candidates;
   const checked = new Set(review.locked ? visibleCandidates.map((entry) => entry.claim) : review.checkedClaims || []);
   const candidateRows = visibleCandidates.map((entry, index) => ({ entry, index }));
+  const translationState = sellingPointTranslationStateBySku.get(sellingPointReviewKey(sku)) || {};
   const candidateHtml = (group) => {
     const rows = candidateRows.filter(({ entry }) => sellingPointCandidateGroup(entry) === group);
     return rows.length
-      ? rows.map(({ entry, index }) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}${entry.meaningZh ? `（${escapeHtml(entry.meaningZh)}）` : ""}</strong><small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small></span></label>`).join("")
+      ? rows.map(({ entry, index }) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}</strong><em class="selling-point-meaning ${entry.meaningZh ? "" : "is-pending"}">${entry.meaningZh ? `中文：${escapeHtml(entry.meaningZh)}` : "中文：正在生成释义…"}</em><small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small></span></label>`).join("")
       : '<p class="selling-point-group-empty">暂无卖点</p>';
   };
   const groupHtml = (group, title, action = "", addControl = "") => {
@@ -1750,6 +1752,7 @@ function sellingPointReviewHtml(sku) {
     ${candidateRows.some(({ entry }) => sellingPointCandidateGroup(entry) === "other") ? groupHtml("other", "其他来源") : ""}
     ${groupHtml("manual", "人工输入卖点", "", '<div class="selling-point-add"><input id="manualEnglishSellingPointCandidate" aria-label="新增英文卖点候选" maxlength="300" placeholder="输入英文卖点"><button type="button" class="secondary" id="addManualEnglishSellingPointCandidate">添加</button></div>')}
     ${groupHtml("translated", "中文翻译卖点", "", '<div class="selling-point-add"><input id="manualSellingPointCandidate" aria-label="新增中文卖点候选" maxlength="300" placeholder="输入中文卖点"><button type="button" class="secondary" id="addManualSellingPointCandidate">翻译并添加</button></div>')}
+    ${translationState.error ? `<div class="selling-point-translation-error"><span>${escapeHtml(translationState.error)}</span><button type="button" class="secondary" id="retrySellingPointTranslations">重试中文释义</button></div>` : ""}
     <div class="selling-point-review-actions">${review.locked
       ? '<button type="button" class="secondary" id="unlockSellingPointChoices">取消锁定，查看全部卖点</button>'
       : `<button type="button" id="lockSellingPointChoices"${candidates.length ? "" : " disabled"}>确认所选并锁定</button>`}</div>
@@ -1884,37 +1887,63 @@ function bindSellingPointReviewControls(sku) {
   byId("addManualEnglishSellingPointCandidate")?.addEventListener("click", () => {
     addManualEnglishSellingPointCandidate(sku, review);
   });
+  byId("retrySellingPointTranslations")?.addEventListener("click", () => {
+    queueSellingPointTranslations(sku, true);
+  });
   byId("refreshSellingPointChoices")?.addEventListener("click", refreshSellingPointCandidates);
   byId("supplementSellingPointChoices")?.addEventListener("click", supplementSellingPointCandidatesOnline);
 }
 
-function queueSellingPointTranslations(sku) {
-  if (!["web", "competitor"].includes(selectedExtractionRoute)) return;
+function queueSellingPointTranslations(sku, force = false) {
   const review = sellingPointReviewForSku(sku, false);
   const claims = normalizeSellingPointEntries(review?.candidateEntries)
-    .filter((entry) => !entry.meaningZh).map((entry) => entry.claim);
+    .filter((entry) => !entry.meaningZh && /^[\x20-\x7E]{5,120}$/.test(entry.claim))
+    .map((entry) => entry.claim);
   if (!claims.length) return;
   const requestKey = `${sellingPointReviewKey(sku)}:${JSON.stringify(claims)}`;
+  const stateKey = sellingPointReviewKey(sku);
+  const previousState = sellingPointTranslationStateBySku.get(stateKey) || {};
+  if (!force && previousState.failedRequestKey === requestKey) return;
   if (sellingPointTranslationRequests.has(requestKey)) return;
   sellingPointTranslationRequests.add(requestKey);
+  sellingPointTranslationStateBySku.set(stateKey, { busy: true, error: "" });
   fetch("/api/translate-selling-points", {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify({ claims }),
-  }).then((response) => response.ok ? response.json() : null).then((result) => {
+  }).then(async (response) => {
+    let result = null;
+    try { result = await response.json(); } catch { /* use the HTTP error below */ }
+    if (!response.ok) throw new Error(result?.error || `中文释义生成失败（HTTP ${response.status}）`);
+    return result;
+  }).then((result) => {
     const translations = new Map((result?.translations || []).map((item) => [item.claim, item.zh]));
-    if (!translations.size) return;
+    if (!translations.size) throw new Error("没有收到中文释义，请重试。");
     let changed = false;
-    review.candidateEntries = normalizeSellingPointEntries(review.candidateEntries).map((entry) => {
+    const applyTranslations = (entries) => normalizeSellingPointEntries(entries).map((entry) => {
       const meaningZh = cleanFieldDisplayValue(translations.get(entry.claim));
       if (!meaningZh || entry.meaningZh) return entry;
       changed = true;
       return { ...entry, meaningZh };
     });
+    review.candidateEntries = applyTranslations(review.candidateEntries);
+    review.selectedEntries = applyTranslations(review.selectedEntries);
+    if (Array.isArray(sku.sellingPointEntries)) sku.sellingPointEntries = applyTranslations(sku.sellingPointEntries);
+    sellingPointTranslationStateBySku.delete(stateKey);
+    sellingPointTranslationRequests.delete(requestKey);
     if (!changed) return;
     persistSellingPointReviews();
+    if (review.locked) applyLockedSellingPointReview(sku);
     if (selectedSku()?.id === sku.id) renderFields(true);
-  }).catch(() => {});
+  }).catch((error) => {
+    sellingPointTranslationRequests.delete(requestKey);
+    sellingPointTranslationStateBySku.set(stateKey, {
+      busy: false,
+      error: error?.message || "中文释义生成失败，请重试。",
+      failedRequestKey: requestKey,
+    });
+    if (selectedSku()?.id === sku.id) renderFields(true);
+  });
 }
 
 async function refreshSellingPointCandidates() {

@@ -27,6 +27,7 @@ const context = vm.createContext({
   sellingPointInputRevision: 0, sceneInputRevision: 0,
   sellingPointResearchAttemptedBySku: new Set(),
   sellingPointOnlineStateBySku: new Map(),
+  sellingPointTranslationStateBySku: new Map(),
   MAX_PRODUCT_ANALYSIS_IMAGE_URLS: 200,
   SELLING_POINT_SOURCE_UNKNOWN: "unknown", SELLING_POINT_SOURCE_MANUAL: "manual",
   SELLING_POINT_SOURCE_TRANSLATED: "translated", NO_REFERENCE_SCENE_MESSAGE: "No scenes",
@@ -47,6 +48,7 @@ const context = vm.createContext({
   imageCandidateUrl: (item) => item.url,
   fetch: async () => ({ ok: true, json: async () => result }),
   sellingPointReviewForSku: (sku) => reviews[sku.id] ||= { locked: false, candidateEntries: [], history: [] },
+  sellingPointReviewKey: (sku) => sku.id,
   addSellingPointCandidates: (sku, entries) => { reviews[sku.id].candidateEntries = entries; },
   applyLockedSellingPointReview: (sku) => { sku.sellingPoints = "Locked manual claim"; },
   persistSellingPointReviews() {}, renderProductSelect() {}, renderFields() {}, renderAll() {},
@@ -78,6 +80,9 @@ async function main() {
   assert.deepEqual(auto, ["points", "scenes"]);
   const html = context.sellingPointReviewHtml(context.extractedProducts[0]);
   assert.match(html, /id="supplementSellingPointChoices">联网补充/);
+  assert.match(html, /中文：正在生成释义/);
+  reviews.A.candidateEntries[0].meaningZh = "容易使用";
+  assert.match(context.sellingPointReviewHtml(context.extractedProducts[0]), /中文：容易使用/);
   assert.doesNotMatch(html, /逐字段|确认采用|待人工确认/);
   assert.match(controls.extractStatus.textContent, /统一确认/);
   reviews.A.locked = true;
