@@ -1,12 +1,19 @@
 import io
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import server
 
 
 class VisualPlanTests(unittest.TestCase):
+    def test_dimension_edits_do_not_invalidate_selling_point_plan(self):
+        app = (Path(__file__).parent / "app.js").read_text(encoding="utf-8")
+        self.assertIn('.filter(([key]) => key !== "productDimensions")', app)
+        self.assertIn("delete product.dimensions", app)
+        self.assertIn("visualPlanContextsMatch(JSON.parse(saved.signature), currentContext)", app)
+
     def plan(self, index=0, **changes):
         return dict(dict(groupIndex=index, status="ready", label="Useful Product Detail", goal="目标",
                          subject="主体", action="具体动作", composition="构图", basis="依据",

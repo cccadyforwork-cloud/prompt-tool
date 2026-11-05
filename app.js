@@ -10078,12 +10078,40 @@ function sellingPointVisualRouteRule(route) {
 }
 
 function visualPlanContext(facts) {
-  const product = Object.fromEntries(["productName", "material", "color", "structure", "surfaceFinish", "scene", "dimensions", "productWeight", "capacity", "pack", "bundleComponents", "isDifferentDesignSet", "useBehavior"].map((key) => [key, facts[key] || ""]));
+  // Product dimensions belong to the dedicated parameter/explanation image.
+  // They must update that prompt without invalidating an already approved
+  // selling-point composition plan.
+  const product = Object.fromEntries(["productName", "material", "color", "structure", "surfaceFinish", "scene", "productWeight", "capacity", "pack", "bundleComponents", "isDifferentDesignSet", "useBehavior"].map((key) => [key, facts[key] || ""]));
   if (facts.applicableRange) product.applicableRange = facts.applicableRange;
   const groups = sellingPointDisplayGroups(facts);
   const routes = groups.map((points, index) => sellingPointVisualRoute(selectedTemplate().id, index, groups.length, points, facts, groups));
   const evidence = facts.sellingPointVisualEvidence || [];
   return { product, groups, routes, evidence, sourceRoute: selectedExtractionRoute === "competitor" ? "competitor" : "supplier", template: selectedTemplate().id, plannerVersion: 13 };
+}
+
+function normalizeVisualPlanContext(context) {
+  if (!context || typeof context !== "object") return null;
+  const product = { ...(context.product || {}) };
+  delete product.dimensions;
+  return { ...context, product };
+}
+
+function visualPlanContextsMatch(left, right) {
+  return JSON.stringify(normalizeVisualPlanContext(left)) === JSON.stringify(normalizeVisualPlanContext(right));
+}
+
+function sellingPointPlanFieldSignature() {
+  return allFields
+    .filter(([key]) => key !== "productDimensions")
+    .map(([key]) => `${key}:${readFieldValue(key)}`)
+    .join("|");
+}
+
+function normalizeSellingPointPlanFieldSignature(signature) {
+  return String(signature || "")
+    .split("|")
+    .filter((entry) => !entry.startsWith("productDimensions:"))
+    .join("|");
 }
 
 function seedDemoVisualPlanPreview() {
@@ -10137,18 +10165,41 @@ function currentVisualPlanConfirmationSignature(sku = selectedSku()) {
   const facts = promptFacts(sku, currentPromptData(sku));
   return JSON.stringify({
     skuId: sku.id,
-    fields: currentFieldSignature(),
+    fields: sellingPointPlanFieldSignature(),
     context: visualPlanContext(facts),
   });
 }
 
 function visualPlanParametersConfirmed(sku = selectedSku()) {
-  return Boolean(sku && sku.confirmedSellingPointPlanInput === currentVisualPlanConfirmationSignature(sku));
+  if (!sku?.confirmedSellingPointPlanInput) return false;
+  const currentSignature = currentVisualPlanConfirmationSignature(sku);
+  if (sku.confirmedSellingPointPlanInput === currentSignature) return true;
+  try {
+    const saved = JSON.parse(sku.confirmedSellingPointPlanInput);
+    const current = JSON.parse(currentSignature);
+    const matches = saved?.skuId === current.skuId
+      && normalizeSellingPointPlanFieldSignature(saved?.fields) === normalizeSellingPointPlanFieldSignature(current.fields)
+      && visualPlanContextsMatch(saved?.context, current.context);
+    if (matches) sku.confirmedSellingPointPlanInput = currentSignature;
+    return matches;
+  } catch {
+    return false;
+  }
 }
 
 function currentVisualPlans(facts) {
   const saved = selectedSku()?.sellingPointVisualPlan;
-  return saved?.signature === JSON.stringify(visualPlanContext(facts)) ? saved.plans : [];
+  if (!saved?.signature || !Array.isArray(saved.plans)) return [];
+  const currentContext = visualPlanContext(facts);
+  const currentSignature = JSON.stringify(currentContext);
+  if (saved.signature === currentSignature) return saved.plans;
+  try {
+    if (!visualPlanContextsMatch(JSON.parse(saved.signature), currentContext)) return [];
+    saved.signature = currentSignature;
+    return saved.plans;
+  } catch {
+    return [];
+  }
 }
 
 function visualPlanForPoints(points, facts) {
