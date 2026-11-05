@@ -73,6 +73,7 @@ class SellingPointResearchTests(unittest.TestCase):
 class LocalResearchHttpTests(unittest.TestCase):
     def setUp(self):
         server.SELLING_POINT_CACHE.clear()
+        server.SELLING_POINT_TRANSLATION_CACHE.clear()
         server.BACKGROUND_JOBS.clear()
         class QuietHandler(server.PromptToolHandler):
             def log_message(self, *_): pass
@@ -86,6 +87,7 @@ class LocalResearchHttpTests(unittest.TestCase):
         self.http.server_close()
         self.worker.join()
         server.SELLING_POINT_CACHE.clear()
+        server.SELLING_POINT_TRANSLATION_CACHE.clear()
         server.BACKGROUND_JOBS.clear()
 
     def post(self, payload):
@@ -93,6 +95,38 @@ class LocalResearchHttpTests(unittest.TestCase):
                       headers={"Content-Type": "application/json"})
         with urlopen(req, timeout=2) as response:
             return response.status, json.load(response)
+
+    def post_translations(self, payload):
+        req = Request(self.base + "/api/translate-selling-points", data=json.dumps(payload).encode(),
+                      headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=2) as response:
+            return response.status, json.load(response)
+
+    def test_translation_acknowledges_before_slow_provider_and_polls_result(self):
+        release = threading.Event()
+        claim = "Machine washable chenille mop pad"
+        def translate(*_):
+            release.wait(3)
+            return {claim: "可机洗雪尼尔拖把垫"}
+        with patch.dict(server.os.environ, {"ARK_API_KEY": "ark-test"}), \
+                patch.object(server, "translate_selling_point_claims", side_effect=translate):
+            try:
+                started = time.monotonic()
+                status, pending = self.post_translations({"claims": [claim], "async": True})
+                self.assertLess(time.monotonic() - started, 2)
+                self.assertEqual(status, 202)
+                release.set()
+                deadline = time.monotonic() + 2
+                while True:
+                    with urlopen(self.base + "/api/background-jobs/" + pending["job_id"], timeout=2) as response:
+                        status, completed = response.status, json.load(response)
+                    if status != 202 or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(status, 200)
+                self.assertEqual(completed["translations"], [{"claim": claim, "zh": "可机洗雪尼尔拖把垫"}])
+            finally:
+                release.set()
 
     def test_async_ack_then_poll_and_cache_with_new_model(self):
         release = threading.Event()

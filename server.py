@@ -255,6 +255,16 @@ def translate_selling_point_claims(claims: list[str], api_key: str, model: str) 
     return translations
 
 
+def selling_point_translation_result(claims: list[str], api_key: str, model: str) -> dict[str, object]:
+    missing = [claim for claim in claims if claim not in SELLING_POINT_TRANSLATION_CACHE]
+    if missing:
+        SELLING_POINT_TRANSLATION_CACHE.update(translate_selling_point_claims(missing, api_key, model))
+    return {"translations": [
+        {"claim": claim, "zh": SELLING_POINT_TRANSLATION_CACHE[claim]}
+        for claim in claims if claim in SELLING_POINT_TRANSLATION_CACHE
+    ]}
+
+
 def translate_manual_selling_point(claim_zh: str, api_key: str, model: str) -> str:
     instruction = (
         "Translate the supplied Simplified Chinese product selling point into one concise, natural English selling-point title. "
@@ -1657,22 +1667,25 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         if any(not re.fullmatch(r"[\x20-\x7E]{5,120}", claim) for claim in claims):
             self._send_json({"error": "卖点须为英文文本"}, 400)
             return
-        missing = [claim for claim in claims if claim not in SELLING_POINT_TRANSLATION_CACHE]
-        if missing:
-            api_key = os.environ.get("ARK_API_KEY", "").strip()
-            model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
-            if not api_key.startswith("ark-"):
-                self._send_json({"error": "请先配置豆包 API Key"}, 503)
-                return
-            try:
-                SELLING_POINT_TRANSLATION_CACHE.update(translate_selling_point_claims(missing, api_key, model))
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, socket.timeout, ValueError, json.JSONDecodeError) as error:
-                self._send_json({"error": f"卖点翻译失败：{error}"}, 502)
-                return
-        self._send_json({"translations": [
-            {"claim": claim, "zh": SELLING_POINT_TRANSLATION_CACHE[claim]}
-            for claim in claims if claim in SELLING_POINT_TRANSLATION_CACHE
-        ]})
+        if all(claim in SELLING_POINT_TRANSLATION_CACHE for claim in claims):
+            self._send_json(selling_point_translation_result(claims, "", ""))
+            return
+        api_key = os.environ.get("ARK_API_KEY", "").strip()
+        model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
+        if not api_key.startswith("ark-"):
+            self._send_json({"error": "请先配置豆包 API Key"}, 503)
+            return
+        translate = lambda: selling_point_translation_result(claims, api_key, model)
+        if payload.get("async") is True:
+            result, status = start_background_job(translate)
+            self._send_json(result, status)
+            return
+        try:
+            result = translate()
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, socket.timeout, ValueError, json.JSONDecodeError) as error:
+            self._send_json({"error": f"卖点翻译失败：{error}"}, 502)
+            return
+        self._send_json(result)
 
     def _handle_manual_selling_point_translation(self, payload: dict[str, object]) -> None:
         claim_zh = clean_text(payload.get("claim_zh"), 300)

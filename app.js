@@ -1894,7 +1894,7 @@ function bindSellingPointReviewControls(sku) {
   byId("supplementSellingPointChoices")?.addEventListener("click", supplementSellingPointCandidatesOnline);
 }
 
-function queueSellingPointTranslations(sku, force = false) {
+async function queueSellingPointTranslations(sku, force = false) {
   const review = sellingPointReviewForSku(sku, false);
   const claims = normalizeSellingPointEntries(review?.candidateEntries)
     .filter((entry) => !entry.meaningZh && /^[\x20-\x7E]{5,120}$/.test(entry.claim))
@@ -1907,16 +1907,17 @@ function queueSellingPointTranslations(sku, force = false) {
   if (sellingPointTranslationRequests.has(requestKey)) return;
   sellingPointTranslationRequests.add(requestKey);
   sellingPointTranslationStateBySku.set(stateKey, { busy: true, error: "" });
-  fetch("/api/translate-selling-points", {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify({ claims }),
-  }).then(async (response) => {
-    let result = null;
-    try { result = await response.json(); } catch { /* use the HTTP error below */ }
-    if (!response.ok) throw new Error(result?.error || `中文释义生成失败（HTTP ${response.status}）`);
-    return result;
-  }).then((result) => {
+  if (selectedSku()?.id === sku.id) renderFields(true);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 120000);
+  try {
+    const response = await fetch("/api/translate-selling-points", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ claims, async: true }),
+      signal: controller.signal,
+    });
+    const result = await readBackgroundVisionResult(response, controller.signal, null, null, "中文释义");
     const translations = new Map((result?.translations || []).map((item) => [item.claim, item.zh]));
     if (!translations.size) throw new Error("没有收到中文释义，请重试。");
     let changed = false;
@@ -1935,15 +1936,17 @@ function queueSellingPointTranslations(sku, force = false) {
     persistSellingPointReviews();
     if (review.locked) applyLockedSellingPointReview(sku);
     if (selectedSku()?.id === sku.id) renderFields(true);
-  }).catch((error) => {
+  } catch (error) {
     sellingPointTranslationRequests.delete(requestKey);
     sellingPointTranslationStateBySku.set(stateKey, {
       busy: false,
-      error: error?.message || "中文释义生成失败，请重试。",
+      error: controller.signal.aborted ? "中文释义生成超时，请重试。" : (error?.message || "中文释义生成失败，请重试。"),
       failedRequestKey: requestKey,
     });
     if (selectedSku()?.id === sku.id) renderFields(true);
-  });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function refreshSellingPointCandidates() {
