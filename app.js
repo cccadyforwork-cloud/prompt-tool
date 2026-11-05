@@ -1566,6 +1566,23 @@ function normalizeSellingPointEntries(entries) {
   }).slice(0, 12);
 }
 
+function sellingPointChineseEvidence(entry) {
+  const evidence = cleanFieldDisplayValue(entry?.evidence);
+  return /[\u3400-\u9fff]/.test(evidence) ? evidence : "";
+}
+
+function sellingPointChineseContext(entry) {
+  const evidence = sellingPointChineseEvidence(entry);
+  if (evidence) {
+    return {
+      text: evidence,
+      label: /1688|识图/.test(cleanFieldDisplayValue(entry?.source)) ? "1688 图文依据：" : "图文依据：",
+    };
+  }
+  const meaning = cleanFieldDisplayValue(entry?.meaningZh);
+  return { text: meaning, label: "中文释义：" };
+}
+
 function isManualSellingPointSource(source) {
   return source === SELLING_POINT_SOURCE_MANUAL || source === SELLING_POINT_SOURCE_TRANSLATED;
 }
@@ -1733,7 +1750,10 @@ function sellingPointReviewHtml(sku) {
   const candidateHtml = (group) => {
     const rows = candidateRows.filter(({ entry }) => sellingPointCandidateGroup(entry) === group);
     return rows.length
-      ? rows.map(({ entry, index }) => `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}</strong><em class="selling-point-meaning ${entry.meaningZh ? "" : "is-pending"}">${entry.meaningZh ? `中文：${escapeHtml(entry.meaningZh)}` : "中文：正在生成释义…"}</em><small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small></span></label>`).join("")
+      ? rows.map(({ entry, index }) => {
+        const chinese = sellingPointChineseContext(entry);
+        return `<label class="selling-point-candidate"><input type="checkbox" data-selling-point-choice="${index}"${checked.has(entry.claim) ? " checked" : ""}${review.locked ? " disabled" : ""}><span><strong>${escapeHtml(entry.claim)}</strong><em class="selling-point-meaning ${chinese.text ? "" : "is-pending"}">${chinese.text ? `${chinese.label}${escapeHtml(chinese.text)}` : "中文依据：正在补充…"}</em><small>来源：${escapeHtml(displaySourceCategory(entry.source))}</small></span></label>`;
+      }).join("")
       : '<p class="selling-point-group-empty">暂无卖点</p>';
   };
   const groupHtml = (group, title, action = "", addControl = "") => {
@@ -1897,7 +1917,7 @@ function bindSellingPointReviewControls(sku) {
 async function queueSellingPointTranslations(sku, force = false) {
   const review = sellingPointReviewForSku(sku, false);
   const claims = normalizeSellingPointEntries(review?.candidateEntries)
-    .filter((entry) => !entry.meaningZh && /^[\x20-\x7E]{5,120}$/.test(entry.claim))
+    .filter((entry) => !sellingPointChineseContext(entry).text && /^[\x20-\x7E]{5,120}$/.test(entry.claim))
     .map((entry) => entry.claim);
   if (!claims.length) return;
   const requestKey = `${sellingPointReviewKey(sku)}:${JSON.stringify(claims)}`;

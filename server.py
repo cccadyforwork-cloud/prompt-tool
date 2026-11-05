@@ -45,23 +45,25 @@ PRODUCT_ANALYSIS_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 COMPETITOR_ANALYSIS_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 REFERENCE_IMAGE_MAP_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 # Local jobs stay in memory: API keys and product facts are never written to disk.
-BACKGROUND_JOBS: dict[str, tuple[float, object]] = {}
+BACKGROUND_JOBS: dict[str, tuple[float, object, str]] = {}
 BACKGROUND_JOBS_LOCK = threading.Lock()
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="prompt-web-search")
+TRANSLATION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prompt-translation")
 BACKGROUND_JOB_TTL_SECONDS = 15 * 60
 BACKGROUND_JOB_LIMIT = 32
 
 
-def start_background_job(task) -> tuple[dict, int]:
+def start_background_job(task, error_label: str = "联网搜索", executor=None) -> tuple[dict, int]:
     now = time.monotonic()
     with BACKGROUND_JOBS_LOCK:
-        for job_id, (created, future) in list(BACKGROUND_JOBS.items()):
+        for job_id, (created, future, _) in list(BACKGROUND_JOBS.items()):
             if future.done() and now - created > BACKGROUND_JOB_TTL_SECONDS:
                 del BACKGROUND_JOBS[job_id]
         if len(BACKGROUND_JOBS) >= BACKGROUND_JOB_LIMIT:
-            return {"error": "联网搜索任务较多，请稍后重试"}, 429
+            return {"error": f"{error_label}任务较多，请稍后重试"}, 429
         job_id = secrets.token_urlsafe(24)
-        BACKGROUND_JOBS[job_id] = (now, BACKGROUND_EXECUTOR.submit(task))
+        worker = executor or BACKGROUND_EXECUTOR
+        BACKGROUND_JOBS[job_id] = (now, worker.submit(task), error_label)
     return {"job_id": job_id, "status": "pending"}, 202
 
 
@@ -70,13 +72,13 @@ def background_job_result(job_id: str) -> tuple[dict, int]:
         job = BACKGROUND_JOBS.get(job_id)
     if not job:
         return {"error": "联网搜索任务不存在或已过期；本地服务重启后请重新搜索"}, 404
-    _, future = job
+    _, future, error_label = job
     if not future.done():
         return {"status": "pending"}, 202
     try:
         return future.result(), 200
     except Exception:
-        return {"error": "联网搜索任务失败，请重试"}, 502
+        return {"error": f"{error_label}生成失败，请重试"}, 502
 
 
 # Coding Plan has its own OpenAI-compatible base URL. Using /api/v3 here
@@ -258,7 +260,19 @@ def translate_selling_point_claims(claims: list[str], api_key: str, model: str) 
 def selling_point_translation_result(claims: list[str], api_key: str, model: str) -> dict[str, object]:
     missing = [claim for claim in claims if claim not in SELLING_POINT_TRANSLATION_CACHE]
     if missing:
-        SELLING_POINT_TRANSLATION_CACHE.update(translate_selling_point_claims(missing, api_key, model))
+        for attempt in range(2):
+            try:
+                SELLING_POINT_TRANSLATION_CACHE.update(translate_selling_point_claims(missing, api_key, model))
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, socket.timeout,
+                    ValueError, json.JSONDecodeError):
+                if attempt:
+                    raise
+                continue
+            missing = [claim for claim in missing if claim not in SELLING_POINT_TRANSLATION_CACHE]
+            if not missing:
+                break
+            if attempt:
+                raise ValueError("豆包未返回完整中文释义")
     return {"translations": [
         {"claim": claim, "zh": SELLING_POINT_TRANSLATION_CACHE[claim]}
         for claim in claims if claim in SELLING_POINT_TRANSLATION_CACHE
@@ -1677,7 +1691,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
             return
         translate = lambda: selling_point_translation_result(claims, api_key, model)
         if payload.get("async") is True:
-            result, status = start_background_job(translate)
+            result, status = start_background_job(translate, "中文释义", TRANSLATION_EXECUTOR)
             self._send_json(result, status)
             return
         try:

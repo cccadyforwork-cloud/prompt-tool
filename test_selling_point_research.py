@@ -184,6 +184,24 @@ class LocalResearchHttpTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertNotIn("ark-private-secret", json.dumps(result))
 
+    def test_translation_job_uses_translation_error_label(self):
+        def fail(): raise RuntimeError("provider detail")
+        result, _ = server.start_background_job(fail, "中文释义", server.TRANSLATION_EXECUTOR)
+        future = server.BACKGROUND_JOBS[result["job_id"]][1]
+        with self.assertRaises(RuntimeError):
+            future.result(timeout=2)
+        result, status = server.background_job_result(result["job_id"])
+        self.assertEqual(status, 502)
+        self.assertEqual(result["error"], "中文释义生成失败，请重试")
+
+    def test_translation_retries_one_transient_provider_failure(self):
+        claim = "Handmade paper-cut layered construction"
+        with patch.object(server, "translate_selling_point_claims",
+                          side_effect=[TimeoutError(), {claim: "手工剪纸分层结构"}]) as translate:
+            result = server.selling_point_translation_result([claim], "ark-test", "model-test")
+        self.assertEqual(translate.call_count, 2)
+        self.assertEqual(result["translations"], [{"claim": claim, "zh": "手工剪纸分层结构"}])
+
 
 if __name__ == "__main__":
     unittest.main()
