@@ -1,4 +1,5 @@
 import http.client
+import io
 import json
 import threading
 import time
@@ -6,6 +7,7 @@ import unittest
 from email.message import Message
 from functools import partial
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 
@@ -201,6 +203,24 @@ class LocalResearchHttpTests(unittest.TestCase):
             result = server.selling_point_translation_result([claim], "ark-test", "model-test")
         self.assertEqual(translate.call_count, 2)
         self.assertEqual(result["translations"], [{"claim": claim, "zh": "手工剪纸分层结构"}])
+
+    def test_translation_disables_thinking_and_frontend_retries_incomplete_json(self):
+        claim = "BPA-free for safe use"
+        provider = io.BytesIO(json.dumps({"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": json.dumps({"translations": [
+                {"claim": claim, "zh": "不含BPA，使用安全"}
+            ]}, ensure_ascii=False)}
+        ]}]}).encode())
+        with patch.object(server.urllib.request, "urlopen", return_value=provider) as urlopen_mock:
+            result = server.translate_selling_point_claims([claim], "ark-test", "model-test")
+        request_body = json.loads(urlopen_mock.call_args.args[0].data)
+        self.assertEqual(request_body["thinking"], {"type": "disabled"})
+        self.assertEqual(request_body["max_output_tokens"], 1200)
+        self.assertEqual(result[claim], "不含BPA，使用安全")
+        app = (Path(__file__).parent / "app.js").read_text(encoding="utf-8")
+        self.assertIn("async function readJsonResponse(response, taskLabel", app)
+        self.assertIn("incompletePollCount <= 3", app)
+        self.assertIn("submitTranslation, \"中文释义\"", app)
 
 
 if __name__ == "__main__":

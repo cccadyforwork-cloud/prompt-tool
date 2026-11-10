@@ -1933,13 +1933,14 @@ async function queueSellingPointTranslations(sku, force = false) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), 120000);
   try {
-    const response = await fetch("/api/translate-selling-points", {
+    const submitTranslation = () => fetch("/api/translate-selling-points", {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({ claims, async: true }),
       signal: controller.signal,
     });
-    const result = await readBackgroundVisionResult(response, controller.signal, null, null, "中文释义");
+    const response = await submitTranslation();
+    const result = await readBackgroundVisionResult(response, controller.signal, null, submitTranslation, "中文释义");
     const translations = new Map((result?.translations || []).map((item) => [item.claim, item.zh]));
     if (!translations.size) throw new Error("没有收到中文释义，请重试。");
     let changed = false;
@@ -8373,13 +8374,23 @@ async function readBackgroundVisionResult(response, signal, onProgress, restartR
   let restartCount = 0;
   while (true) {
     if (!response.ok && response.status !== 202) {
-      const failure = await response.json().catch(() => ({}));
+      const failure = await readJsonResponse(response, taskLabel).catch(() => ({}));
       throw new Error(failure.error || failure.errors?.[0] || `${taskLabel}请求失败（HTTP ${response.status}）`);
     }
-    let result = await response.json();
+    let result;
+    try {
+      result = await readJsonResponse(response, taskLabel);
+    } catch (error) {
+      if (!restartRequest || restartCount >= 2) throw error;
+      restartCount += 1;
+      onProgress?.(`${taskLabel}启动响应不完整，正在重新提交（${restartCount}/2）...`);
+      response = await restartRequest();
+      continue;
+    }
     if (response.status !== 202) return result;
     if (!result.job_id) throw new Error(`${taskLabel}任务未能启动`);
     const jobId = result.job_id;
+    let incompletePollCount = 0;
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 1600));
       if (signal.aborted) throw new DOMException(`${taskLabel}超时`, "AbortError");
@@ -8387,7 +8398,17 @@ async function readBackgroundVisionResult(response, signal, onProgress, restartR
       const poll = await fetch(`/api/background-jobs/${encodeURIComponent(jobId)}`, {
         cache: "no-store", signal,
       });
-      result = await poll.json();
+      try {
+        result = await readJsonResponse(poll, taskLabel);
+        incompletePollCount = 0;
+      } catch (error) {
+        incompletePollCount += 1;
+        if (incompletePollCount <= 3) {
+          onProgress?.(`${taskLabel}结果读取中断，正在继续读取（${incompletePollCount}/3）...`);
+          continue;
+        }
+        throw error;
+      }
       if (poll.status === 202) continue;
       if (poll.status === 404 && restartRequest && restartCount < 2) {
         restartCount += 1;
@@ -8398,6 +8419,16 @@ async function readBackgroundVisionResult(response, signal, onProgress, restartR
       if (!poll.ok) throw new Error(result.error || `${taskLabel}任务失败（HTTP ${poll.status}）`);
       return result;
     }
+  }
+}
+
+async function readJsonResponse(response, taskLabel = "请求") {
+  const text = await response.text();
+  if (!text.trim()) throw new Error(`${taskLabel}服务返回空响应，请重试。`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${taskLabel}服务返回了不完整数据，请重试。`);
   }
 }
 

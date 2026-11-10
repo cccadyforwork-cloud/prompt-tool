@@ -239,9 +239,15 @@ def translate_selling_point_claims(claims: list[str], api_key: str, model: str) 
     )
     request = urllib.request.Request(
         ARK_RESPONSES_URL,
-        data=json.dumps({"model": model, "input": [{"role": "user", "content": [
-            {"type": "input_text", "text": instruction + json.dumps({"claims": claims}, ensure_ascii=False)}
-        ]}]}, ensure_ascii=False).encode(),
+        data=json.dumps({
+            "model": model,
+            "input": [{"role": "user", "content": [{
+                "type": "input_text",
+                "text": instruction + json.dumps({"claims": claims}, ensure_ascii=False),
+            }]}],
+            "thinking": {"type": "disabled"},
+            "max_output_tokens": 1200,
+        }, ensure_ascii=False).encode(),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, method="POST",
     )
     with urllib.request.urlopen(request, timeout=45) as response:
@@ -288,9 +294,15 @@ def translate_manual_selling_point(claim_zh: str, api_key: str, model: str) -> s
     )
     request = urllib.request.Request(
         ARK_RESPONSES_URL,
-        data=json.dumps({"model": model, "input": [{"role": "user", "content": [
-            {"type": "input_text", "text": instruction + json.dumps({"claim_zh": claim_zh}, ensure_ascii=False)}
-        ]}]}, ensure_ascii=False).encode(),
+        data=json.dumps({
+            "model": model,
+            "input": [{"role": "user", "content": [{
+                "type": "input_text",
+                "text": instruction + json.dumps({"claim_zh": claim_zh}, ensure_ascii=False),
+            }]}],
+            "thinking": {"type": "disabled"},
+            "max_output_tokens": 400,
+        }, ensure_ascii=False).encode(),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, method="POST",
     )
     with urllib.request.urlopen(request, timeout=45) as response:
