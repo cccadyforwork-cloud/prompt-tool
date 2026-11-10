@@ -80,6 +80,28 @@ class KeychainConfigTests(unittest.TestCase):
         self.assertEqual(server.configure_api_key("GRSAI_API_KEY", "sk-", "Grsai"), "sk-test-grsai")
         self.read.assert_called_once_with("GRSAI_API_KEY")
 
+    def test_page_update_saves_and_activates_new_key(self):
+        server.save_runtime_api_key("ARK_API_KEY", "ark-test-page-update")
+        self.save.assert_called_once_with("ARK_API_KEY", "ark-test-page-update")
+        self.assertEqual(os.environ["ARK_API_KEY"], "ark-test-page-update")
+
+    def test_page_update_does_not_activate_key_when_save_fails(self):
+        os.environ["ARK_API_KEY"] = "ark-test-old"
+        self.save.side_effect = OSError("denied")
+        with self.assertRaises(OSError):
+            server.save_runtime_api_key("ARK_API_KEY", "ark-test-new")
+        self.assertEqual(os.environ["ARK_API_KEY"], "ark-test-old")
+
+    def test_page_update_rejects_invalid_key(self):
+        with self.assertRaises(ValueError):
+            server.save_runtime_api_key("ARK_API_KEY", "Bearer ark-test")
+        self.save.assert_not_called()
+
+    def test_page_input_accepts_common_wrappers(self):
+        self.assertEqual(server.normalize_api_key_input(" export ARK_API_KEY='ark-test-new' "), "ark-test-new")
+        self.assertEqual(server.normalize_api_key_input("Bearer ark-test-new"), "ark-test-new")
+        self.assertEqual(server.normalize_api_key_input("GRSAI_API_KEY='sk-test-new'", "GRSAI_API_KEY"), "sk-test-new")
+
 
 if __name__ == "__main__":
     unittest.main()

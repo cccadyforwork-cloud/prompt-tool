@@ -191,6 +191,118 @@ body {
   min-width: 0;
 }
 
+.workflow-utility-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-key-button {
+  display: inline-flex;
+  width: auto;
+  min-width: 92px;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 0;
+  border: 1px solid var(--line);
+  padding: 7px 13px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow-soft);
+  font-size: 12px;
+}
+
+.api-key-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+  filter: none;
+}
+
+.api-key-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 0;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.35);
+}
+
+.api-key-dialog::backdrop {
+  background: rgba(4, 7, 16, 0.72);
+  backdrop-filter: blur(5px);
+}
+
+.api-key-form {
+  display: grid;
+  gap: 12px;
+  padding: 24px;
+}
+
+.api-key-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.api-key-dialog-heading h2,
+.api-key-dialog-heading p {
+  margin: 0;
+}
+
+.api-key-dialog-close {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.api-key-description,
+.api-key-current-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.api-key-current-status {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.api-key-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.api-key-input-row input,
+.api-key-input-row button,
+.api-key-form > button {
+  margin: 0;
+}
+
+.api-key-input-row button {
+  width: auto;
+}
+
 .workflow-global-selects label {
   margin: 0;
   color: var(--muted);
@@ -1089,6 +1201,14 @@ html[data-theme="dark"] .workflow-app-header {
     grid-column: 1 / -1;
   }
 
+  .workflow-utility-actions {
+    justify-content: stretch;
+  }
+
+  .workflow-utility-actions > button {
+    flex: 1;
+  }
+
   .workflow-global-selects {
     grid-template-columns: auto minmax(160px, 1fr) auto minmax(160px, 1fr);
   }
@@ -1853,6 +1973,17 @@ button.copy-failed:hover {
   margin: 10px 0 0;
   color: var(--accent);
   font-size: 12px;
+}
+
+.analysis-diagnostics {
+  margin: 6px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent-soft));
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .input-help {

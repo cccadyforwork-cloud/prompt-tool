@@ -13,7 +13,7 @@
         document.documentElement.dataset.theme = "dark";
       }
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20261110-translation-reliability-48">
+    <link rel="stylesheet" href="./styles.css?v=20261110-api-key-entry-50">
   </head>
   <body>
     <header class="workflow-app-header">
@@ -31,12 +31,36 @@
           <label for="skuSelect">产品 / 款式</label><select id="skuSelect"></select>
           <label for="templateSelect">模板</label><select id="templateSelect"></select>
         </div>
-        <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="true" aria-label="切换到浅色主题">
-          <span class="theme-toggle-icon" aria-hidden="true">☾</span>
-          <span class="theme-toggle-label">深色模式</span>
-        </button>
+        <div class="workflow-utility-actions">
+          <button id="openApiKeyDialog" class="api-key-button" type="button" aria-haspopup="dialog">
+            <span aria-hidden="true">⌁</span><span>API 配置</span>
+          </button>
+          <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="true" aria-label="切换到浅色主题">
+            <span class="theme-toggle-icon" aria-hidden="true">☾</span>
+            <span class="theme-toggle-label">深色模式</span>
+          </button>
+        </div>
       </div>
     </header>
+
+    <dialog id="apiKeyDialog" class="api-key-dialog" aria-labelledby="api-key-dialog-title">
+      <form id="apiKeyForm" class="api-key-form">
+        <div class="api-key-dialog-heading">
+          <div><p class="eyebrow">Image Generation</p><h2 id="api-key-dialog-title">配置 Grsai 生图 Key</h2></div>
+          <button id="closeApiKeyDialog" class="api-key-dialog-close" type="button" aria-label="关闭">×</button>
+        </div>
+        <p class="api-key-description">新 Key 将保存到本机 macOS 钥匙串，并立即替换当前生图服务使用的旧 Key，不会写入网页存储或 Git。</p>
+        <p id="apiKeyCurrentStatus" class="api-key-current-status" role="status">正在读取配置状态…</p>
+        <label for="grsaiApiKeyInput">Grsai 生图 API Key</label>
+        <div class="api-key-input-row">
+          <input id="grsaiApiKeyInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk-…" required>
+          <button id="toggleApiKeyVisibility" class="secondary" type="button" aria-pressed="false">显示</button>
+        </div>
+        <p class="input-help">只需粘贴完整 Key，不要输入变量名、引号或命令。</p>
+        <button id="saveApiKey" type="submit">保存新 Key 并立即生效</button>
+        <p id="apiKeySaveStatus" class="status" role="status" aria-live="polite"></p>
+      </form>
+    </dialog>
 
     <main class="workflow-shell">
       <section class="workflow-page is-active" data-workflow-panel="source">
@@ -134,6 +158,7 @@
           <button id="extractSources" type="button" class="source-parse-action">解析资料并提取产品信息</button>
           <p id="sourceParseNote" class="source-parse-note">确认资料与适用范围后，在这里统一开始解析。</p>
           <p id="extractStatus" class="status" role="status" aria-live="polite"></p>
+          <p id="analysisDiagnostics" class="analysis-diagnostics" role="status" aria-live="polite" hidden></p>
             </section>
           </div>
           <div class="workflow-column source-output-column">
@@ -166,6 +191,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20261110-translation-reliability-48"></script>
+    <script src="./app.js?v=20261110-analysis-diagnostics-54"></script>
   </body>
 </html>

@@ -81,6 +81,16 @@ def background_job_result(job_id: str) -> tuple[dict, int]:
         return {"error": f"{error_label}生成失败，请重试"}, 502
 
 
+def analysis_result_with_diagnostics(result: dict[str, object], image_count: int, model: str, cache_hit: bool) -> dict[str, object]:
+    response = dict(result)
+    response["diagnostics"] = {
+        "imageCount": image_count,
+        "model": model,
+        "cacheHit": cache_hit,
+    }
+    return response
+
+
 # Coding Plan has its own OpenAI-compatible base URL. Using /api/v3 here
 # bypasses the plan quota and bills the regular Ark account instead.
 ARK_RESPONSES_URL = "https://ark.cn-beijing.volces.com/api/coding/v3/responses"
@@ -164,8 +174,14 @@ def allowed_proxy_url(value: str) -> bool:
     except ValueError:
         return False
     host = (parsed.hostname or "").lower()
-    return parsed.scheme in {"http", "https"} and any(
-        host == suffix or host.endswith(f".{suffix}") for suffix in PROXY_HOST_SUFFIXES
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return False
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in PROXY_HOST_SUFFIXES):
+        return True
+    return (
+        parsed.scheme == "https"
+        and host in {"amazon.com", "www.amazon.com"}
+        and re.fullmatch(r"/(?:dp|gp/product)/[A-Z0-9]{10}/?", parsed.path, re.IGNORECASE) is not None
     )
 
 
@@ -1505,6 +1521,17 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/key-status":
+            current_key = os.environ.get("ARK_API_KEY", "").strip()
+            grsai_key = os.environ.get("GRSAI_API_KEY", "").strip()
+            self._send_json({
+                "arkConfigured": valid_api_key(current_key, "ark-"),
+                "keyEnding": current_key[-4:] if valid_api_key(current_key, "ark-") else "",
+                "grsaiConfigured": valid_api_key(grsai_key, "sk-"),
+                "grsaiKeyEnding": grsai_key[-4:] if valid_api_key(grsai_key, "sk-") else "",
+                "model": os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL,
+            })
+            return
         if parsed.path.startswith("/api/background-jobs/"):
             job_id = parsed.path.removeprefix("/api/background-jobs/")
             result, status = background_job_result(job_id)
@@ -1581,7 +1608,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         request_path = urllib.parse.urlsplit(self.path).path
-        if request_path not in {"/api/visual-plans", "/api/use-scenes", "/api/selling-points", "/api/translate-selling-points", "/api/translate-manual-selling-point", "/api/product-dimensions", "/api/product-analysis", "/api/competitor-analysis", "/api/reference-image-map", "/api/generate-image"}:
+        if request_path not in {"/api/configure-key", "/api/visual-plans", "/api/use-scenes", "/api/selling-points", "/api/translate-selling-points", "/api/translate-manual-selling-point", "/api/product-dimensions", "/api/product-analysis", "/api/competitor-analysis", "/api/reference-image-map", "/api/generate-image"}:
             self.send_error(404, "Not Found")
             return
         try:
@@ -1598,6 +1625,28 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
             return
         if not isinstance(payload, dict):
             self.send_error(400, "JSON body must be an object")
+            return
+
+        if request_path == "/api/configure-key":
+            name = clean_text(payload.get("name"), 40)
+            setting = next((item for item in KEY_SETTINGS if item[0] == name), None)
+            if not setting:
+                self._send_json({"error": "不支持的 API Key 类型。"}, 400)
+                return
+            key = normalize_api_key_input(payload.get("key"), name)
+            if not valid_api_key(key, setting[1]):
+                self._send_json({"error": f"没有识别到有效 Key。请粘贴以 {setting[1]} 开头的完整 {setting[2]} Key。"}, 400)
+                return
+            try:
+                save_runtime_api_key(name, key)
+            except (OSError, ValueError):
+                self._send_json({"error": "无法保存到 macOS 钥匙串，请检查系统钥匙串权限。"}, 500)
+                return
+            self._send_json({
+                "configured": True,
+                "keyEnding": key[-4:],
+                "message": f"新{setting[2]} API Key 已保存并立即生效（尾号 {key[-4:]}）。",
+            })
             return
 
         if request_path == "/api/visual-plans":
@@ -1828,11 +1877,11 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         cache_key = json.dumps({"schemaVersion": "source-use-behavior-selling-points-v2", "model": model, "identity": identity, "localEvidence": local_evidence, "imageUrls": image_urls}, ensure_ascii=False).casefold()
         cached = PRODUCT_ANALYSIS_CACHE.get(cache_key)
         if not force_refresh and cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
-            self._send_json(cached[1])
+            self._send_json(analysis_result_with_diagnostics(cached[1], len(image_urls), model, True))
             return
         api_key = os.environ.get("ARK_API_KEY", "").strip()
         if not api_key.startswith("ark-"):
-            self._send_json({
+            self._send_json(analysis_result_with_diagnostics({
                 "product_name": {},
                 "attributes": [],
                 "dimensions": [],
@@ -1841,7 +1890,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
                 "sources": [],
                 "message": "豆包识图未启用：请配置 ARK_API_KEY 后重新启动服务",
                 "errors": ["ARK_API_KEY unavailable or invalid"],
-            })
+            }, len(image_urls), model, False))
             return
         result = fetch_ark_product_analysis_batches(identity, local_evidence, image_urls, api_key, model)
         has_evidence = bool(
@@ -1859,7 +1908,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         })
         if has_evidence:
             PRODUCT_ANALYSIS_CACHE[cache_key] = (time.time(), result)
-        self._send_json(result)
+        self._send_json(analysis_result_with_diagnostics(result, len(image_urls), model, False))
 
     def _handle_competitor_analysis(self, payload: dict[str, object]) -> None:
         raw_urls = payload.get("imageUrls", [])
@@ -1874,14 +1923,14 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
             return
         model = os.environ.get("ARK_MODEL", DEFAULT_ARK_MODEL).strip() or DEFAULT_ARK_MODEL
         analysis_purpose = "route01_supplement" if payload.get("analysisPurpose") == "route01_supplement" else "route02_review"
-        cache_key = json.dumps({"schemaVersion": "competitor-vision-v2", "model": model, "identity": identity, "imageUrls": image_urls, "analysisPurpose": analysis_purpose}, ensure_ascii=False).casefold()
+        cache_key = json.dumps({"schemaVersion": "competitor-vision-v3", "model": model, "identity": identity, "imageUrls": image_urls, "analysisPurpose": analysis_purpose}, ensure_ascii=False).casefold()
         cached = COMPETITOR_ANALYSIS_CACHE.get(cache_key)
         if payload.get("forceRefresh") is not True and cached and time.time() - cached[0] < SCENE_CACHE_TTL_SECONDS:
-            self._send_json(cached[1])
+            self._send_json(analysis_result_with_diagnostics(cached[1], len(image_urls), model, True))
             return
         api_key = os.environ.get("ARK_API_KEY", "").strip()
         if not api_key.startswith("ark-"):
-            self._send_json({"product_name": {}, "attributes": [], "dimensions": [], "selling_points": [], "use_scenes": [], "selected_images": [], "sources": [], "message": "豆包识图未启用：请配置 ARK_API_KEY 后重新启动服务", "errors": ["ARK_API_KEY unavailable or invalid"]})
+            self._send_json(analysis_result_with_diagnostics({"product_name": {}, "attributes": [], "dimensions": [], "selling_points": [], "use_scenes": [], "selected_images": [], "sources": [], "message": "豆包识图未启用：请配置 ARK_API_KEY 后重新启动服务", "errors": ["ARK_API_KEY unavailable or invalid"]}, len(image_urls), model, False))
             return
         result = fetch_ark_product_analysis_batches(identity, "", image_urls, api_key, model, "competitor")
         result["product_name"] = {}
@@ -1889,7 +1938,7 @@ class PromptToolHandler(SimpleHTTPRequestHandler):
         result.update({"sources": ["Doubao Competitor Vision"] if has_evidence else [], "message": "" if has_evidence else "竞品图未识别到可核对信息", "provider": "doubao", "requires_human_confirmation": analysis_purpose == "route02_review"})
         if has_evidence or result.get("selected_images"):
             COMPETITOR_ANALYSIS_CACHE[cache_key] = (time.time(), result)
-        self._send_json(result)
+        self._send_json(analysis_result_with_diagnostics(result, len(image_urls), model, False))
 
     def _handle_reference_image_map(self, payload: dict[str, object]) -> None:
         raw_skus = payload.get("skus", [])
@@ -2133,6 +2182,23 @@ KEY_SETTINGS = (
 
 def valid_api_key(value: str, prefix: str) -> bool:
     return value.startswith(prefix) and len(value) > len(prefix) and not any(c.isspace() for c in value)
+
+
+def normalize_api_key_input(value: object, name: str = "ARK_API_KEY") -> str:
+    normalized = str(value or "").strip()
+    normalized = re.sub(rf"^(?:export\s+)?{re.escape(name)}\s*=\s*", "", normalized, flags=re.IGNORECASE).strip()
+    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {'"', "'"}:
+        normalized = normalized[1:-1].strip()
+    normalized = re.sub(r"^Bearer\s+", "", normalized, flags=re.IGNORECASE).strip()
+    return normalized
+
+
+def save_runtime_api_key(name: str, value: str) -> None:
+    setting = next((item for item in KEY_SETTINGS if item[0] == name), None)
+    if not setting or not valid_api_key(value, setting[1]):
+        raise ValueError("Invalid API key")
+    save_key(name, value)
+    os.environ[name] = value
 
 
 def configure_api_key(name: str, prefix: str, label: str, *, replace: bool = False) -> str:

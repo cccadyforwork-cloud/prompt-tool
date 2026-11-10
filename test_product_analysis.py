@@ -29,6 +29,16 @@ def _ark_response(value):
 
 
 class ProductAnalysisTests(unittest.TestCase):
+    def test_analysis_diagnostics_report_image_model_and_cache(self):
+        result = server.analysis_result_with_diagnostics({"attributes": []}, 8, "doubao-test", True)
+        self.assertEqual(result["diagnostics"], {"imageCount": 8, "model": "doubao-test", "cacheHit": True})
+
+    def test_source_proxy_allows_only_exact_amazon_product_pages(self):
+        self.assertTrue(server.allowed_proxy_url("https://www.amazon.com/dp/B0GSFNDLQY"))
+        self.assertTrue(server.allowed_proxy_url("https://amazon.com/gp/product/B0GSFNDLQY?ref_=test"))
+        self.assertFalse(server.allowed_proxy_url("https://www.amazon.com/account"))
+        self.assertFalse(server.allowed_proxy_url("https://evil.example/dp/B0GSFNDLQY"))
+
     @mock.patch.object(server, "fetch_ark_image_selling_points", return_value=([], []))
     @mock.patch.object(server, "vision_content_for_images", return_value=([], []))
     @mock.patch.object(server.urllib.request, "urlopen")

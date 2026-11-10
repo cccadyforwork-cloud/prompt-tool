@@ -581,7 +581,7 @@ const COLLECTOR_MAIN_MIDDLE_LIMIT = 10;
 const COLLECTOR_DETAIL_TAIL_LIMIT = 12;
 const MAX_REFERENCE_CANDIDATES = 256;
 const MAX_REFERENCE_CLASSIFIER_CANDIDATES = 200;
-const MAX_COMPETITOR_REFERENCE_IMAGES = 5;
+const MAX_COMPETITOR_REFERENCE_IMAGES = 20;
 const MAX_PRODUCT_ANALYSIS_IMAGE_URLS = 200;
 const MAX_SELECTED_REFERENCES = 6;
 const MAX_REQUIRED_REFERENCES = 2;
@@ -2849,16 +2849,21 @@ function extractAmazonCompetitorImageCandidates(html, limit = MAX_COMPETITOR_REF
         add(`https://m.media-amazon.com/images/I/${mediaId}.jpg`, context);
     });
   };
-  // Thumbnail order is the visible current-product gallery order. Do not scan
-  // recommendations, related products, reviews, A+ content or other variants.
-  readGallery(doc.querySelector("#altImages"));
-  if (!candidates.length) {
-    for (const item of amazonInitialGalleryItems(source)) {
-      const main = item.main && typeof item.main === "object" ? Object.keys(item.main) : [];
-      const url = [item.hiRes, item.large, ...main, item.thumb].find((value) => typeof value === "string" && normalizeAmazonProductImageUrl(value));
-      if (url) add(url, item.altText || "");
-    }
+  // Amazon collapses the tail of larger galleries behind a “3+” thumbnail.
+  // Use the current variation's complete gallery as the canonical sequence
+  // whenever it is present. Its thumbnail and high-resolution URLs can use
+  // different media IDs for the same picture, so merging both lists by URL
+  // would create false duplicates that push the real tail past the limit.
+  const initialGallery = amazonInitialGalleryItems(source);
+  for (const item of initialGallery) {
+    const main = item.main && typeof item.main === "object" ? Object.keys(item.main) : [];
+    const url = [item.hiRes, item.large, ...main, item.thumb].find((value) => typeof value === "string" && normalizeAmazonProductImageUrl(value));
+    if (url) add(url, item.altText || "");
   }
+  // Older/simplified saved pages may omit the complete payload. In that case,
+  // fall back to the visible current-product thumbnails only; never scan
+  // recommendations, related products, reviews, A+ content or variants.
+  if (!initialGallery.length) readGallery(doc.querySelector("#altImages"));
   if (!candidates.length) {
     for (const selector of ["#imageBlock", "#imageBlock_feature_div", "#main-image-container", "#dp-image-block"]) {
       readGallery(doc.querySelector(selector));
@@ -2866,6 +2871,40 @@ function extractAmazonCompetitorImageCandidates(html, limit = MAX_COMPETITOR_REF
     }
   }
   return candidates.slice(0, limit);
+}
+
+function amazonProductPageUrlFromHtml(html) {
+  const source = String(html || "");
+  const doc = new DOMParser().parseFromString(source, "text/html");
+  const declared = [
+    doc.querySelector('link[rel="canonical"]')?.getAttribute("href"),
+    doc.querySelector('meta[property="og:url"]')?.getAttribute("content"),
+  ].filter(Boolean);
+  const asinFromUrl = (value) => String(value || "").match(/amazon\.com\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?:[/?#]|$)/i)?.[1] || "";
+  let asin = declared.map(asinFromUrl).find(Boolean) || "";
+  if (!asin) asin = source.match(/(?:["']asin["']\s*:\s*["']|\bASIN\s*[:=]\s*)([A-Z0-9]{10})/i)?.[1] || "";
+  return asin ? `https://www.amazon.com/dp/${asin.toUpperCase()}` : "";
+}
+
+async function completeAmazonCompetitorGalleryHtml(html, onProgress = null) {
+  const source = String(html || "");
+  const productUrl = amazonProductPageUrlFromHtml(source);
+  if (!productUrl) return source;
+  const localCount = extractAmazonCompetitorImageCandidates(source, MAX_PRODUCT_ANALYSIS_IMAGE_URLS).length;
+  try {
+    onProgress?.(`已从文件识别 ${localCount} 张竞品图，正在补查 Amazon 完整图库…`);
+    const response = await fetch(`/api/source-proxy?url=${encodeURIComponent(productUrl)}`, {
+      headers: { Accept: "text/html" },
+    });
+    if (!response.ok) return source;
+    const remote = await response.text();
+    const remoteCount = extractAmazonCompetitorImageCandidates(remote, MAX_PRODUCT_ANALYSIS_IMAGE_URLS).length;
+    if (remoteCount > localCount) {
+      onProgress?.(`Amazon 完整图库补齐：${localCount} → ${remoteCount} 张。`);
+      return remote;
+    }
+  } catch { /* Keep the uploaded HTML when Amazon is unavailable. */ }
+  return source;
 }
 
 function competitorVisionSupplement(result = {}) {
@@ -4255,6 +4294,24 @@ async function fetchLocalProductAnalysisProxy(facts, imageCandidates, onProgress
   }
 }
 
+function renderAnalysisDiagnostics(items = []) {
+  const target = byId("analysisDiagnostics");
+  if (!target) return;
+  const diagnostics = items.flat().filter((item) => item && Number.isFinite(Number(item.imageCount)) && item.model);
+  if (!diagnostics.length) {
+    target.hidden = true;
+    target.textContent = "";
+    return;
+  }
+  const imageCount = diagnostics.reduce((sum, item) => sum + Number(item.imageCount || 0), 0);
+  const models = Array.from(new Set(diagnostics.map((item) => String(item.model || "").trim()).filter(Boolean)));
+  const cacheHit = diagnostics.every((item) => item.cacheHit === true)
+    ? "是"
+    : diagnostics.some((item) => item.cacheHit === true) ? "部分" : "否";
+  target.textContent = `本次分析诊断：送检图片 ${imageCount} 张 · 模型 ${models.join("、")} · 命中缓存 ${cacheHit}`;
+  target.hidden = false;
+}
+
 function referenceMetaGroup(imageType = "") {
   const value = String(imageType || "").toLowerCase().replace(/[-\s]+/g, "_");
   if (/caliper|ruler|measurement_tool/.test(value)) return "measurement_tool";
@@ -4623,6 +4680,7 @@ async function extractSupplierSourceText(html, onProgress, routeId = selectedExt
     visionSelectedCount: selectedByDoubao?.filter((item) => item.review_status !== "pending").length || 0,
     visionMessage: cleanFieldDisplayValue(analysisResult?.message || ""),
     visionErrors: Array.isArray(analysisResult?.errors) ? analysisResult.errors.map((error) => cleanFieldDisplayValue(error)).filter(Boolean) : [],
+    visionDiagnostics: analysisResult?.diagnostics ? [analysisResult.diagnostics] : [],
     sellingPointVisualEvidence: productAnalysisSellingPointVisualEvidence(analysisResult),
     fieldVisualEvidence: productAnalysisFieldVisualEvidence(analysisResult),
     useBehavior,
@@ -4709,6 +4767,7 @@ function mergeSupplierSourceResults(results) {
     visionSelectedCount: values.reduce((sum, item) => sum + (item.visionSelectedCount || 0), 0),
     visionMessage: values.map((item) => cleanFieldDisplayValue(item.visionMessage || "")).filter(Boolean).join("；"),
     visionErrors: values.flatMap((item) => Array.isArray(item.visionErrors) ? item.visionErrors : []).filter(Boolean),
+    visionDiagnostics: values.flatMap((item) => Array.isArray(item.visionDiagnostics) ? item.visionDiagnostics : []),
     sellingPointVisualEvidence: values.flatMap((item) => Array.isArray(item.sellingPointVisualEvidence) ? item.sellingPointVisualEvidence : []),
     fieldVisualEvidence: values.flatMap((item) => Array.isArray(item.fieldVisualEvidence) ? item.fieldVisualEvidence : []),
     useBehavior,
@@ -7571,6 +7630,7 @@ async function extractCompetitorSources() {
   const button = byId("extractSources");
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
+  renderAnalysisDiagnostics();
   document.querySelectorAll("[data-extraction-route], [data-product-structure-route]").forEach((item) => { item.disabled = true; });
   try {
     const amazonFile = sourceInputFiles("amazonTemplateFile")[0];
@@ -7582,9 +7642,18 @@ async function extractCompetitorSources() {
     if (!amazonTemplate.products.length) throw new Error("Amazon 模板中未找到 Child SKU。");
     populateCompetitorSkuBinding(amazonTemplate.products);
     const scope = competitorAnalysisScope(amazonTemplate.products);
-    const entries = await readNamedTextFiles(competitorFiles, (message) => {
+    const uploadedEntries = await readNamedTextFiles(competitorFiles, (message) => {
       byId("extractStatus").textContent = message;
     }, "竞品图组");
+    const entries = [];
+    for (const entry of uploadedEntries) {
+      entries.push({
+        ...entry,
+        text: await completeAmazonCompetitorGalleryHtml(entry.text, (message) => {
+          byId("extractStatus").textContent = message;
+        }),
+      });
+    }
     const candidates = uniqueByUrl(entries.flatMap((entry) =>
       extractAmazonCompetitorImageCandidates(entry.text, MAX_PRODUCT_ANALYSIS_IMAGE_URLS)
         .map((candidate, position) => ({ ...candidate, sourceFile: entry.name, sourcePosition: position + 1 })))).slice(0, MAX_PRODUCT_ANALYSIS_IMAGE_URLS);
@@ -7595,13 +7664,18 @@ async function extractCompetitorSources() {
     const response = await fetch("/api/competitor-analysis", {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ amazonChildTitle, imageUrls }),
+      body: JSON.stringify({
+        amazonChildTitle,
+        imageUrls,
+        analysisPurpose: "route02_review",
+      }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result?.message || result?.errors?.[0] || `HTTP ${response.status}`);
     if (result?.errors?.length && !result?.selected_images?.length && !result?.selling_points?.length)
       throw new Error(result.errors[0]);
     if (extractionGeneration !== requestedGeneration || selectedExtractionRoute !== "competitor") return;
+    renderAnalysisDiagnostics(result?.diagnostics ? [result.diagnostics] : []);
     const targetIds = new Set(scope.targets.map((item) => item.id));
     const points = competitorVisionSupplement(result).sellingPoints;
     extractedProducts = amazonTemplate.products.map((item) => ({
@@ -7617,17 +7691,20 @@ async function extractCompetitorSources() {
     sellingPointDraftDirty = false;
     const decisions = new Map((result?.selected_images || []).map((item) => [item.url, item]));
     const evidenceUrls = new Set((result?.evidence_urls || []).filter(Boolean));
-    const selectedUrls = Array.isArray(result?.selected_images)
-      ? new Set(result.selected_images.map((item) => item?.url).filter(Boolean))
-      : new Set(imageUrls);
-    const selectedCandidates = candidates.filter((candidate) => selectedUrls.has(candidate.url));
+    // The extractor is already scoped to the current Amazon product gallery.
+    // Keep every extracted gallery image available for human selection; the
+    // vision pass may annotate usefulness, but must not silently remove tail
+    // images that the operator intentionally supplied for comparison.
+    const selectedCandidates = candidates;
     const candidateMeta = selectedCandidates.map((candidate, index) => {
       const decision = decisions.get(candidate.url) || {};
       return {
         url: candidate.url,
         image_type: "amazon_competitor_reference",
         detail_type: decision.image_type || "other",
-        review_status: evidenceUrls.has(candidate.url) ? "evidence" : decision.review_status || "pending",
+        review_status: evidenceUrls.has(candidate.url)
+          ? "evidence"
+          : decision.keep === false ? "model_not_recommended" : decision.review_status || "pending",
         sku_match: "visual_reference", reference_value: "unverified", confidence: "unverified",
         source_file: candidate.sourceFile, source_position: candidate.sourcePosition || index + 1,
         best_for: [], reason: decision.reason || "竞品图，需人工核对后选为参考图",
@@ -7671,6 +7748,7 @@ async function extractSources() {
   extractionGeneration += 1;
   sellingPointOnlineStateBySku.clear();
   const requestedGeneration = extractionGeneration;
+  renderAnalysisDiagnostics();
   const routeId = selectedExtractionRoute;
   const routeName = extractionRoutePreviews[routeId]?.title || extractionRoutePreviews.local.title;
   const structureRouteName = productStructureRoutePreviews[selectedProductStructureRoute]?.title || productStructureRoutePreviews.single.title;
@@ -7703,7 +7781,10 @@ async function extractSources() {
     });
     const supplierImageListText = pastedSupplierImageListText;
     const supplierHtml = combinedNamedHtmlEntries(supplierEntries);
-    const competitorHtml = await readTextFiles(competitorFiles, (message) => {
+    const uploadedCompetitorHtml = await readTextFiles(competitorFiles, (message) => {
+      byId("extractStatus").textContent = message;
+    });
+    const competitorHtml = await completeAmazonCompetitorGalleryHtml(uploadedCompetitorHtml, (message) => {
       byId("extractStatus").textContent = message;
     });
     const competitorReferenceImageCandidates = extractAmazonCompetitorImageCandidates(competitorHtml);
@@ -7810,6 +7891,7 @@ async function extractSources() {
     const competitorTargetIds = new Set(competitorTargets.map((product) => product.id));
     let competitorVisionResult = null;
     let competitorVisionStatus = "";
+    let competitorVisionDiagnostics = [];
     if (routeId === "web" && competitorVisionImageUrls.length && competitorTargetIds.size) {
       const title = extractedProducts.filter((product) => competitorTargetIds.has(product.id))
         .map((product) => product.amazonTitle || product.productName || product.label)
@@ -7826,6 +7908,7 @@ async function extractSources() {
           throw new Error(result?.message || result?.errors?.[0] || `HTTP ${response.status}`);
         if (extractionGeneration !== requestedGeneration || selectedExtractionRoute !== routeId) return;
         competitorVisionResult = result;
+        competitorVisionDiagnostics = result?.diagnostics ? [result.diagnostics] : [];
         extractedProducts = applyCompetitorVisionSupplement(extractedProducts, result, competitorTargetIds);
         competitorVisionStatus = `竞品图识别：送检 ${competitorVisionImageUrls.length} 张。`;
       } catch (error) {
@@ -7895,6 +7978,7 @@ async function extractSources() {
       ? `送豆包图片：${supplierSource.visionSentCount || 0} 张。`
       : `本地图片：${supplierSource.imageCount || 0} 张。`;
     byId("extractStatus").textContent = `资料解析完成。${imageStatus}${visionStatus}${competitorVisionStatus}${referenceMappingStatus}`;
+    renderAnalysisDiagnostics([supplierSource.visionDiagnostics || [], competitorVisionDiagnostics]);
     if (routeId === "web") {
       autoEnrichSellingPointsIfNeeded();
       autoEnrichUseScenesIfNeeded();
@@ -8278,6 +8362,10 @@ function multiSceneProductScaleRule() {
 
 function multiSceneEqualPanelRule() {
   return "Multi-scene layout: exactly four equal-size panels in a clean 2x2 grid; no oversized hero panel, no side strip, no stacked sidebar, no masonry collage, and no mixed large-small panel layout.";
+}
+
+function multiScenePanelLabelRule() {
+  return "Four-panel scene labels: add exactly one concise 2-3 word English label inside each panel. Each label must name that panel's approved use scene or practical purpose and match the pictured context. FIXED POSITION: place the label horizontally centered at the bottom inside its own panel, with a small safe margin above that panel's lower edge; use the same bottom-center alignment and baseline in all four panels. For the two upper panels, this means the bottom center of each upper panel, not the bottom of the overall canvas. Keep labels small but clearly legible and prevent them from covering the product, hands, or key use action. Use four distinct labels; no top, corner, side, or floating label placement; no headline, sentence, selling-point claim, specification, badge, icon, or extra text.";
 }
 
 function scenePhraseInterpretationRule() {
@@ -9015,6 +9103,8 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
   const differentDesignSetRule = differentDesignSetPresentationRule(facts, templateId, typeId);
   const referenceControlledSellingPoint = /(?:Selling-point reference priority|SELLING-POINT SOURCE DIRECTION)/i.test([details, style].filter(Boolean).join(" "));
   const productOnlySellingPoint = /VISUAL ROUTE LOCK — PRODUCT PROOF/i.test([details, style].filter(Boolean).join(" "));
+  const fourPanelSceneImage = /(?:exactly 4 distinct complete real-life use scenes|equal 2x2 multi-scene lifestyle collage|four complete lifestyle scenes)/i
+    .test([basic, style].filter(Boolean).join(" "));
   const sceneAuthorityRule = templateId === "scene" && !referenceControlledSellingPoint ? useSceneAuthorityRule(facts) : "";
   const referenceMode = referenceControlledSellingPoint ? "selling-point" : "";
   const referenceAuthority = productOnlySellingPoint
@@ -9040,7 +9130,9 @@ function buildPromptSections({ facts, templateId, typeId, basic = "", details = 
     : promptVisualSubsections(visualDetails, visualStyle);
   const textRules = compactPromptItems([
     isMainImageType(typeId) ? mainImageNoAnnotationRule() : noChineseTextRule(),
-    isMainImageType(typeId) ? "" : typeId === "3B"
+    isMainImageType(typeId) ? "" : fourPanelSceneImage
+      ? multiScenePanelLabelRule()
+      : typeId === "3B"
       ? "Installation-step text only: title 2-3 English words; exactly one numbered 2-5 word English action caption per panel; no selling-point labels, paragraphs, badges, or extra copy."
       : shortTextRule(),
     isMainImageType(typeId) || referenceControlledSellingPoint ? "" : visualProofFirstRule(),
@@ -10939,7 +11031,8 @@ function multiSceneLifestyleStyleText(facts, sceneList) {
     hasVerifiedSceneList
       ? "Use only the Use Scene field currently shown on the left; do not add other scenes."
       : "No reference scene information; do not create a multi-scene lifestyle composition or invent scene content.",
-    "No added selling-point text, no scene title labels, no captions, no callout labels, no badges, no arrows, no feature icons, no product-spec explanation, no inset close-up panels.",
+    multiScenePanelLabelRule(),
+    "No added selling-point text, no captions beyond the four required scene labels, no callout labels, no badges, no arrows, no feature icons, no product-spec explanation, no inset close-up panels.",
   ].filter(Boolean).join(" / ");
 }
 
@@ -11310,7 +11403,7 @@ function conciseSceneModulePrompt(typeId, facts) {
         ? "Show distinct natural interactions or placements; do not invent an active mechanism."
         : "Show distinct contexts without inventing an active mechanism or output.";
     blocks.push(sceneItems.length
-      ? `TASK: Four equal 2x2 panels showing different real uses of the same current product. Prioritize distinct active uses${activeSceneItems.length ? ` from: ${activeSceneItems.join("; ")}` : ""}; ${facts.isDifferentDesignSet ? "distribute panels across different actual referenced set members before repeating one member; " : ""}${operationPanels} Use the remaining two panels for different supplier-pictured preparation or compatible contents when documented. If the references show a wide filling mouth, pour liquid into the OPEN current product; if they show compatible liquids, display those contents with the current product. When such evidence is absent, use another active use scene. A sealed product simply standing in storage is NOT a use scene and must never fill a panel. Keep the product large and recognizable in every panel, with no repeated near-identical scene. ${approvedScenes} In EVERY active panel: ${sourceUseBehaviorRule(facts)}`
+      ? `TASK: Four equal 2x2 panels showing different real uses of the same current product. Prioritize distinct active uses${activeSceneItems.length ? ` from: ${activeSceneItems.join("; ")}` : ""}; ${facts.isDifferentDesignSet ? "distribute panels across different actual referenced set members before repeating one member; " : ""}${operationPanels} Use the remaining two panels for different supplier-pictured preparation or compatible contents when documented. If the references show a wide filling mouth, pour liquid into the OPEN current product; if they show compatible liquids, display those contents with the current product. When such evidence is absent, use another active use scene. A sealed product simply standing in storage is NOT a use scene and must never fill a panel. Keep the product large and recognizable in every panel, with no repeated near-identical scene. ${approvedScenes} ${multiScenePanelLabelRule()} In EVERY active panel: ${sourceUseBehaviorRule(facts)}`
       : "TASK: Four equal 2x2 product-only views on a neutral studio background; no people, use actions or invented scenes.");
   } else if (typeId === "3") {
     blocks.push(facts.isDifferentDesignSet
@@ -11368,7 +11461,9 @@ function conciseSceneModulePrompt(typeId, facts) {
     blocks.push(`TASK: Premium Amazon feature-summary poster, combining approved selling points with real use scenes. Keep the established composition: one large lifestyle hero photograph on the LEFT (about 60–65% width), and exactly THREE photographic proof windows stacked on the RIGHT (about 35–40% width). ${heroUseRule} ${summaryActionScenes.length ? `Use distinct approved contexts: ${summaryActionScenes.join("; ")}.` : ""} Add one COMPACT WHITE CIRCULAR product inset at the LOWER LEFT of the hero photograph, separate from the three right windows. ${lowerLeftCountRule} Arrange the hero action so this circle does not cover the operating product, its outlet/contact point, effect path, or target; the circle is a secondary quantity/product reminder, never the main picture. The first right window shows a distinct approved use context or a relevant product moment; do not repeat the hero composition. Use the other two right windows for product details, compatible contents, preparation, or another distinct approved context as appropriate for this product. Reserve emitted effects for the large left hero; the right windows show source-backed preparation, compatible contents, product details or an approved scene without an emitted effect. A plain product standing in storage does not demonstrate a selling point and must not occupy a proof window. Every window must show the current product or a recognizable close-up of a real detail. Do not turn the right column into text-only rows. ${approvedScenes}`);
     blocks.push(`SELLING POINTS: ${points.length ? points.join("; ") : "No verified selling points; omit feature labels."} Use one short English headline and concise 1–3-word labels for the approved benefits. Place any output or spray claim beside the large left action, and place other labels by their relevant real scene or detail. Keep the main image, three windows and labels airy and editorial, with controlled light and source-accurate product texture and color. Do not invent claims, components, extra SKU variants or unverified actions.`);
   }
-  blocks.push(isMain || ["2", "3"].includes(typeId)
+  blocks.push(typeId === "2" && sceneItems.length
+    ? `TEXT/LAYOUT: ${multiScenePanelLabelRule()} No other added text, arrows, specifications, badges or inset product cutouts; only the specified four equal scene panels are allowed.`
+    : isMain || ["2", "3"].includes(typeId)
     ? "TEXT/LAYOUT: No added text, labels, arrows, specifications, badges or inset product cutouts. " + (typeId === "2" || typeId === "3" ? "Only the specified equal panels or product views are allowed." : "Use one continuous photographic scene; no collage or separate framed view.")
     : typeId === "4" ? "TEXT/LAYOUT: English labels only; keep the verified measurements legible and uncluttered."
       : "ACCURACY: Use only verified claims and physical features; no invented parts, performance numbers, certifications or misleading effects.");
@@ -12325,7 +12420,7 @@ function renderReferenceImages(state, requiredDetails = []) {
     return `
       <div class="reference-picker-summary">
         <div class="reference-picker-primary">
-          <span class="reference-candidate-count">候选图 <strong>0/${MAX_SELECTED_REFERENCES}</strong> 张</span>
+          <span class="reference-candidate-count">共 <strong>0</strong> 张候选 · 已选 0/${MAX_SELECTED_REFERENCES}</span>
           <button type="button" class="clear-reference-selection" disabled>清空选择</button>
         </div>
       </div>
@@ -12352,7 +12447,7 @@ function renderReferenceImages(state, requiredDetails = []) {
   return `
     <div class="reference-picker-summary">
       <div class="reference-picker-primary">
-        <span class="reference-candidate-count">候选图 <strong>${selectedCount}/${MAX_SELECTED_REFERENCES}</strong> 张</span>
+        <span class="reference-candidate-count">共 <strong>${state.availableReferences.length}</strong> 张候选 · 已选 ${selectedCount}/${MAX_SELECTED_REFERENCES}</span>
         <button type="button" class="clear-reference-selection" ${selectedCount ? "" : "disabled"}>清空选择</button>
       </div>
       <div class="reference-picker-actions">
@@ -14038,12 +14133,109 @@ function initThemeToggle() {
   });
 }
 
+async function refreshApiKeyStatus() {
+  const status = byId("apiKeyCurrentStatus");
+  if (!status) return;
+  status.textContent = "正在读取配置状态…";
+  try {
+    const response = await fetch("/api/key-status", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "读取失败");
+    status.textContent = result.grsaiConfigured
+      ? `当前已配置 Grsai 生图 Key${result.grsaiKeyEnding ? `（尾号 ${result.grsaiKeyEnding}）` : ""}`
+      : "当前未配置可用的 Grsai 生图 Key";
+  } catch (error) {
+    status.textContent = `配置状态读取失败：${error.message || "请确认本地服务正在运行"}`;
+  }
+}
+
+function normalizeGrsaiKeyInput(value) {
+  let normalized = String(value || "").trim();
+  normalized = normalized.replace(/^(?:export\s+)?GRSAI_API_KEY\s*=\s*/i, "").trim();
+  if (normalized.length >= 2 && normalized[0] === normalized[normalized.length - 1] && ["\"", "'"].includes(normalized[0])) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized.replace(/^Bearer\s+/i, "").trim();
+}
+
+function initApiKeyDialog() {
+  const dialog = byId("apiKeyDialog");
+  const input = byId("grsaiApiKeyInput");
+  const saveStatus = byId("apiKeySaveStatus");
+  if (!dialog || !input) return;
+
+  byId("openApiKeyDialog")?.addEventListener("click", () => {
+    input.value = "";
+    input.type = "password";
+    byId("toggleApiKeyVisibility")?.setAttribute("aria-pressed", "false");
+    if (byId("toggleApiKeyVisibility")) byId("toggleApiKeyVisibility").textContent = "显示";
+    saveStatus.textContent = "";
+    dialog.showModal();
+    void refreshApiKeyStatus();
+    window.setTimeout(() => input.focus(), 0);
+  });
+  byId("closeApiKeyDialog")?.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  byId("toggleApiKeyVisibility")?.addEventListener("click", (event) => {
+    const visible = input.type === "text";
+    input.type = visible ? "password" : "text";
+    event.currentTarget.textContent = visible ? "显示" : "隐藏";
+    event.currentTarget.setAttribute("aria-pressed", String(!visible));
+    input.focus();
+  });
+  input.addEventListener("input", () => {
+    const key = normalizeGrsaiKeyInput(input.value);
+    if (!input.value.trim()) {
+      saveStatus.textContent = "";
+    } else if (key.startsWith("sk-") && !/\s/.test(key)) {
+      saveStatus.textContent = `已识别到可保存的新 Key（尾号 ${key.slice(-4)}）。`;
+    } else {
+      saveStatus.textContent = "尚未识别到有效 Key，请确认内容中包含完整的 sk-… Key。";
+    }
+  });
+  byId("apiKeyForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const key = normalizeGrsaiKeyInput(input.value);
+    const button = byId("saveApiKey");
+    if (!key.startsWith("sk-") || /\s/.test(key)) {
+      saveStatus.textContent = "没有识别到有效 Key。请粘贴以 sk- 开头的完整 Grsai Key。";
+      return;
+    }
+    input.value = key;
+    button.disabled = true;
+    saveStatus.textContent = "正在安全保存…";
+    try {
+      const response = await fetch("/api/configure-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "GRSAI_API_KEY", key }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "保存失败");
+      input.value = "";
+      saveStatus.textContent = result.message || "新 Grsai 生图 Key 已保存并立即生效。";
+      await refreshApiKeyStatus();
+    } catch (error) {
+      saveStatus.textContent = `保存失败：${error.message || "请检查钥匙串权限"}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  if (new URLSearchParams(window.location.search).get("configure_key") === "1") {
+    window.setTimeout(() => byId("openApiKeyDialog")?.click(), 0);
+  }
+}
+
 
 
 async function init() {
   window.renderAll = renderAll;
   window.promptForSku = promptFor;
   initThemeToggle();
+  initApiKeyDialog();
   initWorkflowNavigation();
   fillSelects();
   await initializeDurableStorage();

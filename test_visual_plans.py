@@ -8,6 +8,48 @@ import server
 
 
 class VisualPlanTests(unittest.TestCase):
+    def test_competitor_gallery_prefers_complete_payload_over_visible_thumbnails(self):
+        app = (Path(__file__).parent / "app.js").read_text(encoding="utf-8")
+        self.assertIn("const MAX_COMPETITOR_REFERENCE_IMAGES = 20;", app)
+        start = app.index("function extractAmazonCompetitorImageCandidates(")
+        end = app.index("function competitorVisionSupplement(", start)
+        extractor = app[start:end]
+        visible = 'readGallery(doc.querySelector("#altImages"));'
+        hidden = "const initialGallery = amazonInitialGalleryItems(source);"
+        self.assertIn(visible, extractor)
+        self.assertIn(hidden, extractor)
+        self.assertLess(extractor.index(hidden), extractor.index(visible))
+        self.assertIn('if (!initialGallery.length) readGallery(doc.querySelector("#altImages"));', extractor)
+        self.assertNotIn('readGallery(doc.querySelector("#altImages"));\n  const initialGallery', extractor)
+        self.assertIn("const selectedCandidates = candidates;", app)
+        self.assertIn('decision.keep === false ? "model_not_recommended"', app)
+        self.assertNotIn("candidates.filter((candidate) => selectedUrls.has(candidate.url))", app)
+        self.assertIn('analysisPurpose: "route02_review"', app)
+        self.assertIn("applyCompetitorVisionSupplement(extractedProducts, result, targetIds, { includeVariantFields: true })", app)
+        self.assertIn("async function completeAmazonCompetitorGalleryHtml(html, onProgress = null)", app)
+        self.assertIn("if (remoteCount > localCount)", app)
+        self.assertIn("const competitorHtml = await completeAmazonCompetitorGalleryHtml(uploadedCompetitorHtml", app)
+        self.assertIn('共 <strong>${state.availableReferences.length}</strong> 张候选 · 已选 ${selectedCount}/${MAX_SELECTED_REFERENCES}', app)
+
+    def test_four_panel_scene_images_require_short_scene_or_purpose_labels(self):
+        app = (Path(__file__).parent / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function multiScenePanelLabelRule()", app)
+        self.assertIn("exactly one concise 2-3 word English label inside each panel", app)
+        self.assertIn("must name that panel's approved use scene or practical purpose", app)
+        self.assertIn("horizontally centered at the bottom inside its own panel", app)
+        self.assertIn("the bottom center of each upper panel, not the bottom of the overall canvas", app)
+        self.assertIn("no top, corner, side, or floating label placement", app)
+        self.assertIn("Use four distinct labels", app)
+        self.assertNotIn("no scene title labels", app)
+
+    def test_analysis_diagnostics_show_image_model_and_cache(self):
+        app = (Path(__file__).parent / "app.js").read_text(encoding="utf-8")
+        page = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="analysisDiagnostics"', page)
+        self.assertIn("function renderAnalysisDiagnostics(items = [])", app)
+        self.assertIn("本次分析诊断：送检图片 ${imageCount} 张", app)
+        self.assertIn('命中缓存 ${cacheHit}', app)
+
     def test_dimension_edits_do_not_invalidate_selling_point_plan(self):
         app = (Path(__file__).parent / "app.js").read_text(encoding="utf-8")
         self.assertIn('.filter(([key]) => key !== "productDimensions")', app)
