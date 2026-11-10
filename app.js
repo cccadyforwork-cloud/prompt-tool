@@ -8423,6 +8423,9 @@ async function readBackgroundVisionResult(response, signal, onProgress, restartR
 }
 
 async function readJsonResponse(response, taskLabel = "请求") {
+  if (typeof response?.text !== "function" && typeof response?.json === "function") {
+    return response.json();
+  }
   const text = await response.text();
   if (!text.trim()) throw new Error(`${taskLabel}服务返回空响应，请重试。`);
   try {
