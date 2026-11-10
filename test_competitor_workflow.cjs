@@ -44,6 +44,7 @@ const context = vm.createContext({
   extractAmazonTemplateProducts: async () => ({ products: amazon, sourceText: "Amazon fixture" }),
   populateCompetitorSkuBinding() {}, competitorAnalysisScope: () => ({ kind: "child", targets: [amazon[0]] }),
   readNamedTextFiles: async () => [{ name: "competitor.html", text: "fixture" }],
+  completeAmazonCompetitorGalleryHtml: async (html) => html,
   extractAmazonCompetitorImageCandidates: () => [{ url }], uniqueByUrl: (items) => items,
   imageCandidateUrl: (item) => item.url,
   fetch: async () => ({ ok: true, json: async () => result }),
@@ -52,6 +53,7 @@ const context = vm.createContext({
   addSellingPointCandidates: (sku, entries) => { reviews[sku.id].candidateEntries = entries; },
   applyLockedSellingPointReview: (sku) => { sku.sellingPoints = "Locked manual claim"; },
   persistSellingPointReviews() {}, renderProductSelect() {}, renderFields() {}, renderAll() {},
+  renderAnalysisDiagnostics() {},
   autoEnrichSellingPointsIfNeeded: () => auto.push("points"),
   autoEnrichUseScenesIfNeeded: () => auto.push("scenes"),
   escapeHtml: (value) => String(value), displaySourceCategory: (value) => value,
@@ -80,9 +82,9 @@ async function main() {
   assert.deepEqual(auto, ["points", "scenes"]);
   const html = context.sellingPointReviewHtml(context.extractedProducts[0]);
   assert.match(html, /id="supplementSellingPointChoices">联网补充/);
-  assert.match(html, /中文：正在生成释义/);
+  assert.match(html, /中文依据：正在补充…/);
   reviews.A.candidateEntries[0].meaningZh = "容易使用";
-  assert.match(context.sellingPointReviewHtml(context.extractedProducts[0]), /中文：容易使用/);
+  assert.match(context.sellingPointReviewHtml(context.extractedProducts[0]), /中文释义：容易使用/);
   assert.doesNotMatch(html, /逐字段|确认采用|待人工确认/);
   assert.match(controls.extractStatus.textContent, /统一确认/);
   reviews.A.locked = true;

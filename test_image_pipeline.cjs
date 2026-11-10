@@ -10,6 +10,10 @@ assert.match(source, /confirmedSellingPointPlanInput = currentVisualPlanConfirma
   'the checkpoint locks the current parameter and selling-point input before planning');
 assert.match(source, /applyVisualPlanDecision\(sku, latestFacts, plan, "show"\)/,
   'the top-right action confirms the completed plan before entering the image set');
+assert.match(source, /fetch\(sourceProxyUrl\(url\), \{ credentials: "same-origin" \}\)/,
+  '1688 detail fragments retain the hosted workbench session when loaded through the source proxy');
+assert.doesNotMatch(source, /fetch\(sourceProxyUrl\(url\), \{ credentials: "omit" \}\)/,
+  'hosted 1688 detail fragments never drop the authenticated workbench session');
 const filenameStart = source.indexOf('function generatedImageFilename(');
 const filenameEnd = source.indexOf('function selectedSetPreviewItems(', filenameStart);
 assert.ok(filenameStart >= 0 && filenameEnd > filenameStart, 'typed product image filename helper is present');
@@ -387,6 +391,7 @@ vm.runInContext('extractSupplierSourceText("<html></html>", () => {}, "web", "so
       promptContextText: () => '', convertLengthUnitsToInches: (value) => value,
       sellingPointCandidates: () => ['Source-backed benefit'],
       sourceUseBehaviorRule: () => 'Follow source operation and outlet.',
+      multiScenePanelLabelRule: () => 'Put one 2-3 word scene label at the bottom center of each panel.',
       bundleFullSetDisplayRule: () => 'BUNDLE GUARD',
       differentDesignSetPresentationRule: () => 'MIXED-SET GUARD',
       skuQuantityMainImageRule: () => 'MAIN COUNT GUARD',

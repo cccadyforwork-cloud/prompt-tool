@@ -3125,7 +3125,10 @@ async function fetchDetailHtml(detailUrls, onProgress) {
     const fetchStartedAt = performance.now();
     onProgress?.(`正在读取 1688 详情描述片段... ${index + 1}/${detailUrls.length}`);
     try {
-      const response = await withTimeout(fetch(sourceProxyUrl(url), { credentials: "omit" }), DETAIL_FETCH_TIMEOUT_MS, "Detail fetch timed out");
+      // The hosted prompt tool protects its source proxy with the current
+      // workbench session. Keep same-origin credentials so saved 1688 pages
+      // can expand their detailUrl fragments online just as they do locally.
+      const response = await withTimeout(fetch(sourceProxyUrl(url), { credentials: "same-origin" }), DETAIL_FETCH_TIMEOUT_MS, "Detail fetch timed out");
       if (!response.ok) {
         onProgress?.(`1688 详情描述片段 ${index + 1}/${detailUrls.length} 读取失败：HTTP ${response.status}，耗时 ${elapsedText(fetchStartedAt)}。`);
         continue;
